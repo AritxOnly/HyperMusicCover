@@ -593,7 +593,12 @@ public class Main extends XposedModule {
         if (active == sMiniBackdropSinkActive) return;
         sMiniBackdropSinkActive = active;
         if (sAppCtx != null) applyHideFp();
+        MiniPlayerRuntime.onBackdropSinkChanged();
         Xp.log(TAG + "expanded backdrop fingerprint policy " + (active ? "on" : "off"));
+    }
+
+    static boolean backdropSinkActive() {
+        return sMiniBackdropSinkActive;
     }
 
     private static boolean hideFpNow() {

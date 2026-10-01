@@ -88,6 +88,12 @@ object MiniPlayerRuntime {
             .forEach { runCatching { it.refresh() } }
     }
 
+    /** The notification stack needs a live move; the fingerprint avoidance flow may stay idle. */
+    @JvmStatic fun onBackdropSinkChanged() {
+        synchronized(controllers) { controllers.values.map { it.controller } }
+            .forEach { controller -> controller.postBackdropSink() }
+    }
+
     /**
      * Each hook on its own: a build that renamed one class costs the feature that needed it,
      * not the rest of the mini player.
@@ -1898,9 +1904,43 @@ private class MiniPlayerController(
     /** The stack's content top the clock was last given room by (Main.roomForRows). */
     private var clockTopAsked = Float.NaN
 
+    private var backdropSinkStack: ViewGroup? = null
+    private var backdropSinkBaseY = 0f
+    private var backdropSinkAppliedY = Float.NaN
+
+    fun postBackdropSink() {
+        host.post { if (!destroyed) syncBackdropSink() }
+    }
+
+    private fun restoreBackdropSink() {
+        backdropSinkStack?.let { stack ->
+            if (abs(stack.translationY - backdropSinkAppliedY) < 0.5f)
+                stack.translationY = backdropSinkBaseY
+        }
+        backdropSinkStack = null
+        backdropSinkAppliedY = Float.NaN
+    }
+
+    /** Move the actual notification list now, including when the OEM bound's flow is idle. */
+    private fun syncBackdropSink() {
+        if (!Main.backdropSinkActive()) { restoreBackdropSink(); return }
+        val stack = notificationStack() ?: run { restoreBackdropSink(); return }
+        if (stack !== backdropSinkStack) {
+            restoreBackdropSink()
+            backdropSinkStack = stack
+        }
+        val current = stack.translationY
+        if (backdropSinkAppliedY.isNaN() || abs(current - backdropSinkAppliedY) >= 0.5f)
+            backdropSinkBaseY = current
+        val target = backdropSinkBaseY + dp(56f)
+        if (abs(current - target) >= 0.5f) stack.translationY = target
+        backdropSinkAppliedY = target
+    }
+
     private val preDraw = ViewTreeObserver.OnPreDrawListener { android.os.Trace.beginSection("MC islandsPreDraw"); try {
         holdKept()
         holdRows()
+        syncBackdropSink()
         // The rows can settle after the stack last told the clock where they are - a row let out
         // is laid out a frame or more after the list changed. The clock is asked again then.
         val top = stackContentTop()
@@ -8496,6 +8536,7 @@ private class MiniPlayerController(
 
     fun destroy() {
         destroyed = true
+        restoreBackdropSink()
         restoreAodShortcuts()
         prefs.unregisterOnSharedPreferenceChangeListener(prefListener)
         runCatching { host.viewTreeObserver.removeOnPreDrawListener(preDraw) }
