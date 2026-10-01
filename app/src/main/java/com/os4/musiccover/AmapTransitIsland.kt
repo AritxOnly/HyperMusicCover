@@ -125,7 +125,9 @@ internal object AmapTransitIsland {
             .setContentText(content)
             .setCategory(Notification.CATEGORY_NAVIGATION)
             .setOngoing(true)
-            .setOnlyAlertOnce(true)
+            // A new milestone may alert again, so HyperOS re-floats it (arriving, transfer); the
+            // keepalive repost of the same state stays quiet.
+            .setOnlyAlertOnce(!milestone)
             .setShowWhen(false)
             .setTimeoutAfter(TIMEOUT_MS)
             .setContentIntent(PendingIntent.getActivity(ctx, ID, open,

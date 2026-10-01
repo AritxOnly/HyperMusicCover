@@ -1,6 +1,8 @@
 package com.os4.musiccover;
 
 import android.content.Context;
+import android.content.Intent;
+import android.net.Uri;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
@@ -230,6 +232,32 @@ final class AmapTransitScene implements ImmersiveScene {
         if (mGround != null) mGround.setFade(alpha);
     }
 
+    /** The 乘车码 pill is the page's own tap target; the rest of a tap is the row's. */
+    @Override
+    public boolean pageHit(float rawX, float rawY) {
+        return mView != null && mView.rideHit(rawX, rawY);
+    }
+
+    @Override
+    public void pagePress(boolean down) {
+        if (mView != null) mView.setRidePressed(down);
+    }
+
+    @Override
+    public void onPageTap() {
+        TransitView v = mView;
+        if (v == null) return;
+        String url = v.deepLink();
+        try {
+            v.getContext().startActivity(new Intent(Intent.ACTION_VIEW,
+                    Uri.parse(url.isEmpty() ? "amapuri://amap" : url)).setPackage(PKG)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+            Xp.log(TAG + "ride code opened");
+        } catch (Throwable t) {
+            Xp.log(TAG + "ride code open failed: " + t);
+        }
+    }
+
     @Override
     public void release() {
         TransitView v = mView;
@@ -392,7 +420,12 @@ final class AmapTransitScene implements ImmersiveScene {
         double destLng;
         String exitName = "";
         String guideInfo = "";
+        String deepLink = "";
         Leg leg = new Leg();
+        /** The ride you change to next, for the transfer badge; empty when this is the last. */
+        String nextLine = "";
+        int nextLineColor = 0xff4a86ff;
+        boolean nextSubway;
 
         static Trip parse(JSONObject o) {
             Trip t = new Trip();
@@ -403,41 +436,77 @@ final class AmapTransitScene implements ImmersiveScene {
             t.destLng = o.optDouble("destLongitude", 0);
             t.exitName = o.optString("exitName").trim();
             t.guideInfo = o.optString("guideInfo").trim();
+            t.deepLink = o.optString("deepLink").trim();
             JSONArray navi = o.optJSONArray("naviInfo");
-            JSONObject cur = null;
+            int curIndex = -1;
             for (int i = 0; navi != null && i < navi.length(); i++) {
                 JSONObject n = navi.optJSONObject(i);
                 if (n != null && n.optBoolean("isCurrent", false)) {
-                    cur = n;
+                    curIndex = i;
                     break;
                 }
             }
             // No leg marked current: the first ride, as SceneService's g.b falls back.
-            for (int i = 0; cur == null && navi != null && i < navi.length(); i++) {
+            for (int i = 0; curIndex < 0 && navi != null && i < navi.length(); i++) {
                 JSONObject n = navi.optJSONObject(i);
                 String type = n == null ? "" : n.optString("transportType").trim();
-                if ("1".equals(type) || "2".equals(type)) cur = n;
+                if ("1".equals(type) || "2".equals(type)) curIndex = i;
             }
-            t.leg = Leg.of(cur);
+            t.leg = Leg.of(curIndex < 0 ? null : navi.optJSONObject(curIndex));
+            // The next ride after this one: the line the transfer badge names.
+            for (int i = curIndex + 1; navi != null && i < navi.length(); i++) {
+                JSONObject n = navi.optJSONObject(i);
+                String type = n == null ? "" : n.optString("transportType").trim();
+                if ("1".equals(type) || "2".equals(type)) {
+                    t.nextLine = n.optString("lineName").trim();
+                    t.nextLineColor = color(n.optString("lineBgColor"), 0xff4a86ff);
+                    t.nextSubway = "2".equals(type);
+                    break;
+                }
+            }
             return t;
+        }
+
+        /** The line's number for a badge: 「地铁1号线」 -> 「1」, 「机场线」 -> 「机场」 (ya.k.c). */
+        String nextLineCode() {
+            String s = nextLine;
+            if (s.isEmpty()) return "";
+            s = s.replace("地铁", "");
+            int zh = s.indexOf("号线");
+            if (zh >= 0) return s.substring(0, zh);
+            if (s.endsWith("线")) return s.substring(0, s.length() - 1);
+            if (s.endsWith("路")) return s.substring(0, s.length() - 1);
+            return s;
         }
     }
 
     // ---------------------------------------------------------------- what is shown
 
-    /** The three stations on the track, and which of them the train is at or heading for. */
+    /**
+     * The three stations on the track, OPPO's cardStationOverview (ya.k.b): the one before, this
+     * one, the next, which of them the train is at or heading for, and the transfer line each
+     * stands for (a square badge in that line's colour, as 五一路 shows a green 5).
+     */
     static final class Nodes {
-        final String prev;
-        final String here;
-        final String next;
-        /** 0 the train is at {@link #here}, 1 it is on its way to {@link #next}. */
+        final String[] names = new String[3];
+        final boolean[] transfer = new boolean[3];
+        /** The line you change to at a transfer node, its number; null where there is none. */
+        final String[] badge = new String[3];
+        final int[] badgeColor = new int[3];
+        /** 0 the train is at the middle node, 1 it is on its way to the next. */
         final int focus;
 
-        Nodes(String prev, String here, String next, int focus) {
-            this.prev = prev;
-            this.here = here;
-            this.next = next;
+        Nodes(Station[] st, int focus, String nextCode, int nextColor) {
             this.focus = focus;
+            for (int i = 0; i < 3; i++) {
+                Station s = st[i] == null ? new Station("", 0, 0, false) : st[i];
+                names[i] = s.name;
+                transfer[i] = s.transfer;
+                if (s.transfer && !nextCode.isEmpty()) {
+                    badge[i] = nextCode;
+                    badgeColor[i] = nextColor;
+                }
+            }
         }
     }
 
@@ -451,6 +520,9 @@ final class AmapTransitScene implements ImmersiveScene {
         String secondary = "";
         Nodes nodes;
         boolean subway;
+        /** The 乘车码 pill, and where it jumps; shown while riding a subway. */
+        boolean rideCode;
+        String deepLink = "";
         Art.Pick art = Art.Pick.NONE;
 
         boolean sameArt(Frame o) {
@@ -465,6 +537,7 @@ final class AmapTransitScene implements ImmersiveScene {
             f.direction = direction(l.lineDirection);
             f.lineBg = l.lineBg;
             f.lineText = l.lineText;
+            f.deepLink = t.deepLink;
             int index = Math.max(0, Math.min(l.via.size() - l.remain, l.via.size() - 1));
             String shown = shownStation(t, index);
             switch (t.status) {
@@ -473,21 +546,24 @@ final class AmapTransitScene implements ImmersiveScene {
                     // The waiting card: the boarding station, and when the train comes.
                     f.primary = l.on.name;
                     f.secondary = !l.realtime.isEmpty() ? l.realtime : f.direction;
+                    f.nodes = nodes(t, index, 1);
                     break;
                 case "3":
                 case "4":
                     f.primary = "下一站 " + shown;
                     f.secondary = remaining(t);
-                    f.nodes = nodes(l, index, 1);
+                    f.nodes = nodes(t, index, 1);
                     break;
                 case "5":
                     f.primary = "当前站 " + shown;
                     f.secondary = remaining(t);
-                    f.nodes = nodes(l, index, 0);
+                    f.nodes = nodes(t, index, 0);
                     break;
                 case "6":
                     f.primary = "准备换乘";
-                    f.secondary = shown.isEmpty() ? "" : "已到达 " + shown;
+                    f.secondary = t.nextLine.isEmpty() ? (shown.isEmpty() ? "" : "已到达 " + shown)
+                            : "可换乘" + t.nextLine;
+                    f.nodes = nodes(t, index, 0);
                     break;
                 case "7":
                     f.primary = shown.isEmpty() ? "已到达" : "已到达 " + shown;
@@ -498,6 +574,8 @@ final class AmapTransitScene implements ImmersiveScene {
                     f.secondary = t.guideInfo;
                     break;
             }
+            // 高德's ride code sits on the card while you are on a subway, not once arrived.
+            f.rideCode = l.subway() && !"7".equals(t.status) && !t.deepLink.isEmpty();
             f.art = Art.Pick.of(t, shown, index);
             return f;
         }
@@ -544,12 +622,20 @@ final class AmapTransitScene implements ImmersiveScene {
         }
 
         /** SceneService's ThreeNodeStations (ya.e.a): the one before, this one, the next. */
-        private static Nodes nodes(Leg l, int index, int focus) {
-            if (l.via.isEmpty()) return new Nodes(l.on.name, l.off.name, l.off.name, focus);
-            String here = l.via.get(index).name;
-            String prev = index == 0 ? l.on.name : l.via.get(index - 1).name;
-            String next = index + 1 < l.via.size() ? l.via.get(index + 1).name : l.off.name;
-            return new Nodes(prev, here, next, focus);
+        private static Nodes nodes(Trip t, int index, int focus) {
+            Leg l = t.leg;
+            String code = t.nextLineCode();
+            Station prev, here, next;
+            if (l.via.isEmpty()) {
+                prev = l.on;
+                here = l.off;
+                next = l.off;
+            } else {
+                here = l.via.get(index);
+                prev = index == 0 ? l.on : l.via.get(index - 1);
+                next = index + 1 < l.via.size() ? l.via.get(index + 1) : l.off;
+            }
+            return new Nodes(new Station[] {prev, here, next}, focus, code, t.nextLineColor);
         }
     }
 
@@ -894,6 +980,9 @@ final class AmapTransitScene implements ImmersiveScene {
         private Bitmap mStill;
         private Drawable mLabel;
         private boolean mLive;
+        private final RectF mRidePill = new RectF();
+        private boolean mRidePressed;
+        private final int[] mAt = new int[2];
 
         TransitView(Context ctx) {
             super(ctx);
@@ -935,6 +1024,27 @@ final class AmapTransitScene implements ImmersiveScene {
 
         boolean animating() {
             return mLive && mArt instanceof AnimatedImageDrawable;
+        }
+
+        /** Whether a finger here, in screen coordinates, is on the 乘车码 pill. */
+        boolean rideHit(float rawX, float rawY) {
+            if (mRidePill.isEmpty() || !isShown()) return false;
+            getLocationOnScreen(mAt);
+            float pad = 8f * mDp;
+            float x = rawX - mAt[0];
+            float y = rawY - mAt[1];
+            return x >= mRidePill.left - pad && x <= mRidePill.right + pad
+                    && y >= mRidePill.top - pad && y <= mRidePill.bottom + pad;
+        }
+
+        void setRidePressed(boolean pressed) {
+            if (mRidePressed == pressed) return;
+            mRidePressed = pressed;
+            invalidate();
+        }
+
+        String deepLink() {
+            return mF == null ? "" : mF.deepLink;
         }
 
         /** On the lit lock screen and shown: the landmark moves. */
@@ -1066,6 +1176,32 @@ final class AmapTransitScene implements ImmersiveScene {
                 mLabel.draw(canvas);
             }
 
+            // The 乘车码 pill, top-right, as OPPO's card carries it on a subway.
+            mRidePill.setEmpty();
+            if (f.rideCode) {
+                mSecondary.setTextSize(14f * mDp);
+                String ride = "乘车码";
+                float tw = mSecondary.measureText(ride);
+                float ph = 30f * mDp;
+                float pw = tw + 28f * mDp;
+                float right = w - 24f * mDp;
+                float top = h * WORDS_TOP;
+                mRidePill.set(right - pw, top, right, top + ph);
+                canvas.save();
+                if (mRidePressed) canvas.scale(0.92f, 0.92f, mRidePill.centerX(), mRidePill.centerY());
+                mFill.setColor(0x26ffffff);
+                canvas.drawRoundRect(mRidePill, ph / 2f, ph / 2f, mFill);
+                mFill.setColor(0xffffffff);
+                float dot = 5f * mDp;
+                canvas.drawCircle(mRidePill.left + 14f * mDp, mRidePill.centerY(), dot, mFill);
+                mSecondary.setColor(0xf2ffffff);
+                Paint.FontMetrics fr = mSecondary.getFontMetrics();
+                canvas.drawText(ride, mRidePill.left + 14f * mDp + dot + 5f * mDp,
+                        mRidePill.centerY() - (fr.ascent + fr.descent) / 2f, mSecondary);
+                canvas.restore();
+                mSecondary.setColor(0xb3ffffff);
+            }
+
             // The line's pill and where it is going, one row, centred.
             float y = h * WORDS_TOP;
             mLine.setTextSize(14f * mDp);
@@ -1109,62 +1245,117 @@ final class AmapTransitScene implements ImmersiveScene {
             if (f.nodes != null) drawTrack(canvas, f, w, h);
         }
 
-        /** The last station, this one, the next: three stops on a line in the line's colour. */
+        /**
+         * The three stops, OPPO-style (五一路): a bar in the line's colour, the part behind the
+         * train full and the part ahead dim; the middle stop the current one; a transfer stop a
+         * ⇄ ring with a square line-number badge over it, in that line's colour; the names below.
+         */
         private void drawTrack(Canvas canvas, Frame f, int w, int h) {
             Nodes n = f.nodes;
             float y = h * TRACK_Y;
-            float left = w * 0.18f;
-            float right = w * 0.82f;
+            float left = w * 0.17f;
+            float right = w * 0.83f;
             float mid = w / 2f;
             float[] xs = {left, mid, right};
-            String[] names = {n.prev, n.here, n.next};
             // Where the train is: on the middle stop, or between it and the next.
             float trainX = n.focus == 0 ? mid : (mid + right) / 2f;
             mFill.setStrokeCap(Paint.Cap.ROUND);
-            mFill.setStrokeWidth(4f * mDp);
+            mFill.setStrokeWidth(5f * mDp);
             mFill.setColor(f.lineBg);
             canvas.drawLine(left, y, trainX, y, mFill);
-            mFill.setColor(0x40ffffff);
+            mFill.setColor(0x33ffffff);
             canvas.drawLine(trainX, y, right, y, mFill);
-            mNode.setTextSize(12f * mDp);
+            mNode.setTextSize(13f * mDp);
             Paint.FontMetrics fn = mNode.getFontMetrics();
-            float slot = (right - left) / 2f - 8f * mDp;
+            float slot = (right - left) / 2f - 6f * mDp;
             for (int i = 0; i < 3; i++) {
-                boolean passed = xs[i] <= trainX;
-                boolean target = (n.focus == 0 && i == 1) || (n.focus == 1 && i == 2);
-                float r = (target ? 6f : 4.5f) * mDp;
-                mFill.setColor(passed || target ? f.lineBg : 0xff3a3d44);
-                canvas.drawCircle(xs[i], y, r, mFill);
-                mFill.setColor(Color.WHITE);
-                canvas.drawCircle(xs[i], y, r * 0.45f, mFill);
-                mNode.setColor(target ? 0xf2ffffff : 0x99ffffff);
-                mNode.setFakeBoldText(target);
-                String name = TextUtils.ellipsize(names[i] == null ? "" : names[i], mNode, slot,
+                boolean passed = xs[i] <= trainX + 0.5f;
+                boolean current = i == 1;
+                int tint = passed || current ? f.lineBg : 0xff4a4d55;
+                if (n.transfer[i]) {
+                    // A transfer stop: a white-ringed pill with the interchange arrows.
+                    float rw = 15f * mDp;
+                    float rh = 11f * mDp;
+                    mRect.set(xs[i] - rw, y - rh, xs[i] + rw, y + rh);
+                    mFill.setStyle(Paint.Style.FILL);
+                    mFill.setColor(tint);
+                    canvas.drawRoundRect(mRect, rh, rh, mFill);
+                    mFill.setStyle(Paint.Style.STROKE);
+                    mFill.setStrokeWidth(1.6f * mDp);
+                    mFill.setColor(0xffffffff);
+                    canvas.drawRoundRect(mRect, rh, rh, mFill);
+                    mFill.setStyle(Paint.Style.FILL);
+                    drawTransferGlyph(canvas, xs[i], y, 6f * mDp);
+                } else {
+                    float r = current ? 6.5f : 5f;
+                    mFill.setColor(tint);
+                    canvas.drawCircle(xs[i], y, r * mDp, mFill);
+                    mFill.setColor(Color.WHITE);
+                    canvas.drawCircle(xs[i], y, r * 0.42f * mDp, mFill);
+                }
+                // The line-number badge over a transfer stop.
+                if (n.badge[i] != null) drawBadge(canvas, n.badge[i], n.badgeColor[i], xs[i], y - 15f * mDp);
+                // The name below.
+                mNode.setColor(current ? 0xf2ffffff : 0x99ffffff);
+                mNode.setFakeBoldText(current);
+                String name = TextUtils.ellipsize(n.names[i] == null ? "" : n.names[i], mNode, slot,
                         TextUtils.TruncateAt.END).toString();
-                canvas.drawText(name, xs[i], y + 12f * mDp - fn.top, mNode);
+                canvas.drawText(name, xs[i], y + 16f * mDp - fn.top, mNode);
             }
-            // The train itself, between stops.
-            if (n.focus == 1) {
-                mFill.setColor(Color.WHITE);
-                canvas.drawCircle(trainX, y, 3.5f * mDp, mFill);
-            }
+            mFill.setStrokeWidth(5f * mDp);
+        }
+
+        /** The interchange arrows (⇄) at a transfer stop, white. */
+        private void drawTransferGlyph(Canvas canvas, float cx, float cy, float s) {
+            mFill.setColor(0xffffffff);
+            mFill.setStyle(Paint.Style.STROKE);
+            mFill.setStrokeWidth(1.4f * mDp);
+            float g = 2.4f * mDp;
+            canvas.drawLine(cx - s, cy - g, cx + s * 0.6f, cy - g, mFill);
+            canvas.drawLine(cx + s * 0.6f, cy - g - 2f * mDp, cx + s, cy - g, mFill);
+            canvas.drawLine(cx + s * 0.6f, cy - g + 2f * mDp, cx + s, cy - g, mFill);
+            canvas.drawLine(cx + s, cy + g, cx - s * 0.6f, cy + g, mFill);
+            canvas.drawLine(cx - s * 0.6f, cy + g - 2f * mDp, cx - s, cy + g, mFill);
+            canvas.drawLine(cx - s * 0.6f, cy + g + 2f * mDp, cx - s, cy + g, mFill);
+            mFill.setStyle(Paint.Style.FILL);
+        }
+
+        /** A line-number square in its colour, white number: 五一路's green 5, blue 2. */
+        private void drawBadge(Canvas canvas, String code, int color, float cx, float bottom) {
+            mNode.setTextSize(11f * mDp);
+            mNode.setFakeBoldText(true);
+            mNode.setColor(0xffffffff);
+            float tw = mNode.measureText(code);
+            float pad = 4f * mDp;
+            float bw = Math.max(16f * mDp, tw + 2f * pad);
+            float bh = 16f * mDp;
+            mRect.set(cx - bw / 2f, bottom - bh, cx + bw / 2f, bottom);
+            mFill.setColor(color);
+            canvas.drawRoundRect(mRect, 4f * mDp, 4f * mDp, mFill);
+            Paint.FontMetrics fm = mNode.getFontMetrics();
+            canvas.drawText(code, cx, mRect.centerY() - (fm.ascent + fm.descent) / 2f, mNode);
+            mNode.setFakeBoldText(false);
         }
     }
 
     // ---------------------------------------------------------------- the demo
 
     /**
-     * A ride on Beijing's line 1 towards 四惠东, the next stop 天安门东 - by the Forbidden City,
-     * so the landmark shows. The shape is 高德's GaoDePtIntentEntity; the coordinates are real.
+     * A ride on Beijing's line 1 towards 四惠东, now at 天安门东 (by the Forbidden City, so the
+     * landmark shows), getting off at 王府井 to change to line 8 - a real interchange, so the
+     * transfer stop shows the ⇄ and a line 8 badge. The shape is 高德's GaoDePtIntentEntity.
      */
-    static final String DEMO = "{\"status\":\"3\",\"destCitycode\":\"010\","
+    static final String DEMO = "{\"status\":\"5\",\"destCitycode\":\"010\","
             + "\"destStation\":\"王府井\",\"exitName\":\"A口\",\"guideInfo\":\"\","
+            + "\"deepLink\":\"amapuri://amap\","
             + "\"naviInfo\":[{\"isCurrent\":true,\"transportType\":\"2\",\"lineName\":\"地铁1号线\","
             + "\"lineDirection\":\"四惠东\",\"lineBgColor\":\"#C23A30\",\"lineTextColor\":\"#FFFFFF\","
-            + "\"remainStations\":2,"
+            + "\"remainStations\":1,"
             + "\"on_station\":{\"stationName\":\"西单\"},"
-            + "\"off_station\":{\"stationName\":\"王府井\",\"coord\":{\"lat\":39.908,\"lng\":116.411},"
+            + "\"off_station\":{\"stationName\":\"王府井\",\"isTransferStation\":true,"
+            + "\"coord\":{\"lat\":39.908,\"lng\":116.411},"
             + "\"port_list\":[{\"name\":\"A口\",\"coord\":{\"lat\":39.9085,\"lng\":116.4106}}]},"
             + "\"via_st_list\":[{\"name\":\"天安门西\",\"coord\":{\"lat\":39.9075,\"lng\":116.3912}},"
-            + "{\"name\":\"天安门东\",\"coord\":{\"lat\":39.9078,\"lng\":116.4013}}]}]}";
+            + "{\"name\":\"天安门东\",\"coord\":{\"lat\":39.9078,\"lng\":116.4013}}]},"
+            + "{\"transportType\":\"2\",\"lineName\":\"地铁8号线\",\"lineBgColor\":\"#009B6B\"}]}";
 }
