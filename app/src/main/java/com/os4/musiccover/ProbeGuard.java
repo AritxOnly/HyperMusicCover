@@ -26,6 +26,15 @@ import android.os.Process;
  *   - Behind android.permission.DUMP, for adb. `am broadcast` cannot share an identity, but the
  *     shell holds DUMP and no third-party app can. Only an anonymous broadcast is answered here;
  *     one that carries an identity is the other registration's, so nothing is handled twice.
+ *
+ * The wallpaper process's broadcasts to SystemUI arrived with no identity on the test phone, and
+ * that process does not hold DUMP, so neither registration took them - silently: SystemUI never
+ * heard `wphello`, never sent the source, and every tap into the cover composed and encoded the
+ * full-screen JPEG in SystemUI first (2026-10-01, `op tail` empty for op=wp). So SystemUI also
+ * mints a token ({@link #mint}) that rides on everything it sends the wallpaper process - which
+ * setPackage keeps from any other app - and the wallpaper process hands it back on everything it
+ * sends SystemUI. An anonymous broadcast carrying that token is the open registration's; one
+ * without it is still adb's.
  */
 final class ProbeGuard {
 
@@ -44,7 +53,42 @@ final class ProbeGuard {
 
     /** A probe broadcast, sent the way the receivers will take it. */
     static void send(Context ctx, Intent intent) {
+        stamp(intent);
         ctx.sendBroadcast(intent, null, options());
+    }
+
+    private static final String TOKEN = "mctoken";
+    private static final String WALLPAPER = "com.miui.miwallpaper";
+    private static final String SYSTEMUI = "com.android.systemui";
+
+    /** SystemUI's token, or the one the wallpaper process last heard from SystemUI. */
+    private static volatile String sToken;
+    /** This process minted sToken: the one that checks it, not the one that hands it back. */
+    private static volatile boolean sMinted;
+
+    /** SystemUI's half, once: the token it hands the wallpaper process and takes back from it. */
+    static synchronized void mint() {
+        if (sMinted) return;
+        byte[] b = new byte[16];
+        new java.security.SecureRandom().nextBytes(b);
+        StringBuilder sb = new StringBuilder();
+        for (byte x : b) sb.append(String.format("%02x", x & 0xff));
+        sToken = sb.toString();
+        sMinted = true;
+    }
+
+    /** On its way out: to the wallpaper process from SystemUI, and back to SystemUI from it. */
+    private static void stamp(Intent intent) {
+        String token = sToken;
+        if (token == null) return;
+        String pkg = intent.getPackage();
+        if (sMinted ? WALLPAPER.equals(pkg) : SYSTEMUI.equals(pkg)) intent.putExtra(TOKEN, token);
+    }
+
+    /** Whether [i] carries this process's own token, which only the wallpaper process was given. */
+    private static boolean carriesOurs(Intent i) {
+        String token = sToken;
+        return sMinted && token != null && token.equals(i.getStringExtra(TOKEN));
     }
 
     /** A receiver that knows which of its two registrations it came in through, and whom it trusts. */
@@ -76,14 +120,33 @@ final class ProbeGuard {
     private static volatile long sRefusedLoggedAt;
 
     /**
-     * Whether [r] should act on the broadcast it is handling now. Called first thing in onReceive;
-     * a refused broadcast is left exactly as it arrived, so an ordered one comes back unanswered.
+     * Whether [r] should act on the broadcast [i] it is handling now. Called first thing in
+     * onReceive; a refused broadcast is left exactly as it arrived, so an ordered one comes back
+     * unanswered. An admitted one has the token taken out, so no log line from its extras has it.
      */
-    static boolean admit(Receiver r) {
+    static boolean admit(Receiver r, Intent i) {
+        boolean ok = check(r, i);
+        // Only from a broadcast already let through: the wallpaper process learns SystemUI's
+        // token from what SystemUI sends it, not from whoever claims to have one.
+        if (!ok) return false;
+        if (!sMinted) {
+            String token = i.getStringExtra(TOKEN);
+            if (token != null) sToken = token;
+        }
+        // Never into the log lines the receivers write out of the extras. Only once let through:
+        // the other registration may be handed the same Intent, and still has to read it.
+        i.removeExtra(TOKEN);
+        return true;
+    }
+
+    private static boolean check(Receiver r, Intent i) {
         int uid = r.getSentFromUid();
-        if (r.viaDump) return uid == Process.INVALID_UID;
+        // One carrying our token is the open registration's, even with DUMP behind it.
+        if (r.viaDump) return uid == Process.INVALID_UID && !carriesOurs(i);
         if (uid == Process.INVALID_UID) {
-            // Anonymous: adb's, answered by the DUMP registration if the sender holds it.
+            // The wallpaper process, handing SystemUI's token back.
+            if (carriesOurs(i)) return true;
+            // Otherwise adb's, answered by the DUMP registration if the sender holds it.
             return false;
         }
         // root, system, shell, and this process's own app.

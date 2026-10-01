@@ -1917,6 +1917,7 @@ private class MiniPlayerController(
             MiniPlayerRuntime.rimSoon(context)
         }
         updateDiscs()
+        lottiesFollowSight()
         traceScene()
         true
     } finally { android.os.Trace.endSection() } }
@@ -9524,7 +9525,8 @@ private class MiniPlayerController(
             Xp.callMethod(lottie, "setRepeatCount", anim.repeat)
             Xp.callMethod(lottie, "setRepeatMode", 1)
             if (anim.autoplay && !MiniPlayerScene.aodActive) {
-                if (Xp.callMethod(lottie, "isAnimating") != true) {
+                // Held unseen: its place coming back plays it (lottiesFollowSight), not a refresh.
+                if (lottie !in lottiesUnseen && Xp.callMethod(lottie, "isAnimating") != true) {
                     lottieNote("asked to resume vis=${lottie.drawable?.isVisible}", lottie)
                     Xp.callMethod(lottie, "resumeAnimation")
                 }
@@ -9547,9 +9549,52 @@ private class MiniPlayerController(
         for (held in focusLotties.values) runCatching {
             val lottie = held.second
             if (doze) Xp.callMethod(lottie, "pauseAnimation")
-            else if (lottieAutoplay[lottie] == true && Xp.callMethod(lottie, "isAnimating") != true)
+            else if (lottieAutoplay[lottie] == true && lottie !in lottiesUnseen &&
+                Xp.callMethod(lottie, "isAnimating") != true)
                 Xp.callMethod(lottie, "resumeAnimation")
         }
+    }
+
+    /** Players held because their place could not be seen, for the place coming back to play. */
+    private val lottiesUnseen = java.util.WeakHashMap<android.widget.ImageView, Boolean>()
+
+    /**
+     * A lit lock screen holds every place's Lottie that nobody can see; the place coming back
+     * plays it again. A Lottie drawable pauses itself when its ImageView goes GONE or its window
+     * hides (setVisible), but not when a place is faded out - alpha or transitionAlpha 0 on it
+     * or an ancestor, which is how most places here are put away - and one that loops redraws
+     * the whole NotificationShade every frame, seen or not: a looping one (the clock's island)
+     * kept a still lock screen at ~95fps, main and RenderThread 68% of a core (2026-10-01). Asked
+     * before every frame: an unseen player's own tick is what schedules the frame that holds it,
+     * and the frame a place comes back in is the one that plays it again.
+     */
+    private fun lottiesFollowSight() {
+        if (focusLotties.isEmpty() || MiniPlayerScene.aodActive) return
+        for ((owner, held) in focusLotties) runCatching {
+            val lottie = held.second
+            if (lottieAutoplay[lottie] != true) return@runCatching
+            val seen = (owner as? View)?.let(::onScreen) ?: true
+            val playing = Xp.callMethod(lottie, "isAnimating") == true
+            if (playing && !seen) {
+                Xp.callMethod(lottie, "pauseAnimation")
+                lottiesUnseen[lottie] = true
+                lottieNote("unseen, held", lottie)
+            } else if (seen && lottiesUnseen.remove(lottie) != null && !playing) {
+                Xp.callMethod(lottie, "resumeAnimation")
+                lottieNote("seen, played", lottie)
+            }
+        }
+    }
+
+    /** Drawn and not faded out: attached to a showing window, shown, and no alpha 0 up the chain. */
+    private fun onScreen(v: View): Boolean {
+        if (!v.isAttachedToWindow || v.windowVisibility != View.VISIBLE || !v.isShown) return false
+        var p: View? = v
+        while (p != null) {
+            if (p.alpha <= 0f || p.transitionAlpha <= 0f) return false
+            p = p.parent as? View
+        }
+        return true
     }
 
     /** Players no place shows any more, by picture, for the next place that plays the same. */
@@ -9557,6 +9602,7 @@ private class MiniPlayerController(
 
     private fun spareLottie(held: Pair<String, android.widget.ImageView>) {
         runCatching { Xp.callMethod(held.second, "pauseAnimation") }
+        lottiesUnseen.remove(held.second)
         val spares = lottieSpares.getOrPut(held.first) { ArrayDeque() }
         if (spares.none { it === held.second } && spares.size < LIVE_SPARES) spares.addLast(held.second)
     }

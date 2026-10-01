@@ -2109,11 +2109,13 @@ public class Main extends XposedModule {
         }
         sReceiverRegistered = true;
         sAppCtx = ctx;
+        // Before the first send: the wallpaper process answers with it (ProbeGuard).
+        ProbeGuard.mint();
 
         class Probe extends ProbeGuard.Receiver {
             @Override
             public void onReceive(Context c, Intent i) {
-                if (!ProbeGuard.admit(this)) return;
+                if (!ProbeGuard.admit(this, i)) return;
                 String op = i.getStringExtra("op");
                 if (op == null) op = "info";
                 Xp.log(TAG + "recv op=" + op + " extras=" + i.getExtras());

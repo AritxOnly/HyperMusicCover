@@ -165,7 +165,7 @@ internal object AmapImmerse {
         appCtx = ctx
         class Probe : ProbeGuard.Receiver() {
             override fun onReceive(c: Context, i: Intent) {
-                if (!ProbeGuard.admit(this)) return
+                if (!ProbeGuard.admit(this, i)) return
                 if (i.getBooleanExtra("ask", false)) {
                     Xp.log(TAG + "SystemUI asked, armed=" + armed)
                     if (armed) tell(true)
