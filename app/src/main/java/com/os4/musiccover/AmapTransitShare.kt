@@ -36,6 +36,9 @@ import java.util.concurrent.atomic.AtomicInteger
  * answered in this process, the way SceneService answers them, without ever reaching Settings.
  * A phone with a real IntelligentIntent provider keeps it: only a null acquire is stood in for.
  *
+ * HyperOS gives 高德 a focus island only for walking and cycling, so the ride gets one of its own
+ * here as well (AmapTransitIsland), posted as 高德 with every state passed on.
+ *
  * Whether 高德's script picks this device on a phone that is not an OPPO is decided in its
  * script (encrypted, assets/ajx.bundle/bundles.oajx), not in its Java; the probe says what
  * happened: how many times 高德 asked for the authority, what it queried, what it shared.
@@ -208,9 +211,24 @@ internal object AmapTransitShare {
                 .putExtra("action", action)
             if (entity == null) i.putExtra("do", "end") else i.putExtra("json", entity)
             ProbeGuard.send(ctx, i)
+            // HyperOS has no island for a ride, so the page would have nothing to open from.
+            AmapTransitIsland.update(ctx, entity)
         } catch (t: Throwable) {
             Xp.log(TAG + "tell failed: $t")
         }
+    }
+
+    /**
+     * `AMAPPROBE --es transit demo|end`: a made-up ride (AmapTransitScene.DEMO) passed on as if
+     * 高德 had shared it - SystemUI's page and the island both - or its end; for trying the whole
+     * way from the island to the page without riding a train.
+     */
+    fun probe(what: String): String {
+        when (what) {
+            "demo" -> tell(JSONObject(AmapTransitScene.DEMO).toString(), "demo")
+            "end" -> tell(null, "demo")
+        }
+        return describe()
     }
 
     /** SystemUI started over: the last state again, if the navigation has not ended since. */

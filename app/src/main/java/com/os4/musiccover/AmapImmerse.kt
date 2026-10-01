@@ -34,7 +34,8 @@ import java.util.concurrent.atomic.AtomicInteger
  *
  * `adb shell am broadcast -a com.os4.musiccover.AMAPPROBE` answers in the main process only.
  * With `--ez ask true` - what a freshly started SystemUI sends - it re-sends the start instead,
- * if a page is up.
+ * if a page is up. With `--es transit demo` (or `end`) it plays a made-up subway ride through
+ * AmapTransitShare, island and all.
  * The class names here are 高德's own and unobfuscated: the AJX bridge finds modules by name, so
  * they cannot be minified away.
  */
@@ -174,6 +175,10 @@ internal object AmapImmerse {
         class Probe : ProbeGuard.Receiver() {
             override fun onReceive(c: Context, i: Intent) {
                 if (!ProbeGuard.admit(this, i)) return
+                i.getStringExtra("transit")?.let {
+                    resultData = AmapTransitShare.probe(it)
+                    return
+                }
                 if (i.getBooleanExtra("ask", false)) {
                     Xp.log(TAG + "SystemUI asked, armed=" + armed)
                     if (armed) tell(true)

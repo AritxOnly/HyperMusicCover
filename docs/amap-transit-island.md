@@ -175,6 +175,11 @@ HyperOS 上没有 SceneService，高德拿不到 `IntelligentIntent`，就认为
      `queryFeature` / `shareIntent` / `deleteIntent`，不会真的打到 Settings；
    - 收到公交 JSON 后去掉 `path`，经 `ProbeGuard` 广播给 SystemUI（`op transit`）。
    - 真有 IntelligentIntent provider 的手机（真 ColorOS）不受影响：只替换 null。
+   - **补发焦点岛**（`AmapTransitIsland.kt`）：高德在澎湃上只有步行/骑行才发焦点通知（id 1236），
+     公交/地铁段没有岛可点。所以每收到一次公交状态，就以高德身份、按高德步行岛同样的格式
+     （protocol 1 扁平模板：title / content / ticker / aodPic）发一条 id 1237 的焦点通知，
+     文案与页面一致，图标是线路色圆标加线路号；到「下一站下车 / 换乘 / 到站」时上浮一次。
+     步行段或行程结束就撤掉，交还给高德自己的步行岛。锁屏上点它打开逐站页，别处点它回到高德导航。
 2. **SystemUI**（`AmapTransitScene.java`）
    - 一个新的 `ImmersiveScene`，在进程内自己画：线路色底、站名、剩余站、三站进度条、地标背景图和名字图；
    - 选图规则照搬 4.1，地标表照搬 4.3（`AmapTransitLandmarks.java`）；
@@ -185,7 +190,11 @@ HyperOS 上没有 SceneService，高德拿不到 `IntelligentIntent`，就认为
 # 高德进程：是否请求过 IntelligentIntent、问了什么、发了几次（最后一行 transit: ...）
 adb shell am broadcast -a com.os4.musiccover.AMAPPROBE
 
-# SystemUI：不用坐地铁，灌一段演示数据（北京 1 号线，下一站天安门东，会匹配故宫地标图）
+# 整条链路演示（推荐）：高德进程假装收到一段地铁数据 → 发焦点岛 + 转给 SystemUI；锁屏点岛即可打开
+adb shell am broadcast -a com.os4.musiccover.AMAPPROBE --es transit demo
+adb shell am broadcast -a com.os4.musiccover.AMAPPROBE --es transit end
+
+# 只测 SystemUI 页面：灌一段演示数据（北京 1 号线，下一站天安门东，会匹配故宫地标图）
 adb shell am broadcast -a com.os4.musiccover.PROBE -p com.android.systemui --es op transit --ez demo true
 # 不点焦点岛，直接打开 / 关闭这一页
 adb shell am broadcast -a com.os4.musiccover.PROBE -p com.android.systemui --es op immersive --es id amap-transit --es do open
@@ -199,7 +208,8 @@ adb shell am broadcast -a com.os4.musiccover.PROBE -p com.android.systemui --es 
 | 文件 | 进程 | 作用 |
 |---|---|---|
 | `AmapTransitShare.kt` | 高德 | 冒充 `IntelligentIntent`，接住 JSON 转给 SystemUI |
-| `AmapImmerse.kt` | 高德 | 启动上面的 hook；SystemUI 重启时重发最后一次状态；探针多一行 |
+| `AmapTransitIsland.kt` | 高德 | 公交/地铁段补发焦点岛（id 1237） |
+| `AmapImmerse.kt` | 高德 | 启动上面的 hook；SystemUI 重启时重发最后一次状态；探针多一行，`--es transit demo/end` |
 | `AmapTransitScene.java` | SystemUI | 数据模型、OPPO 的选站/选图规则、图片下载缓存（`cache/mc-transit/`）、页面绘制 |
 | `AmapTransitLandmarks.java` | SystemUI | OPPO 地标表（42 城）、CDN 地址、0.8 km 匹配 |
 | `ImmersiveHost.java` | SystemUI | 场景列表里排在地图前面，只在公交/地铁段认领高德的焦点岛 |
@@ -210,6 +220,7 @@ adb shell am broadcast -a com.os4.musiccover.PROBE -p com.android.systemui --es 
 - **最大的未知**：高德的 JS（`assets/ajx.bundle/bundles.oajx`，已加密）在非 OPPO 机型上是否会启用
   OppoIntelligentCard 设备。启用了，上面的方案就能拿到数据；没启用，`acquires=0`，需要再想办法
   （例如伪装机型，或直接在 JS 设备注册处动手）。必须真机跑一趟公交/地铁导航确认。
-- 高德在 HyperOS 上公交导航时是否也发焦点通知（模块靠点焦点岛打开页面）。
+- 已确认：高德在澎湃上公交/地铁导航不发焦点通知，所以由模块补发（见上）。补发的通知能否被系统
+  认作焦点通知，取决于澎湃对高德的焦点白名单，需要真机看一眼。
 - 高德多久发一次数据（每站一次还是每秒一次）未知，SystemUI 端按 10 分钟无数据视为结束。
 - 图片来自 OPPO CDN，OPPO 随时可能改路径或加鉴权。

@@ -1157,7 +1157,7 @@ final class AmapTransitScene implements ImmersiveScene {
      * A ride on Beijing's line 1 towards 四惠东, the next stop 天安门东 - by the Forbidden City,
      * so the landmark shows. The shape is 高德's GaoDePtIntentEntity; the coordinates are real.
      */
-    private static final String DEMO = "{\"status\":\"3\",\"destCitycode\":\"010\","
+    static final String DEMO = "{\"status\":\"3\",\"destCitycode\":\"010\","
             + "\"destStation\":\"王府井\",\"exitName\":\"A口\",\"guideInfo\":\"\","
             + "\"naviInfo\":[{\"isCurrent\":true,\"transportType\":\"2\",\"lineName\":\"地铁1号线\","
             + "\"lineDirection\":\"四惠东\",\"lineBgColor\":\"#C23A30\",\"lineTextColor\":\"#FFFFFF\","
