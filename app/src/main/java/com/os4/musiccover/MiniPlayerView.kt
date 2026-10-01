@@ -72,6 +72,16 @@ internal class MiniPlayerView(context: Context) : FrameLayout(context) {
     private var lastAppearance: String? = null
     private var lastMaterial: String? = null
     private var lastArtwork: Bitmap? = null
+    private var marqueeEnabled = true
+
+    private fun setMarqueeEnabled(enabled: Boolean) {
+        if (marqueeEnabled == enabled) return
+        marqueeEnabled = enabled
+        for (line in arrayOf(title, artist)) {
+            line.isSelected = enabled
+            line.ellipsize = if (enabled) TextUtils.TruncateAt.MARQUEE else TextUtils.TruncateAt.END
+        }
+    }
 
     /**
      * The picture as it is, no corner cut and no plate under it: a focus template's picture,
@@ -195,6 +205,7 @@ internal class MiniPlayerView(context: Context) : FrameLayout(context) {
         showNative: () -> Unit,
         openCover: () -> Unit,
     ) { android.os.Trace.beginSection("MC v.bind"); try {
+        setMarqueeEnabled(config.optBoolean(MiniPlayerConfig.MARQUEE, true))
         val appearance = "$config|$material"
         if (lastAppearance != appearance) {
             lastAppearance = appearance
