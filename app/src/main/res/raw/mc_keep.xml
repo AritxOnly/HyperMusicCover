@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Inflated by SystemUI from 高德's focus notification (AmapTransitIsland), never by this app. -->
+<resources xmlns:tools="http://schemas.android.com/tools"
+    tools:keep="@layout/mc_transit_card" />

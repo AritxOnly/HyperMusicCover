@@ -1,8 +1,6 @@
 package com.os4.musiccover;
 
 import android.content.Context;
-import android.content.Intent;
-import android.net.Uri;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
@@ -230,32 +228,6 @@ final class AmapTransitScene implements ImmersiveScene {
     public void setFade(float alpha) {
         if (mView != null) mView.setFade(alpha);
         if (mGround != null) mGround.setFade(alpha);
-    }
-
-    /** The 乘车码 pill is the page's own tap target; the rest of a tap is the row's. */
-    @Override
-    public boolean pageHit(float rawX, float rawY) {
-        return mView != null && mView.rideHit(rawX, rawY);
-    }
-
-    @Override
-    public void pagePress(boolean down) {
-        if (mView != null) mView.setRidePressed(down);
-    }
-
-    @Override
-    public void onPageTap() {
-        TransitView v = mView;
-        if (v == null) return;
-        String url = v.deepLink();
-        try {
-            v.getContext().startActivity(new Intent(Intent.ACTION_VIEW,
-                    Uri.parse(url.isEmpty() ? "amapuri://amap" : url)).setPackage(PKG)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
-            Xp.log(TAG + "ride code opened");
-        } catch (Throwable t) {
-            Xp.log(TAG + "ride code open failed: " + t);
-        }
     }
 
     @Override
@@ -520,9 +492,6 @@ final class AmapTransitScene implements ImmersiveScene {
         String secondary = "";
         Nodes nodes;
         boolean subway;
-        /** The 乘车码 pill, and where it jumps; shown while riding a subway. */
-        boolean rideCode;
-        String deepLink = "";
         Art.Pick art = Art.Pick.NONE;
 
         boolean sameArt(Frame o) {
@@ -537,7 +506,6 @@ final class AmapTransitScene implements ImmersiveScene {
             f.direction = direction(l.lineDirection);
             f.lineBg = l.lineBg;
             f.lineText = l.lineText;
-            f.deepLink = t.deepLink;
             int index = Math.max(0, Math.min(l.via.size() - l.remain, l.via.size() - 1));
             String shown = shownStation(t, index);
             switch (t.status) {
@@ -574,8 +542,6 @@ final class AmapTransitScene implements ImmersiveScene {
                     f.secondary = t.guideInfo;
                     break;
             }
-            // 高德's ride code sits on the card while you are on a subway, not once arrived.
-            f.rideCode = l.subway() && !"7".equals(t.status) && !t.deepLink.isEmpty();
             f.art = Art.Pick.of(t, shown, index);
             return f;
         }
@@ -961,6 +927,115 @@ final class AmapTransitScene implements ImmersiveScene {
         }
     }
 
+    /**
+     * The track, for the page and for the island's card alike (AmapTransitIsland): it reaches
+     * TOP above the bar's line and BOTTOM below it, the badge over a transfer stop and the names.
+     */
+    static final class Track {
+        static final float TOP_DP = 33f;
+        static final float BOTTOM_DP = 36f;
+
+        final float dp;
+        private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final TextPaint node = new TextPaint(Paint.ANTI_ALIAS_FLAG);
+        private final RectF rect = new RectF();
+
+        Track(float dp) {
+            this.dp = dp;
+            node.setTypeface(Typeface.create("sans-serif", Typeface.NORMAL));
+            node.setTextAlign(Paint.Align.CENTER);
+        }
+
+        /**
+         * The three stops, OPPO-style (五一路): a bar in the line's colour, the part behind the
+         * train full and the part ahead dim; the middle stop the current one; a transfer stop a
+         * ⇄ ring with a square line-number badge over it, in that line's colour; the names below.
+         */
+        void draw(Canvas canvas, Frame f, float left, float right, float y) {
+            Nodes n = f.nodes;
+            float mid = (left + right) / 2f;
+            float[] xs = {left, mid, right};
+            // Where the train is: on the middle stop, or between it and the next.
+            float trainX = n.focus == 0 ? mid : (mid + right) / 2f;
+            fill.setStrokeCap(Paint.Cap.ROUND);
+            fill.setStrokeWidth(5f * dp);
+            fill.setColor(f.lineBg);
+            canvas.drawLine(left, y, trainX, y, fill);
+            fill.setColor(0x33ffffff);
+            canvas.drawLine(trainX, y, right, y, fill);
+            node.setTextSize(13f * dp);
+            Paint.FontMetrics fn = node.getFontMetrics();
+            float slot = (right - left) / 2f - 6f * dp;
+            for (int i = 0; i < 3; i++) {
+                boolean passed = xs[i] <= trainX + 0.5f;
+                boolean current = i == 1;
+                int tint = passed || current ? f.lineBg : 0xff4a4d55;
+                if (n.transfer[i]) {
+                    // A transfer stop: a white-ringed pill with the interchange arrows.
+                    float rw = 15f * dp;
+                    float rh = 11f * dp;
+                    rect.set(xs[i] - rw, y - rh, xs[i] + rw, y + rh);
+                    fill.setStyle(Paint.Style.FILL);
+                    fill.setColor(tint);
+                    canvas.drawRoundRect(rect, rh, rh, fill);
+                    fill.setStyle(Paint.Style.STROKE);
+                    fill.setStrokeWidth(1.6f * dp);
+                    fill.setColor(0xffffffff);
+                    canvas.drawRoundRect(rect, rh, rh, fill);
+                    fill.setStyle(Paint.Style.FILL);
+                    drawTransferGlyph(canvas, xs[i], y, 6f * dp);
+                } else {
+                    float r = current ? 6.5f : 5f;
+                    fill.setColor(tint);
+                    canvas.drawCircle(xs[i], y, r * dp, fill);
+                    fill.setColor(Color.WHITE);
+                    canvas.drawCircle(xs[i], y, r * 0.42f * dp, fill);
+                }
+                // The line-number badge over a transfer stop.
+                if (n.badge[i] != null) drawBadge(canvas, n.badge[i], n.badgeColor[i], xs[i], y - 15f * dp);
+                // The name below.
+                node.setColor(current ? 0xf2ffffff : 0x99ffffff);
+                node.setFakeBoldText(current);
+                String name = TextUtils.ellipsize(n.names[i] == null ? "" : n.names[i], node, slot,
+                        TextUtils.TruncateAt.END).toString();
+                canvas.drawText(name, xs[i], y + 16f * dp - fn.top, node);
+            }
+            fill.setStrokeWidth(5f * dp);
+        }
+
+        /** The interchange arrows (⇄) at a transfer stop, white. */
+        private void drawTransferGlyph(Canvas canvas, float cx, float cy, float s) {
+            fill.setColor(0xffffffff);
+            fill.setStyle(Paint.Style.STROKE);
+            fill.setStrokeWidth(1.4f * dp);
+            float g = 2.4f * dp;
+            canvas.drawLine(cx - s, cy - g, cx + s * 0.6f, cy - g, fill);
+            canvas.drawLine(cx + s * 0.6f, cy - g - 2f * dp, cx + s, cy - g, fill);
+            canvas.drawLine(cx + s * 0.6f, cy - g + 2f * dp, cx + s, cy - g, fill);
+            canvas.drawLine(cx + s, cy + g, cx - s * 0.6f, cy + g, fill);
+            canvas.drawLine(cx - s * 0.6f, cy + g - 2f * dp, cx - s, cy + g, fill);
+            canvas.drawLine(cx - s * 0.6f, cy + g + 2f * dp, cx - s, cy + g, fill);
+            fill.setStyle(Paint.Style.FILL);
+        }
+
+        /** A line-number square in its colour, white number: 五一路's green 5, blue 2. */
+        private void drawBadge(Canvas canvas, String code, int color, float cx, float bottom) {
+            node.setTextSize(11f * dp);
+            node.setFakeBoldText(true);
+            node.setColor(0xffffffff);
+            float tw = node.measureText(code);
+            float pad = 4f * dp;
+            float bw = Math.max(16f * dp, tw + 2f * pad);
+            float bh = 16f * dp;
+            rect.set(cx - bw / 2f, bottom - bh, cx + bw / 2f, bottom);
+            fill.setColor(color);
+            canvas.drawRoundRect(rect, 4f * dp, 4f * dp, fill);
+            Paint.FontMetrics fm = node.getFontMetrics();
+            canvas.drawText(code, cx, rect.centerY() - (fm.ascent + fm.descent) / 2f, node);
+            node.setFakeBoldText(false);
+        }
+    }
+
     // ---------------------------------------------------------------- the page
 
     /** The words, the track and the moving landmark, over the ground. */
@@ -971,18 +1046,15 @@ final class AmapTransitScene implements ImmersiveScene {
         private final TextPaint mSecondary = new TextPaint(Paint.ANTI_ALIAS_FLAG);
         private final TextPaint mLine = new TextPaint(Paint.ANTI_ALIAS_FLAG);
         private final TextPaint mDirection = new TextPaint(Paint.ANTI_ALIAS_FLAG);
-        private final TextPaint mNode = new TextPaint(Paint.ANTI_ALIAS_FLAG);
         private final Paint mFill = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final RectF mRect = new RectF();
+        private final Track mTrack;
 
         private Frame mF;
         private Drawable mArt;
         private Bitmap mStill;
         private Drawable mLabel;
         private boolean mLive;
-        private final RectF mRidePill = new RectF();
-        private boolean mRidePressed;
-        private final int[] mAt = new int[2];
 
         TransitView(Context ctx) {
             super(ctx);
@@ -998,8 +1070,7 @@ final class AmapTransitScene implements ImmersiveScene {
             mLine.setTypeface(bold);
             mDirection.setTypeface(plain);
             mDirection.setColor(0xccffffff);
-            mNode.setTypeface(plain);
-            mNode.setTextAlign(Paint.Align.CENTER);
+            mTrack = new Track(mDp);
         }
 
         void setFrame(Frame f) {
@@ -1024,27 +1095,6 @@ final class AmapTransitScene implements ImmersiveScene {
 
         boolean animating() {
             return mLive && mArt instanceof AnimatedImageDrawable;
-        }
-
-        /** Whether a finger here, in screen coordinates, is on the 乘车码 pill. */
-        boolean rideHit(float rawX, float rawY) {
-            if (mRidePill.isEmpty() || !isShown()) return false;
-            getLocationOnScreen(mAt);
-            float pad = 8f * mDp;
-            float x = rawX - mAt[0];
-            float y = rawY - mAt[1];
-            return x >= mRidePill.left - pad && x <= mRidePill.right + pad
-                    && y >= mRidePill.top - pad && y <= mRidePill.bottom + pad;
-        }
-
-        void setRidePressed(boolean pressed) {
-            if (mRidePressed == pressed) return;
-            mRidePressed = pressed;
-            invalidate();
-        }
-
-        String deepLink() {
-            return mF == null ? "" : mF.deepLink;
         }
 
         /** On the lit lock screen and shown: the landmark moves. */
@@ -1176,32 +1226,6 @@ final class AmapTransitScene implements ImmersiveScene {
                 mLabel.draw(canvas);
             }
 
-            // The 乘车码 pill, top-right, as OPPO's card carries it on a subway.
-            mRidePill.setEmpty();
-            if (f.rideCode) {
-                mSecondary.setTextSize(14f * mDp);
-                String ride = "乘车码";
-                float tw = mSecondary.measureText(ride);
-                float ph = 30f * mDp;
-                float pw = tw + 28f * mDp;
-                float right = w - 24f * mDp;
-                float top = h * WORDS_TOP;
-                mRidePill.set(right - pw, top, right, top + ph);
-                canvas.save();
-                if (mRidePressed) canvas.scale(0.92f, 0.92f, mRidePill.centerX(), mRidePill.centerY());
-                mFill.setColor(0x26ffffff);
-                canvas.drawRoundRect(mRidePill, ph / 2f, ph / 2f, mFill);
-                mFill.setColor(0xffffffff);
-                float dot = 5f * mDp;
-                canvas.drawCircle(mRidePill.left + 14f * mDp, mRidePill.centerY(), dot, mFill);
-                mSecondary.setColor(0xf2ffffff);
-                Paint.FontMetrics fr = mSecondary.getFontMetrics();
-                canvas.drawText(ride, mRidePill.left + 14f * mDp + dot + 5f * mDp,
-                        mRidePill.centerY() - (fr.ascent + fr.descent) / 2f, mSecondary);
-                canvas.restore();
-                mSecondary.setColor(0xb3ffffff);
-            }
-
             // The line's pill and where it is going, one row, centred.
             float y = h * WORDS_TOP;
             mLine.setTextSize(14f * mDp);
@@ -1242,99 +1266,7 @@ final class AmapTransitScene implements ImmersiveScene {
                 canvas.drawText(sec, cx, y - fs.top, mSecondary);
             }
 
-            if (f.nodes != null) drawTrack(canvas, f, w, h);
-        }
-
-        /**
-         * The three stops, OPPO-style (五一路): a bar in the line's colour, the part behind the
-         * train full and the part ahead dim; the middle stop the current one; a transfer stop a
-         * ⇄ ring with a square line-number badge over it, in that line's colour; the names below.
-         */
-        private void drawTrack(Canvas canvas, Frame f, int w, int h) {
-            Nodes n = f.nodes;
-            float y = h * TRACK_Y;
-            float left = w * 0.17f;
-            float right = w * 0.83f;
-            float mid = w / 2f;
-            float[] xs = {left, mid, right};
-            // Where the train is: on the middle stop, or between it and the next.
-            float trainX = n.focus == 0 ? mid : (mid + right) / 2f;
-            mFill.setStrokeCap(Paint.Cap.ROUND);
-            mFill.setStrokeWidth(5f * mDp);
-            mFill.setColor(f.lineBg);
-            canvas.drawLine(left, y, trainX, y, mFill);
-            mFill.setColor(0x33ffffff);
-            canvas.drawLine(trainX, y, right, y, mFill);
-            mNode.setTextSize(13f * mDp);
-            Paint.FontMetrics fn = mNode.getFontMetrics();
-            float slot = (right - left) / 2f - 6f * mDp;
-            for (int i = 0; i < 3; i++) {
-                boolean passed = xs[i] <= trainX + 0.5f;
-                boolean current = i == 1;
-                int tint = passed || current ? f.lineBg : 0xff4a4d55;
-                if (n.transfer[i]) {
-                    // A transfer stop: a white-ringed pill with the interchange arrows.
-                    float rw = 15f * mDp;
-                    float rh = 11f * mDp;
-                    mRect.set(xs[i] - rw, y - rh, xs[i] + rw, y + rh);
-                    mFill.setStyle(Paint.Style.FILL);
-                    mFill.setColor(tint);
-                    canvas.drawRoundRect(mRect, rh, rh, mFill);
-                    mFill.setStyle(Paint.Style.STROKE);
-                    mFill.setStrokeWidth(1.6f * mDp);
-                    mFill.setColor(0xffffffff);
-                    canvas.drawRoundRect(mRect, rh, rh, mFill);
-                    mFill.setStyle(Paint.Style.FILL);
-                    drawTransferGlyph(canvas, xs[i], y, 6f * mDp);
-                } else {
-                    float r = current ? 6.5f : 5f;
-                    mFill.setColor(tint);
-                    canvas.drawCircle(xs[i], y, r * mDp, mFill);
-                    mFill.setColor(Color.WHITE);
-                    canvas.drawCircle(xs[i], y, r * 0.42f * mDp, mFill);
-                }
-                // The line-number badge over a transfer stop.
-                if (n.badge[i] != null) drawBadge(canvas, n.badge[i], n.badgeColor[i], xs[i], y - 15f * mDp);
-                // The name below.
-                mNode.setColor(current ? 0xf2ffffff : 0x99ffffff);
-                mNode.setFakeBoldText(current);
-                String name = TextUtils.ellipsize(n.names[i] == null ? "" : n.names[i], mNode, slot,
-                        TextUtils.TruncateAt.END).toString();
-                canvas.drawText(name, xs[i], y + 16f * mDp - fn.top, mNode);
-            }
-            mFill.setStrokeWidth(5f * mDp);
-        }
-
-        /** The interchange arrows (⇄) at a transfer stop, white. */
-        private void drawTransferGlyph(Canvas canvas, float cx, float cy, float s) {
-            mFill.setColor(0xffffffff);
-            mFill.setStyle(Paint.Style.STROKE);
-            mFill.setStrokeWidth(1.4f * mDp);
-            float g = 2.4f * mDp;
-            canvas.drawLine(cx - s, cy - g, cx + s * 0.6f, cy - g, mFill);
-            canvas.drawLine(cx + s * 0.6f, cy - g - 2f * mDp, cx + s, cy - g, mFill);
-            canvas.drawLine(cx + s * 0.6f, cy - g + 2f * mDp, cx + s, cy - g, mFill);
-            canvas.drawLine(cx + s, cy + g, cx - s * 0.6f, cy + g, mFill);
-            canvas.drawLine(cx - s * 0.6f, cy + g - 2f * mDp, cx - s, cy + g, mFill);
-            canvas.drawLine(cx - s * 0.6f, cy + g + 2f * mDp, cx - s, cy + g, mFill);
-            mFill.setStyle(Paint.Style.FILL);
-        }
-
-        /** A line-number square in its colour, white number: 五一路's green 5, blue 2. */
-        private void drawBadge(Canvas canvas, String code, int color, float cx, float bottom) {
-            mNode.setTextSize(11f * mDp);
-            mNode.setFakeBoldText(true);
-            mNode.setColor(0xffffffff);
-            float tw = mNode.measureText(code);
-            float pad = 4f * mDp;
-            float bw = Math.max(16f * mDp, tw + 2f * pad);
-            float bh = 16f * mDp;
-            mRect.set(cx - bw / 2f, bottom - bh, cx + bw / 2f, bottom);
-            mFill.setColor(color);
-            canvas.drawRoundRect(mRect, 4f * mDp, 4f * mDp, mFill);
-            Paint.FontMetrics fm = mNode.getFontMetrics();
-            canvas.drawText(code, cx, mRect.centerY() - (fm.ascent + fm.descent) / 2f, mNode);
-            mNode.setFakeBoldText(false);
+            if (f.nodes != null) mTrack.draw(canvas, f, w * 0.17f, w * 0.83f, h * TRACK_Y);
         }
     }
 

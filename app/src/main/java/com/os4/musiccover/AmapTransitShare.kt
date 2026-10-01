@@ -67,6 +67,10 @@ internal object AmapTransitShare {
     private val ours: MutableSet<ContentProviderClient> =
         Collections.synchronizedSet(Collections.newSetFromMap(WeakHashMap()))
 
+    private const val WEARABLE = "com.amap.bundle.wearable.ajx.NativesModuleWearable"
+    /** The script's last call of each kind and bizType, oldest first (watchWearable). */
+    private val wearable = LinkedHashMap<String, String>()
+
     private val acquires = AtomicInteger()
     private val queries = AtomicInteger()
     private val shares = AtomicInteger()
@@ -78,7 +82,9 @@ internal object AmapTransitShare {
     @Volatile private var lastSent: String? = null
     @Volatile private var lastSentAt = 0L
 
-    fun handle() {
+    fun handle(cl: ClassLoader) {
+        AmapTransitIsland.handle()
+        watchWearable(cl)
         try {
             for (name in arrayOf("acquireUnstableContentProviderClient", "acquireContentProviderClient")) {
                 Xp.hookAll(ContentResolver::class.java, name) { chain ->
@@ -238,6 +244,41 @@ internal object AmapTransitShare {
         send(entity, "resend")
     }
 
+    /**
+     * What 高德's script asks of its device layer (NativesModuleWearable, the AJX module behind
+     * every OPPO / vivo / Honor / Xiaomi card): which bizTypes it begins and what it sends them.
+     * The OPPO card is bizType 10200 (thid_sdk_template_oppo_intelligent, il3) and nothing in
+     * 高德's Java holds it back on another phone; whether the script begins it is the question,
+     * and a ride with this on answers it.
+     */
+    private fun watchWearable(cl: ClassLoader) {
+        try {
+            val module = Xp.findClass(WEARABLE, cl)
+            for (name in arrayOf("bizBegin", "bizBeginWithData", "bizEnd", "sendMessage",
+                    "sendNotify", "sendLockScreenMessage")) {
+                try {
+                    Xp.hookAll(module, name) { chain ->
+                        val a = chain.args
+                        val biz = a.firstOrNull { it is Int } as Int?
+                        val text = a.firstOrNull { it is String } as String?
+                        val line = "$name($biz)" + (text?.let { " " + it.take(160) } ?: "")
+                        synchronized(wearable) {
+                            wearable.remove(line.substringBefore(' '))
+                            wearable[line.substringBefore(' ')] = line
+                            while (wearable.size > 12) wearable.remove(wearable.keys.first())
+                        }
+                        if (name != "sendMessage" && name != "sendNotify") Xp.log(TAG + "script: $line")
+                        chain.proceed()
+                    }
+                } catch (t: Throwable) {
+                    Xp.log(TAG + "$name not watched: $t")
+                }
+            }
+        } catch (t: Throwable) {
+            Xp.log(TAG + "wearable module not watched: $t")
+        }
+    }
+
     fun describe(): String {
         val sb = StringBuilder("transit: acquires=").append(acquires.get())
             .append(" queries=").append(queries.get())
@@ -248,6 +289,12 @@ internal object AmapTransitShare {
             sb.append(" lastShare=").append(lastShare).append(' ')
                 .append(SystemClock.uptimeMillis() - lastShareAt).append("ms ago")
         }
-        return sb.append(" live=").append(lastSent != null).toString()
+        sb.append(" live=").append(lastSent != null)
+        sb.append('\n').append(AmapTransitIsland.describe())
+        synchronized(wearable) {
+            sb.append("\nscript: ").append(if (wearable.isEmpty()) "nothing yet" else
+                wearable.values.joinToString("\n  "))
+        }
+        return sb.toString()
     }
 }

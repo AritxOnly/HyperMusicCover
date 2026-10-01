@@ -127,7 +127,7 @@ internal object AmapImmerse {
             Xp.log(TAG + "immerse module hooks failed: " + t)
         }
         // The bus and subway page's half: ColorOS 17's IntelligentIntent provider, stood in for.
-        AmapTransitShare.handle()
+        AmapTransitShare.handle(cl)
         try {
             // The service's sendPreviewCommandToAjx: the one static (boolean) method on it.
             val svc = Xp.findClass(SERVICE, cl)
@@ -177,6 +177,10 @@ internal object AmapImmerse {
                 if (!ProbeGuard.admit(this, i)) return
                 i.getStringExtra("transit")?.let {
                     resultData = AmapTransitShare.probe(it)
+                    return
+                }
+                i.getStringExtra("island")?.let {
+                    resultData = AmapTransitIsland.setStyle(appCtx, it)
                     return
                 }
                 if (i.getBooleanExtra("ask", false)) {

@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The bus and subway ride's focus card on HyperOS (AmapTransitIsland), ColorOS 17's 公交/地铁
+  card in a focus notification's own layout (miui.focus.rv). Posted from 高德's process but
+  inflated from this package by SystemUI, so only RemoteViews' views. The ground and the track
+  are pictures drawn in 高德's process; the words are text, so they keep the system's font.
+-->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="176dp">
+
+    <ImageView
+        android:id="@+id/mc_transit_ground"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:importantForAccessibility="no"
+        android:scaleType="centerCrop" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:paddingStart="18dp"
+        android:paddingTop="14dp"
+        android:paddingEnd="18dp">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <ImageView
+                android:id="@+id/mc_transit_line"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:importantForAccessibility="no" />
+
+            <TextView
+                android:id="@+id/mc_transit_direction"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:layout_weight="1"
+                android:ellipsize="end"
+                android:singleLine="true"
+                android:textColor="#CCFFFFFF"
+                android:textSize="13sp" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/mc_transit_primary"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:ellipsize="end"
+            android:fontFamily="sans-serif-medium"
+            android:singleLine="true"
+            android:textColor="#F2FFFFFF"
+            android:textSize="24sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/mc_transit_secondary"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:ellipsize="end"
+            android:singleLine="true"
+            android:textColor="#B3FFFFFF"
+            android:textSize="14sp" />
+
+        <ImageView
+            android:id="@+id/mc_transit_track"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:adjustViewBounds="true"
+            android:importantForAccessibility="no" />
+    </LinearLayout>
+</FrameLayout>

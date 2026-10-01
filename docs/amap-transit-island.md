@@ -175,23 +175,35 @@ HyperOS 上没有 SceneService，高德拿不到 `IntelligentIntent`，就认为
      `queryFeature` / `shareIntent` / `deleteIntent`，不会真的打到 Settings；
    - 收到公交 JSON 后去掉 `path`，经 `ProbeGuard` 广播给 SystemUI（`op transit`）。
    - 真有 IntelligentIntent provider 的手机（真 ColorOS）不受影响：只替换 null。
-   - **补发焦点岛**（`AmapTransitIsland.kt`）：高德在澎湃上只有步行/骑行才发焦点通知（id 1236），
-     公交/地铁段没有岛可点。所以每收到一次公交状态，就以高德身份、按高德步行岛同样的格式
-     （protocol 1 扁平模板：title / content / ticker / aodPic）发一条 id 1237 的焦点通知，
-     文案与页面一致，图标是线路色圆标加线路号；到「下一站下车 / 换乘 / 到站」时上浮一次。
-     步行段或行程结束就撤掉，交还给高德自己的步行岛。锁屏上点它打开逐站页，别处点它回到高德导航。
+   - **补发焦点通知**（`AmapTransitIsland.kt`）：高德在澎湃上只有步行/骑行才发焦点通知（id 1236），
+     公交/地铁段没有。所以每收到一次公交状态，就以高德身份发一条 **id 1239** 的焦点通知
+     （1237 被高德自己的 XiaomiUAConnectedDevice 占了，见 §7；我们的卡在时，高德自己的 1237 会被拦下）。
+     澎湃的 protocol 1 扁平模板是一行小卡，放不下 ColorOS 那张卡，所以默认用**自定义布局**
+     （`miui.focus.rv`，模块自己的 `res/layout/mc_transit_card.xml`，SystemUI 从模块包里 inflate；
+     高德有 QUERY_ALL_PACKAGES，能引用模块的包）：
+     - 线路色渐变底 + 当前站附近的地标图（同页面的选图规则，在高德进程里下载缓存，到了再静默重发一次）；
+     - 左上线路色胶囊「地铁1号线」+ 方向；大字里程碑「下一站 / 当前站 / 准备换乘 / 已到达」；下面「N站 XX下车」；
+     - 底部三节点进度（与锁屏页同一个 `AmapTransitScene.Track`），换乘站 ⇄ 胶囊 + 换乘线路号徽标；
+     - 状态栏 ticker / AOD / 超级岛（`param_island`）放在 `miui.focus.param.custom`。
+     备选样式：`template` = 系统大模板（param_v2：baseInfo + multiProgressInfo + bgInfo + picInfo），
+     `flat` = 原来的小模板。到「下一站下车 / 换乘 / 到站」时上浮一次。步行段或行程结束就撤掉。
+     锁屏上点它打开逐站页，别处点它回到高德导航。
 2. **SystemUI**（`AmapTransitScene.java`）
    - 一个新的 `ImmersiveScene`，在进程内自己画，照 OPPO 五一路那种样式：线路色底、线路/方向、里程碑文案、
      **横向三节点实时进度**（当前站居中加粗，换乘站画成带 ⇄ 的胶囊并在上方挂一个「线路号」方形徽标，
-     颜色是要换乘那条线的颜色，如绿色 8 号线），右上角**乘车码**按钮，中间地标背景图和名字图；
-   - 换乘线路号取自 naviInfo 里当前段之后的第一段（`Trip.nextLine`）；乘车码点一下按 deepLink 跳回高德；
+     颜色是要换乘那条线的颜色，如绿色 8 号线），中间地标背景图和名字图（锁屏页不放乘车码按钮）；
+   - 换乘线路号取自 naviInfo 里当前段之后的第一段（`Trip.nextLine`）；
    - 选图规则照搬 4.1，地标表照搬 4.3（`AmapTransitLandmarks.java`）；
    - 公交/地铁段时由它接管高德的焦点岛；步行段仍交给原来的 `AmapNavScene` 地图。
 3. **调试**
 
 ```sh
-# 高德进程：是否请求过 IntelligentIntent、问了什么、发了几次（最后一行 transit: ...）
+# 高德进程：是否请求过 IntelligentIntent、问了什么、发了几次（transit: ...），
+# 焦点通知状态（island: ...），以及高德脚本对设备层做了什么（script: bizBegin(10200) 之类）
 adb shell am broadcast -a com.os4.musiccover.AMAPPROBE
+
+# 切换焦点通知样式并立刻重发：card（默认，自定义大卡）/ template（系统大模板）/ flat（原小模板）
+adb shell am broadcast -a com.os4.musiccover.AMAPPROBE --es island card
 
 # 整条链路演示（推荐）：高德进程假装收到一段地铁数据 → 发焦点岛 + 转给 SystemUI；锁屏点岛即可打开
 adb shell am broadcast -a com.os4.musiccover.AMAPPROBE --es transit demo
@@ -211,7 +223,8 @@ adb shell am broadcast -a com.os4.musiccover.PROBE -p com.android.systemui --es 
 | 文件 | 进程 | 作用 |
 |---|---|---|
 | `AmapTransitShare.kt` | 高德 | 冒充 `IntelligentIntent`，接住 JSON 转给 SystemUI |
-| `AmapTransitIsland.kt` | 高德 | 公交/地铁段补发焦点岛（id 1237） |
+| `AmapTransitIsland.kt` | 高德 | 公交/地铁段补发焦点通知（id 1239，自定义大卡 / 大模板 / 小模板） |
+| `res/layout/mc_transit_card.xml` | SystemUI inflate | 焦点通知大卡的布局 |
 | `AmapImmerse.kt` | 高德 | 启动上面的 hook；SystemUI 重启时重发最后一次状态；探针多一行，`--es transit demo/end` |
 | `AmapTransitScene.java` | SystemUI | 数据模型、OPPO 的选站/选图规则、图片下载缓存（`cache/mc-transit/`）、页面绘制 |
 | `AmapTransitLandmarks.java` | SystemUI | OPPO 地标表（42 城）、CDN 地址、0.8 km 匹配 |
@@ -220,9 +233,15 @@ adb shell am broadcast -a com.os4.musiccover.PROBE -p com.android.systemui --es 
 
 ## 7. 尚未验证 / 风险
 
-- **最大的未知**：高德的 JS（`assets/ajx.bundle/bundles.oajx`，已加密）在非 OPPO 机型上是否会启用
-  OppoIntelligentCard 设备。启用了，上面的方案就能拿到数据；没启用，`acquires=0`，需要再想办法
-  （例如伪装机型，或直接在 JS 设备注册处动手）。必须真机跑一趟公交/地铁导航确认。
+- **真机结果（2026-10-01）：`acquires=0`**——高德在澎湃上没有启用 OppoIntelligentCard。查了高德 Java 侧：
+  - 设备层入口是 AJX 模块 `com.amap.bundle.wearable.ajx.NativesModuleWearable`（`bizBegin / bizBeginWithData /
+    sendMessage / bizEnd`），按 bizType 建设备：`xn0` 里 `10200 → jl3 → "thid_sdk_template_oppo_intelligent" → il3`，
+    `20001 → bv6 → "third_sdk_xiaomi_ua_notify" → jk7`（XiaomiUAConnectedDevice，发 id 1237 的小焦点通知，
+    只有 mainTitle / subTitle / scheme）。
+  - **Java 侧对 10200 没有任何机型判断**（没有 IDeviceConfigFilter，只有 102 有）；不建 il3 是因为
+    脚本根本没调 `bizBegin(10200)`——判断在加密脚本里。
+  - 现在探针会记下脚本对设备层的每种调用（`script:` 行）。坐一次车后看：有没有 `bizBegin(10200)`；
+    有没有 `bizBegin(20001)` / `sendMessage(20001)`（若有，说明高德在澎湃上本来就会推公交文字，只是内容很少）。
 - 已确认：高德在澎湃上公交/地铁导航不发焦点通知，所以由模块补发（见上）。补发的通知能否被系统
   认作焦点通知，取决于澎湃对高德的焦点白名单，需要真机看一眼。
 - 高德多久发一次数据（每站一次还是每秒一次）未知，SystemUI 端按 10 分钟无数据视为结束。
