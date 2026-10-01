@@ -2151,6 +2151,11 @@ public class Main extends XposedModule {
                         recolorClock();
                     } else if ("gdata".equals(op)) {
                         pokeGlassData(i.getIntExtra("idx", -1), i.getFloatExtra("v", 0f));
+                    } else if ("transit".equals(op)) {
+                        // 高德's bus and subway navigation, from AmapTransitShare in its process -
+                        // or by hand: --es json '<intentEntity>', --ez demo true, --es do end.
+                        setResultData(AmapTransitScene.INSTANCE.command(i.getStringExtra("json"),
+                                i.getStringExtra("do"), i.getBooleanExtra("demo", false)));
                     } else if ("immersive".equals(op) || "navmap".equals(op)) {
                         // The immersive pages: --es id <scene> --es do state|open|close|arm|disarm.
                         // navmap is 高德's old spelling (start / stop), kept for a 高德 process

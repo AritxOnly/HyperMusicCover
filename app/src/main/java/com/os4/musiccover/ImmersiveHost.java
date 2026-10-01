@@ -97,6 +97,9 @@ final class ImmersiveHost {
     private static final List<ImmersiveScene> SCENES = new ArrayList<>();
 
     static {
+        // Before the map: both are 高德's island, and the ride's page claims it only while 高德's
+        // current leg is a bus or a subway.
+        SCENES.add(AmapTransitScene.INSTANCE);
         SCENES.add(AmapNavScene.INSTANCE);
         SCENES.add(CountdownScene.INSTANCE);
     }

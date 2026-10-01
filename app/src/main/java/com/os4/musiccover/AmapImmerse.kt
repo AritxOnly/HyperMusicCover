@@ -29,6 +29,9 @@ import java.util.concurrent.atomic.AtomicInteger
  *             SystemUI the map can be drawn (`op immersive --es id amap-nav --es do arm`)
  *   destroy - the page letting go; SystemUI takes the map down
  *
+ * The same process carries the bus and subway page's half too (AmapTransitShare), which the probe
+ * reports on its own line.
+ *
  * `adb shell am broadcast -a com.os4.musiccover.AMAPPROBE` answers in the main process only.
  * With `--ez ask true` - what a freshly started SystemUI sends - it re-sends the start instead,
  * if a page is up.
@@ -122,6 +125,8 @@ internal object AmapImmerse {
         } catch (t: Throwable) {
             Xp.log(TAG + "immerse module hooks failed: " + t)
         }
+        // The bus and subway page's half: ColorOS 17's IntelligentIntent provider, stood in for.
+        AmapTransitShare.handle()
         try {
             // The service's sendPreviewCommandToAjx: the one static (boolean) method on it.
             val svc = Xp.findClass(SERVICE, cl)
@@ -172,6 +177,7 @@ internal object AmapImmerse {
                 if (i.getBooleanExtra("ask", false)) {
                     Xp.log(TAG + "SystemUI asked, armed=" + armed)
                     if (armed) tell(true)
+                    AmapTransitShare.resend()
                     return
                 }
                 val sb = StringBuilder()
@@ -184,6 +190,7 @@ internal object AmapImmerse {
                         .append("ms ago")
                 }
                 sb.append("\nconfig=").append(lastConfig)
+                sb.append('\n').append(AmapTransitShare.describe())
                 sb.append('\n').append(Xp.tail(TAG, 40))
                 resultData = sb.toString()
             }

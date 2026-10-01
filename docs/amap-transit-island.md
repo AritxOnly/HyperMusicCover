@@ -179,8 +179,31 @@ HyperOS 上没有 SceneService，高德拿不到 `IntelligentIntent`，就认为
    - 一个新的 `ImmersiveScene`，在进程内自己画：线路色底、站名、剩余站、三站进度条、地标背景图和名字图；
    - 选图规则照搬 4.1，地标表照搬 4.3（`AmapTransitLandmarks.java`）；
    - 公交/地铁段时由它接管高德的焦点岛；步行段仍交给原来的 `AmapNavScene` 地图。
-3. **调试**：`adb shell am broadcast -a com.os4.musiccover.AMAPPROBE` 能看到高德是否请求过
-   `IntelligentIntent`、问了什么、发了几次。
+3. **调试**
+
+```sh
+# 高德进程：是否请求过 IntelligentIntent、问了什么、发了几次（最后一行 transit: ...）
+adb shell am broadcast -a com.os4.musiccover.AMAPPROBE
+
+# SystemUI：不用坐地铁，灌一段演示数据（北京 1 号线，下一站天安门东，会匹配故宫地标图）
+adb shell am broadcast -a com.os4.musiccover.PROBE -p com.android.systemui --es op transit --ez demo true
+# 不点焦点岛，直接打开 / 关闭这一页
+adb shell am broadcast -a com.os4.musiccover.PROBE -p com.android.systemui --es op immersive --es id amap-transit --es do open
+adb shell am broadcast -a com.os4.musiccover.PROBE -p com.android.systemui --es op immersive --es id amap-transit --es do close
+# 结束行程
+adb shell am broadcast -a com.os4.musiccover.PROBE -p com.android.systemui --es op transit --es do end
+```
+
+### 代码位置
+
+| 文件 | 进程 | 作用 |
+|---|---|---|
+| `AmapTransitShare.kt` | 高德 | 冒充 `IntelligentIntent`，接住 JSON 转给 SystemUI |
+| `AmapImmerse.kt` | 高德 | 启动上面的 hook；SystemUI 重启时重发最后一次状态；探针多一行 |
+| `AmapTransitScene.java` | SystemUI | 数据模型、OPPO 的选站/选图规则、图片下载缓存（`cache/mc-transit/`）、页面绘制 |
+| `AmapTransitLandmarks.java` | SystemUI | OPPO 地标表（42 城）、CDN 地址、0.8 km 匹配 |
+| `ImmersiveHost.java` | SystemUI | 场景列表里排在地图前面，只在公交/地铁段认领高德的焦点岛 |
+| `Main.java` | SystemUI | `op transit` |
 
 ## 7. 尚未验证 / 风险
 
