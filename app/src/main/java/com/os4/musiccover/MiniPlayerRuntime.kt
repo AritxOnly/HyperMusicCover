@@ -10548,7 +10548,7 @@ private class MiniPlayerController(
         if (small) {
             if (stackedStyle()) {
                 smallRest[0] = rest.centerX
-                // The 90% rear card exposes a 1.5dp rim below the front card.
+                // The 90% rear card exposes a rim below the front card.
                 smallRest[1] = MiniPlayerGeometry.stackBackCenterYPx(centerY, height,
                     dp(MiniPlayerGeometry.STACK_EDGE_DP))
                 if (!smallWide) smallIsland?.let {

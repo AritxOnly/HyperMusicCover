@@ -13,8 +13,8 @@ internal object MiniPlayerGeometry {
     const val MIN_PILL_DP = 140f
 
     const val STACK_BACK_SCALE = 0.9f
-    const val STACK_BACK_ALPHA = 0.4f
-    const val STACK_EDGE_DP = 3f
+    const val STACK_BACK_ALPHA = 0.7f
+    const val STACK_EDGE_DP = 4f
 
     fun stackBackSizePx(frontPx: Int): Int =
         (frontPx * STACK_BACK_SCALE).roundToInt().coerceAtLeast(1)

@@ -46,7 +46,6 @@ class MiniPlayerGeometryTest {
         val centerY = MiniPlayerGeometry.stackBackCenterYPx(100f, 54, 2)
         val backBottom = centerY + MiniPlayerGeometry.stackBackSizePx(54) / 2f
         assertEquals(129f, backBottom)
-        assertEquals(0.4f, MiniPlayerGeometry.STACK_BACK_ALPHA)
     }
 
 }
