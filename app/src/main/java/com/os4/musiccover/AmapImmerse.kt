@@ -61,6 +61,9 @@ internal object AmapImmerse {
     @Volatile private var armed = false
     @Volatile private var appCtx: Context? = null
 
+    /** 高德's application, once it has one: what AmapTransitShare tells SystemUI through. */
+    fun context(): Context? = appCtx
+
     @JvmStatic
     fun handle(cl: ClassLoader) {
         try {
