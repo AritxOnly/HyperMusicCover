@@ -942,6 +942,7 @@ object MiniPlayerRuntime {
             routedDrag = false
             routedMorph = false
             routedSpread = false
+            routedStack = false
             routedPullRefused = false
             // What the last gesture was, in case it never reached its UP or CANCEL here.
             routedOwner?.stopAnticipating()
@@ -1013,6 +1014,14 @@ object MiniPlayerRuntime {
                     routedOwner?.islandCount()?.let { it >= 2 } == true &&
                     routedOwner?.exchangeRunning() != true &&
                     kotlin.math.abs(dx) > kotlin.math.abs(dy)
+                routedStack = routedOwner?.allowsStackSwitch() == true &&
+                    MiniPlayerStackGesture.starts(dx, dy)
+                if (routedStack && routedSmall) {
+                    routedOwner?.springSmallNudgeBack(0f, 0f)
+                    target.holdNudge()
+                    routedBaseX = target.nudgeX
+                    routedBaseY = target.nudgeY
+                }
                 // Up on the music: the rows its card takes along are asked for now, so they are
                 // there by the time the pull opens it.
                 if (!routedIsland && dy < 0f && -dy >= kotlin.math.abs(dx)) {
@@ -1043,7 +1052,7 @@ object MiniPlayerRuntime {
         val nx = pillNudgeX(dx, d)
         when (action) {
             MotionEvent.ACTION_MOVE -> {
-                if (!routedMorph && !routedIsland && !routedNote && !routedSpread &&
+                if (!routedMorph && !routedIsland && !routedStack && !routedNote && !routedSpread &&
                     -dy > DRAG_THRESHOLD_DP * d) {
                     // Pulled far enough up to mean it: the music - the pill, or the small island -
                     // starts turning into the card under the finger, the nudge handed over as it is.
@@ -1080,6 +1089,7 @@ object MiniPlayerRuntime {
                 else if (routedSpread) routedOwner?.spreadFingerMove(ev.rawY)
                 else if (routedNote) routedOwner?.noteDragMove(ev.rawY, nx)
                 else if (routedIsland) routedOwner?.islandDrag(dx)
+                else if (routedStack) target.setNudge(routedBaseX + nx, routedBaseY + pillNudgeY(dy, d))
                 // The small island follows the finger as the pill does, and presses as it does.
                 else if (routedSmall) routedOwner?.setSmallNudge(routedBaseX + nx, routedBaseY + pillNudgeY(dy, d))
                 else target.setNudge(routedBaseX + nx, routedBaseY + pillNudgeY(dy, d))
@@ -1103,6 +1113,10 @@ object MiniPlayerRuntime {
                         kotlin.math.abs(vx) > 1200f * d)
                     routedOwner?.islandDragEnd(commit, next = dx < 0f, vx = vx)
                     noteTouch("island swipe dx=${dx.toInt()} commit=$commit")
+                } else if (routedStack) {
+                    val switched = routedOwner?.stackSwipeEnd(dy, vy, cancelled) == true
+                    if (!switched) target.springNudgeBack(vx, vy)
+                    noteTouch("stack down dy=${dy.toInt()} switched=$switched cancelled=$cancelled")
                 } else if (routedSmall) {
                     // The small island's nudge only ever springs home: its sideways swipe is
                     // the row's, its pull up its row's.
@@ -1136,6 +1150,7 @@ object MiniPlayerRuntime {
     private var routedDrag = false
     private var routedMorph = false
     private var routedSpread = false
+    private var routedStack = false
     private var routedTracker: VelocityTracker? = null
 
     /** The gesture began on the small island, not the pill. */
@@ -1174,6 +1189,7 @@ object MiniPlayerRuntime {
         routedIsland = false
         routedNote = false
         routedSpread = false
+        routedStack = false
         routedOwner = null
         routed = null
         routedTracker?.recycle()
@@ -2345,6 +2361,33 @@ private class MiniPlayerController(
 
     fun allowsSideSwitch(): Boolean = !stackedStyle()
 
+    fun allowsStackSwitch(): Boolean = stackedStyle() && islandCount() >= 2 &&
+        !frameTaken() && !appearing
+
+    /** The rear card takes the front; the current card goes down behind it. */
+    fun stackSwipeEnd(dy: Float, velocityY: Float, cancelled: Boolean): Boolean {
+        if (!allowsStackSwitch() ||
+            !MiniPlayerStackGesture.commits(dy, velocityY, density(), cancelled)) return false
+        val view = player ?: return false
+        val oldBig = selectedIsland ?: return false
+        val oldSmall = smallKey
+        val next = oldSmall?.takeIf { it in islandKeys && it != oldBig }
+            ?: MiniPlayerStackGesture.nextKey(islandKeys, oldBig) ?: return false
+        val rest = view.restBoxOnScreen() ?: return false
+        val w = rest.w * view.scaleX
+        val h = rest.h * view.scaleY
+        val drawn = CoverMorphMotion.Box(rest.cx() - w / 2f + view.nudgeX,
+            rest.cy() - h / 2f + view.nudgeY, w, h)
+        preferredSmall = null
+        aloneFirst = null
+        snapSmallOnce = true
+        selectedIsland = next
+        refresh()
+        startSwap(oldBig, oldSmall, SWAP_STACK, pillFrom = drawn,
+            flingPx = velocityY.coerceAtLeast(0f))
+        return true
+    }
+
     /**
      * The island a pull opens as a flight: the small island's, or the pill's. The music too,
      * once there are other islands in the row to stay behind; alone, it has the media card's
@@ -2513,8 +2556,8 @@ private class MiniPlayerController(
             preferred != null -> preferred
             // The first swiped alone, or the last with none after it: the pill alone (canSwitchIsland).
             firstAlone(keys, selectedIsland) && !stackedStyle() -> null
+            stackedStyle() -> MiniPlayerStackGesture.nextKey(keys, selectedIsland)
             else -> keys.getOrNull(keys.indexOf(selectedIsland).coerceAtLeast(0) + 1)
-                ?: if (stackedStyle()) keys.getOrNull(keys.indexOf(selectedIsland) - 1) else null
         }
         val previous = smallKey
         smallKey = key
@@ -2906,6 +2949,11 @@ private class MiniPlayerController(
     private val swapFrame = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) { android.os.Trace.beginSection("MC swap"); try {
             val s = swap ?: return
+            if (s.kind == SWAP_STACK && (destroyed || !Main.keyguardLocked() ||
+                MiniPlayerScene.aodActive || !stackedStyle() || player?.visibility != View.VISIBLE)) {
+                endSwap()
+                return
+            }
             val dt = if (s.last == 0L) 1f / 120f
                 else ((frameTimeNanos - s.last) / 1e9f).coerceIn(0f, 0.05f)
             s.last = frameTimeNanos
@@ -2964,6 +3012,7 @@ private class MiniPlayerController(
         endRow()
         resetIslandDrag()
         clearSmallNudge()
+        if (kind == SWAP_STACK) view.clearNudge()
         // A flight's morph is the flight's: the pill still switches under it.
         if (view.visibility != View.VISIBLE || morph != null && flight == null) {
             if (keepGhost) endGhosts()
@@ -3008,6 +3057,7 @@ private class MiniPlayerController(
         // pill the moment the row was pulled and came back beside it (filmed 2026-09-25).
         val ghostToSmall = intoSmall && oldBig != null && smallKey == oldBig && oldRest != null
         val mode = when {
+            kind == SWAP_STACK -> SMALL_STACK
             keepGhost -> SMALL_FROM_GHOST
             smallKey == null || holdSmall -> SMALL_KEPT
             ghostToSmall -> SMALL_FROM_GHOST
@@ -3018,7 +3068,9 @@ private class MiniPlayerController(
         val s = Swap(from, rest, mode, kind, holdPill, pillKept)
         s.started = android.os.SystemClock.uptimeMillis()
         fromVel?.let { s.spring.velocity = springVelocity(it, from, rest) }
-        if (fromVel == null && flingPx > 0f) {
+        if (kind == SWAP_STACK && flingPx > 0f) {
+            s.spring.velocity = (flingPx / rest.h.coerceAtLeast(1f)).coerceAtMost(2f)
+        } else if (fromVel == null && flingPx > 0f) {
             // The finger's speed as the frame's: its moving edge goes on at it - growing
             // or narrowing, whichever the switch does, the same way the finger went.
             val dx = rest.cx() - from.cx()
@@ -3041,6 +3093,11 @@ private class MiniPlayerController(
             }
         }
         swap = s
+        if (kind == SWAP_STACK && oldBig != null &&
+            startGhost(oldBig, pillFrom ?: oldRest ?: rest)) {
+            s.ghostFrom = pillFrom ?: oldRest ?: rest
+            s.ghost = true
+        }
         // The old big island into hiding (BigIslandToHidden): a stand-in of it, under the
         // row, shrinks into the middle while its content goes out of focus.
         if (kind == SWAP_NEXT && !pillKept && !ghostToSmall && oldRest != null && oldBig != null &&
@@ -3115,6 +3172,10 @@ private class MiniPlayerController(
 
     private fun applySwap(s: Swap) {
         val view = player ?: return
+        if (s.kind == SWAP_STACK) {
+            applyStackSwap(s, view)
+            return
+        }
         val p = s.spring.value
         val grown = lerpBox(s.pillFrom, s.pillTo, p)
         // Soft as the row's spring is: thinner while it widens fast, a touch taller coming back
@@ -3196,6 +3257,36 @@ private class MiniPlayerController(
         }
     }
 
+    /** Both cards follow the same spring; the departing front crosses behind while faded. */
+    private fun applyStackSwap(s: Swap, view: MiniPlayerView) {
+        val p = s.spring.value
+        val q = p.coerceIn(0f, 1f)
+        val front = lerpBox(s.pillFrom, s.pillTo, p)
+        view.setMorphFrame(front, front.h / 2f, 1f)
+        view.setContentAlpha(MiniCardMorph.smooth(0f, 0.5f, q))
+        view.alpha = lerp(MiniPlayerGeometry.STACK_BACK_ALPHA, 1f, q)
+        val rear = smallBoxOnScreen()
+        val from = s.ghostFrom
+        if (from != null) ghostPill?.let { ghost ->
+            val shrunk = lerpBox(from, rear, p)
+            val drop = kotlin.math.sin(Math.PI.toFloat() * q) * s.pillTo.h * 0.75f
+            val box = CoverMorphMotion.Box(shrunk.x, shrunk.y + drop, shrunk.w, shrunk.h)
+            ghost.setMorphFrame(box, box.h / 2f, 1f)
+            // Changing draw order with zero opacity avoids a visible jump at the crossing.
+            ghost.translationZ = if (q < 0.5f) view.translationZ + dp(1f) else 0f
+            ghost.alpha = if (q < 0.5f) 1f - MiniCardMorph.smooth(0.15f, 0.45f, q)
+                else MiniPlayerGeometry.STACK_BACK_ALPHA *
+                    MiniCardMorph.smooth(0.55f, 0.8f, q) *
+                    (1f - MiniCardMorph.smooth(GHOST_HANDOFF, 1f, q))
+        }
+        smallIsland?.let { small ->
+            small.setShape(rear.w.roundToInt(), rear.h.roundToInt(), 0)
+            small.setIconAlpha(1f)
+            small.alpha = MiniPlayerGeometry.STACK_BACK_ALPHA *
+                MiniCardMorph.smooth(GHOST_HANDOFF, 1f, q)
+        }
+    }
+
     /**
      * [keepGhosts]: a switch taking over this one's stand-ins where they are (startSwap), so
      * they are not put away for the frame between.
@@ -3212,6 +3303,7 @@ private class MiniPlayerController(
             if ((morph == null || flight != null) && pillLandingBox == null) it.endMorph()
             it.setContentAlpha(1f)
             it.setContentBlur(0f)
+            if (s.kind == SWAP_STACK) it.alpha = 1f
         }
         if (!keepGhosts) endGhosts()
         if (smallDx != 0f) {
@@ -3383,6 +3475,7 @@ private class MiniPlayerController(
             it.setContentBlur(0f)
             it.setContentAlpha(1f)
             it.alpha = 1f
+            it.translationZ = 0f
             it.visibility = View.GONE
         }
         ghostDisc?.visibility = View.GONE
@@ -3839,6 +3932,7 @@ private class MiniPlayerController(
     private fun smallAfter(keys: List<String>, selected: String): String? {
         if (keys.size < 2) return null
         preferredSmall?.takeIf { it in keys && it != selected }?.let { return it }
+        if (stackedStyle()) return MiniPlayerStackGesture.nextKey(keys, selected)
         if (firstAlone(keys, selected)) return null
         return keys.getOrNull(keys.indexOf(selected).coerceAtLeast(0) + 1)
     }
@@ -10750,6 +10844,7 @@ private const val SMALL_FROM_PILL = 1
 private const val SMALL_POP = 2
 private const val SMALL_EMERGE = 3
 private const val SMALL_FROM_GHOST = 4
+private const val SMALL_STACK = 5
 /** The small island's pulse (smallIslandScaleAnimation): 1.1, sinInOut 200ms each way after 100ms. */
 private const val PULSE_SCALE = 1.1f
 private const val PULSE_MS = 200f
@@ -10769,6 +10864,7 @@ private const val LAND_HIDDEN = 2
 private const val SWAP_PAIR = 0
 private const val SWAP_NEXT = 1
 private const val SWAP_PREV = 2
+private const val SWAP_STACK = 3
 
 /**
  * The super island's other springs (FolmeEase.spring(damping, response)): APPEAR 0.7/0.5,
