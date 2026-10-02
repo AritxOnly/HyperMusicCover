@@ -149,7 +149,8 @@ internal class MiniPlayerView(context: Context) : FrameLayout(context) {
             setTypeface(typeface, android.graphics.Typeface.BOLD)
         }
         artist.apply {
-            setTextColor(Color.argb(232, 255, 255, 255))
+            setTextColor(Color.WHITE)
+            alpha = 0.8f
             textSize = 12f
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.MARQUEE
