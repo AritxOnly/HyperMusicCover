@@ -123,11 +123,17 @@ final class AmapTransitScene implements ImmersiveScene {
         mMain.postDelayed(mStale, STALE_MS);
         Frame f = Frame.of(t);
         boolean newPicture = mFrame == null || !mFrame.sameArt(f);
+        // A pass of the landmark is what a new state looks like: a different picture, a new
+        // milestone, or a new stop. A repost of the same state (the keepalive, a landmark that
+        // arrived late) does not start it over.
+        boolean again = mFrame == null || newPicture
+                || !mFrame.status.equals(f.status)
+                || !mFrame.shown.equals(f.shown);
         mFrame = f;
         Xp.log(TAG + "status=" + t.status + " type=" + t.leg.type + " line=" + t.leg.lineName
                 + " -> " + f.primary + " | " + f.secondary + " art=" + f.art);
         if (mView != null) {
-            mView.setFrame(f);
+            mView.setFrame(f, again);
             if (newPicture) Art.request(mView.getContext(), f.art, this::onArt);
             if (mDozing) ImmersiveHost.lift(mView);
         }
@@ -323,6 +329,50 @@ final class AmapTransitScene implements ImmersiveScene {
         }
     }
 
+    /** One real-time arrival, 高德's GaoDePtRealtimeItem (GaoDePtWaitInfo.realTime). */
+    static final class Realtime {
+        String mainTitle = "";
+        String orderTip = "";
+        String textColor = "";
+        String lineName = "";
+        String lineDirection = "";
+        int status = -1;
+        int titleRange;
+        boolean showSignal;
+
+        static Realtime of(JSONObject o) {
+            Realtime r = new Realtime();
+            if (o == null) return r;
+            r.mainTitle = o.optString("mainTitle").trim();
+            r.orderTip = o.optString("orderTiptext").trim();
+            r.textColor = o.optString("textColor").trim();
+            r.lineName = o.optString("lineName").trim();
+            r.lineDirection = o.optString("lineDirection").trim();
+            r.status = o.optInt("status", -1);
+            r.titleRange = o.optInt("titleRange", 0);
+            r.showSignal = o.optBoolean("isShowSignal", false);
+            return r;
+        }
+    }
+
+    /** One exit of the stop a ride ends at: 高德's GaoDePtPort. */
+    static final class Port {
+        Station station = new Station("", 0, 0, false);
+        String shield = "";
+        int status = -1;
+        String statusDesc = "";
+
+        static Port of(JSONObject o) {
+            Port p = new Port();
+            if (o == null) return p;
+            p.station = Station.of(o, "name");
+            p.shield = o.optString("shield").trim();
+            p.status = o.optInt("status", -1);
+            p.statusDesc = o.optString("status_desc").trim();
+            return p;
+        }
+    }
+
     /** One leg of the trip: 高德's naviInfo item, the fields the page reads. */
     static final class Leg {
         /** GaoDeNaviSegmentTransportType: 0 walk, 1 bus, 2 subway, 12 ferry, 13 cable car... */
@@ -331,13 +381,27 @@ final class AmapTransitScene implements ImmersiveScene {
         String lineDirection = "";
         int lineBg = 0xff4a86ff;
         int lineText = Color.WHITE;
+        /** The stop's outline colour, 高德's borderColor; zero when it sends none. */
+        int lineBorder;
         int remain;
         Station on = new Station("", 0, 0, false);
         Station off = new Station("", 0, 0, false);
         final List<Station> via = new ArrayList<>();
-        final List<Station> ports = new ArrayList<>();
+        final List<Port> ports = new ArrayList<>();
+        /** Every real-time arrival 高德 sent, in its order (GaoDePtWaitInfo.realTime). */
+        final List<Realtime> arrivals = new ArrayList<>();
         /** The first real-time arrival's words: 「列车预计 3 分钟进站」. */
         String realtime = "";
+        /** The boarding stop's service hours and the leg's own links. */
+        String startTime = "";
+        String endTime = "";
+        String schema = "";
+        String busDetailSchema = "";
+        String openDirection = "";
+        String walkingDuration = "";
+        String walkingOrRideDuration = "";
+        String walkingOrRideLength = "";
+        boolean isCurrent;
 
         boolean subway() {
             return "2".equals(type);
@@ -356,7 +420,14 @@ final class AmapTransitScene implements ImmersiveScene {
             l.lineDirection = o.optString("lineDirection").trim();
             l.lineBg = color(o.optString("lineBgColor"), 0xff4a86ff);
             l.lineText = color(o.optString("lineTextColor"), Color.WHITE);
+            l.lineBorder = color(o.optString("borderColor"), 0);
             l.remain = o.optInt("remainStations", 0);
+            l.isCurrent = o.optBoolean("isCurrent", false);
+            l.schema = o.optString("schema").trim();
+            l.busDetailSchema = o.optString("busDetailSchema").trim();
+            l.walkingDuration = o.optString("walkingDuration").trim();
+            l.walkingOrRideDuration = o.optString("walkingOrRideDuration").trim();
+            l.walkingOrRideLength = o.optString("walkingOrRideLength").trim();
             JSONObject on = o.optJSONObject("on_station");
             l.on = Station.of(on, "stationName");
             JSONObject off = o.optJSONObject("off_station");
@@ -367,32 +438,50 @@ final class AmapTransitScene implements ImmersiveScene {
             }
             JSONArray ports = off == null ? null : off.optJSONArray("port_list");
             for (int i = 0; ports != null && i < ports.length(); i++) {
-                JSONObject p = ports.optJSONObject(i);
-                if (p == null) continue;
-                Station s = Station.of(p, "name");
-                l.ports.add(s);
-                String shield = p.optString("shield").trim();
-                if (!shield.isEmpty()) l.ports.add(new Station(shield, s.lat, s.lng, false));
+                Port p = Port.of(ports.optJSONObject(i));
+                if (p.station.name.isEmpty() && p.shield.isEmpty()) continue;
+                l.ports.add(p);
+            }
+            if (off != null) l.openDirection = off.optString("open_direction").trim();
+            if (on != null) {
+                l.startTime = on.optString("start_time").trim();
+                l.endTime = on.optString("end_time").trim();
             }
             JSONObject wait = on == null ? null : on.optJSONObject("waitInfo");
             JSONArray rt = wait == null ? null : wait.optJSONArray("realTime");
-            JSONObject first = rt == null ? null : rt.optJSONObject(0);
-            if (first != null) l.realtime = first.optString("mainTitle").trim();
+            for (int i = 0; rt != null && i < rt.length(); i++) {
+                l.arrivals.add(Realtime.of(rt.optJSONObject(i)));
+            }
+            if (!l.arrivals.isEmpty()) l.realtime = l.arrivals.get(0).mainTitle;
             return l;
         }
     }
 
     /** 高德's GaoDePtIntentEntity, the parts the page reads. */
     static final class Trip {
-        /** GaoDePublicTransportNavMilestone: 1 near the origin ... 7 arrived. */
+        /** 高德's own status: 1 near the origin, 2 waiting, 3 next stop, 5 arrived, 6 transfer, 7 end. */
         String status = "";
         String cityCode = "";
+        /** The ride's own identity, as the entity carries it (entityId / entityName / originStation). */
+        String entityId = "";
+        String entityName = "";
+        String originStation = "";
         String destStation = "";
         double destLat;
         double destLng;
         String exitName = "";
         String guideInfo = "";
         String deepLink = "";
+        /** The ride's whole totals, for the page's lines and the probe. */
+        String totalDistance = "";
+        String totalRideDistance = "";
+        String totalWalkingDistance = "";
+        double totalDuration;
+        /** The state 高德 reports beside the milestone. */
+        boolean arrived;
+        boolean offRoute;
+        boolean isPublic;
+        int gpsSignalStatus;
         Leg leg = new Leg();
         /** The ride you change to next, for the transfer badge; empty when this is the last. */
         String nextLine = "";
@@ -403,12 +492,23 @@ final class AmapTransitScene implements ImmersiveScene {
             Trip t = new Trip();
             t.status = o.optString("status").trim();
             t.cityCode = o.optString("destCitycode").trim();
+            t.entityId = o.optString("entityId").trim();
+            t.entityName = o.optString("entityName").trim();
+            t.originStation = o.optString("originStation").trim();
             t.destStation = o.optString("destStation").trim();
             t.destLat = o.optDouble("destLatitude", 0);
             t.destLng = o.optDouble("destLongitude", 0);
             t.exitName = o.optString("exitName").trim();
             t.guideInfo = o.optString("guideInfo").trim();
             t.deepLink = o.optString("deepLink").trim();
+            t.totalDistance = o.optString("totalDistance").trim();
+            t.totalRideDistance = o.optString("totalRideDistance").trim();
+            t.totalWalkingDistance = o.optString("totalWalkingDistance").trim();
+            t.totalDuration = o.optDouble("totalDuration", 0);
+            t.arrived = o.optBoolean("arrived", false);
+            t.offRoute = o.optBoolean("offRoute", false);
+            t.isPublic = o.optBoolean("isPublic", false);
+            t.gpsSignalStatus = o.optInt("gpsSignalStatus", 0);
             JSONArray navi = o.optJSONArray("naviInfo");
             int curIndex = -1;
             for (int i = 0; navi != null && i < navi.length(); i++) {
@@ -437,6 +537,16 @@ final class AmapTransitScene implements ImmersiveScene {
                 }
             }
             return t;
+        }
+
+        /**
+         * No leg after this one and no stop names left to draw: the ride is on its last leg, the
+         * shape the card calls `isTwoStation`.
+         */
+        boolean destOnly() {
+            Leg l = leg;
+            return nextLine.isEmpty() && l.via.isEmpty() && !l.on.name.isEmpty()
+                    && l.on.name.equals(l.off.name);
         }
 
         /** The line's number for a badge: 「地铁1号线」 -> 「1」, 「机场线」 -> 「机场」 (ya.k.c). */
@@ -490,8 +600,27 @@ final class AmapTransitScene implements ImmersiveScene {
         int lineText;
         String primary = "";
         String secondary = "";
+        /**
+         * The milestone's own words and the one station it names, apart: OPPO's card sets 「当前站」
+         * small and the station large on the same line, and its second line is the transport icon
+         * and 「可换乘5号线」, not the milestone again.
+         */
+        String mark = "";
+        String name = "";
+        /** The status this frame was worked out from, and the stop it names. */
+        String status = "";
+        String shown = "";
+        /** 「5号线」 when the leg after this one is a ride, for the second line; empty otherwise. */
+        String transfer = "";
         Nodes nodes;
         boolean subway;
+        /**
+         * Two stops rather than three, the way the card's `isTwoStation` asks for it: the stop
+         * being left is only drawn when what comes next is another stop. 高德's status 4 is the
+         * next one being the line's end; the wrapper reaches the same shape through its
+         * NEXT_DESTINATION milestone.
+         */
+        boolean two = false;
         Art.Pick art = Art.Pick.NONE;
 
         boolean sameArt(Frame o) {
@@ -508,8 +637,18 @@ final class AmapTransitScene implements ImmersiveScene {
             f.lineText = l.lineText;
             int index = Math.max(0, Math.min(l.via.size() - l.remain, l.via.size() - 1));
             String shown = shownStation(t, index);
-            switch (t.status) {
-                case "1":
+            f.status = t.status;
+            f.shown = shown;
+            // The milestone's words and the station it names, as the card sets them.
+            String[] split = milestone(t.status);
+            f.mark = split[0];
+            f.name = split[1].isEmpty() ? shown : split[1];
+            f.transfer = t.nextLineCode().isEmpty() ? "" : t.nextLineCode() + "号线";
+            // The stop being left is only worth a node while there is one; when the next stop is
+            // the line's end (or the entity says the ride is on its last leg of two) the card
+            // draws two.
+            f.two = "4".equals(t.status) || t.destOnly();
+            switch (t.status) {                case "1":
                 case "2":
                     // The waiting card: the boarding station, and when the train comes.
                     f.primary = l.on.name;
@@ -535,11 +674,11 @@ final class AmapTransitScene implements ImmersiveScene {
                     break;
                 case "7":
                     f.primary = shown.isEmpty() ? "已到达" : "已到达 " + shown;
-                    f.secondary = t.exitName.isEmpty() ? t.guideInfo : t.exitName + " 出站";
+                    f.secondary = t.exitName.isEmpty() ? guide(t) : t.exitName + " 出站";
                     break;
                 default:
                     f.primary = l.lineName;
-                    f.secondary = t.guideInfo;
+                    f.secondary = guide(t);
                     break;
             }
             f.art = Art.Pick.of(t, shown, index);
@@ -556,10 +695,70 @@ final class AmapTransitScene implements ImmersiveScene {
 
         /** 高德's guideInfo, else 「N站 XX下车」 (SceneService's ya.b.Y). */
         private static String remaining(Trip t) {
-            if (!t.guideInfo.isEmpty()) return t.guideInfo;
-            int n = t.leg.remain;
+            // 高德 fills the same field with the count of stops left in some phases ("2站"), which
+            // is the ride's progress, not guidance: the line under the milestone says where the
+            // ride is going. A count is drawn as the count instead.
+            if (!t.guideInfo.isEmpty() && !isCount(t.guideInfo)) return t.guideInfo;
+            int n = t.leg.remain > 0 ? t.leg.remain : count(t.guideInfo);
             if (n <= 0) return "";
             return t.leg.off.name.isEmpty() ? n + "站后下车" : n + "站 " + t.leg.off.name + "下车";
+        }
+
+        /** 高德's guideInfo when it is words, and nothing when it is only a count of stops. */
+        private static String guide(Trip t) {
+            return isCount(t.guideInfo) ? "" : t.guideInfo;
+        }
+
+        /** The number in 「2站」, or 0 when there is none. */
+        private static int count(String text) {
+            if (text == null) return 0;
+            java.util.regex.Matcher m = java.util.regex.Pattern.compile("\\d+").matcher(text);
+            return m.find() ? Integer.parseInt(m.group()) : 0;
+        }
+
+        /** 「2站」 or 「2」: a count of stops, which 高德 sometimes puts where words belong. */
+        static boolean isCount(String text) {
+            String t = text == null ? "" : text.trim();
+            if (t.isEmpty() || t.length() > 12) return false;
+            boolean digits = true;
+            for (int i = 0; i < t.length(); i++) {
+                if (!Character.isDigit(t.charAt(i))) digits = false;
+            }
+            return digits || (t.indexOf('站') >= 0 && count(t) > 0);
+        }
+
+        /**
+         * The milestone's own two words, and the station it names when it names one of its own
+         * (the card sets the second part large, beside the first).
+         *
+         * These are 高德's own status codes as its card sends them - 1 near the origin, 2 waiting,
+         * 3 the next stop, 5 arrived at a stop, 6 a transfer, 7 the line's end. 高德 sends no 4,
+         * and the 4/5 that ColorOS's own GaoDePublicTransportNavMilestone carries
+         * (ARRIVE_COMMON_STATION / ARRIVE_TRANSFER_STATION) are that enum's ordinals, not these
+         * codes: the fluid cloud's wrapper derives its milestones from the entity, so they must
+         * not be read back into what 高德 sends. What the enum does settle is how many stops the
+         * track draws: NEXT_STATION is the three-node one, NEXT_DESTINATION the two-node one.
+         */
+        private static String[] milestone(String status) {
+            switch (status) {
+                case "1":
+                case "2":
+                    // Near the origin and waiting are the same card: the boarding station.
+                    return new String[] {"上车", ""};
+                case "3":
+                    return new String[] {"下一站", ""};
+                case "4":
+                    // Not sent by 高德; kept so a wrapper that does send it reads as the next stop.
+                    return new String[] {"下一站", ""};
+                case "5":
+                    return new String[] {"当前站", ""};
+                case "6":
+                    return new String[] {"换乘", ""};
+                case "7":
+                    return new String[] {"到达", ""};
+                default:
+                    return new String[] {"", ""};
+            }
         }
 
         /** The station a milestone names (SceneService's ya.b.e0). */
@@ -567,13 +766,17 @@ final class AmapTransitScene implements ImmersiveScene {
             Leg l = t.leg;
             switch (t.status) {
                 case "3": {
-                    // The next station: past the via list, the one you get off at.
-                    if (l.via.isEmpty()) return l.off.name.isEmpty() ? l.on.name : l.off.name;
-                    String here = l.via.get(index).name;
-                    String next = index + 1 < l.via.size() ? l.via.get(index + 1).name : l.off.name;
-                    if (l.remain > l.via.size()) return here.isEmpty() ? l.on.name : here;
-                    if (!next.isEmpty() && !next.equals(here)) return next;
-                    return !l.off.name.isEmpty() ? l.off.name : here.isEmpty() ? l.on.name : here;
+                    // The next stop, which the adapter names outright in `on_station` when 高德's
+                    // own `nextStopName` gave it. Only then the boarding stop and the line's end:
+                    // a ride with stops still to go must never be shown as at the last one.
+                    if (!l.on.name.isEmpty() && !l.on.name.equals(l.off.name)) return l.on.name;
+                    if (!l.via.isEmpty()) {
+                        String here = l.via.get(index).name;
+                        String next = index + 1 < l.via.size() ? l.via.get(index + 1).name : l.off.name;
+                        if (!next.isEmpty() && !next.equals(here)) return next;
+                        if (!here.isEmpty()) return here;
+                    }
+                    return !l.off.name.isEmpty() ? l.off.name : l.on.name;
                 }
                 case "5": {
                     if (l.via.isEmpty()) return l.on.name.isEmpty() ? l.off.name : l.on.name;
@@ -593,15 +796,36 @@ final class AmapTransitScene implements ImmersiveScene {
             String code = t.nextLineCode();
             Station prev, here, next;
             if (l.via.isEmpty()) {
-                prev = l.on;
-                here = l.off;
-                next = l.off;
+                // No station list came with the ride. Only the stops actually named are drawn: a
+                // stop repeated in the slot beside itself is not a stop, and a track of three
+                // identical names is the fake this used to look like. One name is one node.
+                boolean headSame = l.on.name.isEmpty() || l.on.name.equals(l.off.name);
+                prev = headSame ? l.on : l.on;
+                here = headSame ? l.off : l.on;
+                next = headSame ? null : l.off;
             } else {
                 here = l.via.get(index);
                 prev = index == 0 ? l.on : l.via.get(index - 1);
                 next = index + 1 < l.via.size() ? l.via.get(index + 1) : l.off;
             }
-            return new Nodes(new Station[] {prev, here, next}, focus, code, t.nextLineColor);
+            // Whatever the source, a name is only drawn once: 高德 may send the same stop in two
+            // slots (its next-stop and its destination are often the same), and showing it twice
+            // says there are two stops where there is one. The track's slots are the named ones,
+            // right-aligned, so one name stands where the stop beside it would, not at the left.
+            java.util.List<Station> keep = new ArrayList<>();
+            for (Station s : new Station[] {prev, here, next}) {
+                if (s == null) continue;
+                String name = s.name == null ? "" : s.name.trim();
+                if (name.isEmpty()) continue;
+                boolean seen = false;
+                for (Station k : keep) if (name.equals(k.name.trim())) seen = true;
+                if (!seen) keep.add(s);
+            }
+            Station[] slots = new Station[3];
+            for (int i = 0; i < keep.size() && i < 3; i++) {
+                slots[3 - keep.size() + i] = keep.get(i);
+            }
+            return new Nodes(slots, focus, code, t.nextLineColor);
         }
     }
 
@@ -711,11 +935,13 @@ final class AmapTransitScene implements ImmersiveScene {
             private static Station exit(Trip t) {
                 Leg l = t.leg;
                 if (!t.exitName.isEmpty()) {
-                    for (Station p : l.ports) {
-                        if (p.located() && (p.name.equalsIgnoreCase(t.exitName)
-                                || p.name.contains(t.exitName))) {
-                            return p;
+                    for (Port p : l.ports) {
+                        Station s = p.station;
+                        if (s.located() && (s.name.equalsIgnoreCase(t.exitName)
+                                || s.name.contains(t.exitName))) {
+                            return s;
                         }
+                        if (s.located() && p.shield.equalsIgnoreCase(t.exitName)) return s;
                     }
                 }
                 if (l.off.located()) return l.off;
@@ -865,7 +1091,14 @@ final class AmapTransitScene implements ImmersiveScene {
      */
     private static final float WORDS_TOP = 0.235f;
     private static final float ART_CENTRE = 0.505f;
-    private static final float TRACK_Y = 0.665f;
+    /**
+     * The track, and the stop names under it. The expanded capsule card rises to about 0.703 of
+     * the height (AmapTransitIsland's card, 176dp at the foot of the screen), so the names have
+     * to finish above it: the track sits at 0.585 and the names at 0.63, clear of the card.
+     */
+    private static final float TRACK_Y = 0.585f;
+    /** Below this the stop names would be under the expanded card, so they are not drawn there. */
+    private static final float NAMES_BOTTOM = 0.69f;
     /** OPPO's landmark pictures are 807x378. */
     private static final float ART_ASPECT = 378f / 807f;
     private static final float LABEL_ASPECT = 66f / 423f;
@@ -953,22 +1186,47 @@ final class AmapTransitScene implements ImmersiveScene {
          */
         void draw(Canvas canvas, Frame f, float left, float right, float y) {
             Nodes n = f.nodes;
-            float mid = (left + right) / 2f;
-            float[] xs = {left, mid, right};
-            // Where the train is: on the middle stop, or between it and the next.
-            float trainX = n.focus == 0 ? mid : (mid + right) / 2f;
+            // Only the stops that were named get a node, laid out from the right: one name stands
+            // where the stop beside the current one would, so a ride 高德 only named once shows one
+            // node rather than the same name three times. Three names hold OPPO's own spacing,
+            // 62 / 177 / 296 dp of 354; two stand at a third and two thirds.
+            boolean[] named = new boolean[3];
+            int namedCount = 0;
+            for (int i = 0; i < 3; i++) {
+                named[i] = n.names[i] != null && !n.names[i].trim().isEmpty();
+                if (named[i]) namedCount++;
+            }
+            if (namedCount == 0) return;
+            // One name stands in the middle, two at a third and two thirds, three at OPPO's
+            // 62 / 177 / 296 dp. A single name pinned to the right edge read as a stop that had
+            // been passed rather than the one the ride is at.
+            float[] xs = new float[3];
+            int first = 3 - namedCount;
+            for (int i = first; i < 3; i++) {
+                int k = i - first;
+                if (namedCount == 3) {
+                    xs[i] = k == 0 ? left : (k == 1 ? (left + 2f * right) / 3f : right);
+                } else if (namedCount == 2) {
+                    xs[i] = k == 0 ? (left + right) / 2f : right;
+                } else {
+                    xs[i] = (left + right) / 2f;
+                }
+            }
+            int hereAt = first;
+            float trainX = xs[hereAt];
             fill.setStrokeCap(Paint.Cap.ROUND);
             fill.setStrokeWidth(5f * dp);
             fill.setColor(f.lineBg);
-            canvas.drawLine(left, y, trainX, y, fill);
+            canvas.drawLine(xs[hereAt], y, trainX, y, fill);
             fill.setColor(0x33ffffff);
             canvas.drawLine(trainX, y, right, y, fill);
             node.setTextSize(13f * dp);
             Paint.FontMetrics fn = node.getFontMetrics();
             float slot = (right - left) / 2f - 6f * dp;
-            for (int i = 0; i < 3; i++) {
+            for (int i = hereAt; i < 3; i++) {
+                if (!named[i]) continue;
                 boolean passed = xs[i] <= trainX + 0.5f;
-                boolean current = i == 1;
+                boolean current = i == hereAt;
                 int tint = passed || current ? f.lineBg : 0xff4a4d55;
                 if (n.transfer[i]) {
                     // A transfer stop: a white-ringed pill with the interchange arrows.
@@ -991,8 +1249,13 @@ final class AmapTransitScene implements ImmersiveScene {
                     fill.setColor(Color.WHITE);
                     canvas.drawCircle(xs[i], y, r * 0.42f * dp, fill);
                 }
-                // The line-number badge over a transfer stop.
-                if (n.badge[i] != null) drawBadge(canvas, n.badge[i], n.badgeColor[i], xs[i], y - 15f * dp);
+                // The line-number badge over a transfer stop, kept off the current stop's name:
+                // below the line where the stop beside it has none to write there.
+                if (n.badge[i] != null) {
+                    boolean below = !named[i];
+                    drawBadge(canvas, n.badge[i], n.badgeColor[i], xs[i],
+                            below ? y + 14f * dp : y - 15f * dp);
+                }
                 // The name below.
                 node.setColor(current ? 0xf2ffffff : 0x99ffffff);
                 node.setFakeBoldText(current);
@@ -1074,7 +1337,16 @@ final class AmapTransitScene implements ImmersiveScene {
         }
 
         void setFrame(Frame f) {
+            setFrame(f, false);
+        }
+
+        /**
+         * The new state, and whether it is a different one: a different state plays the landmark
+         * once, the same state again leaves it where it stopped.
+         */
+        void setFrame(Frame f, boolean again) {
             mF = f;
+            if (again) replayArt();
             invalidate();
         }
 
@@ -1106,13 +1378,30 @@ final class AmapTransitScene implements ImmersiveScene {
             invalidate();
         }
 
+        /**
+         * The landmark plays once and stops, the way the island is read: a new state is shown by
+         * one pass of the moving landmark, not by a loop that keeps drawing attention after it.
+         * Playing it again is what [replayArt] is for, and that is called when the state really
+         * changed rather than on every repost.
+         */
         private void startArt() {
             if (mLive && mArt instanceof AnimatedImageDrawable) {
                 AnimatedImageDrawable a = (AnimatedImageDrawable) mArt;
-                a.setRepeatCount(AnimatedImageDrawable.REPEAT_INFINITE);
+                a.setRepeatCount(0);
                 a.start();
             }
             paintGround();
+        }
+
+        /**
+         * One pass again, for a state that changed while the landmark was already up: the same
+         * picture, started over from its first frame.
+         */
+        void replayArt() {
+            if (!(mArt instanceof AnimatedImageDrawable)) return;
+            AnimatedImageDrawable a = (AnimatedImageDrawable) mArt;
+            stopArt();
+            if (mLive) a.start();
         }
 
         private void stopArt() {

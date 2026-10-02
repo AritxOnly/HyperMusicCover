@@ -940,6 +940,9 @@ public class Main extends XposedModule {
         PassBlurScaleFix.install();
         // The mini player hangs off the shortcut row, not the clock container.
         MiniPlayerRuntime.install(cl);
+        // 高德's ride card is a focus notification of its own only once the cloud list that
+        // decides who may have one answers for it (AmapFocus).
+        AmapFocus.install(cl);
 
         try {
             sContainerCls = Xp.findClass(CLS_CONTAINER, cl);

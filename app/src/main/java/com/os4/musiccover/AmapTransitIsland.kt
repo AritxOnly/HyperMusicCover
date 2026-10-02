@@ -11,6 +11,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.LinearGradient
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.RectF
 import android.graphics.Shader
 import android.graphics.Typeface
@@ -62,6 +63,13 @@ internal object AmapTransitIsland {
 
     /** The card's height, as the layout has it. */
     private const val CARD_DP = 176f
+    /**
+     * The card's corner radius, the system's own for a notification's card: the plugin's
+     * focus_notify_bg_img_bg is a rectangle of notification_item_bg_radius, and its template clips
+     * to it (`outlineProvider="background"` + `clipToOutline="true"`). A card that draws its own
+     * pixels has to cut them itself, or the four corners come out square.
+     */
+    private const val CORNER_DP = 24f
     /** The ground is soft; two thirds of the card's pixels are plenty and a third the memory. */
     private const val GROUND_SCALE = 0.67f
     private const val BOTTOM = 0xff07080b.toInt()
@@ -344,7 +352,8 @@ internal object AmapTransitIsland {
     /**
      * The ground, as the page has it in little: the line's colour into near-black, and the
      * landmark on the right, fading into the colour under the words and darkening under the
-     * track. A default picture rather than a landmark stays dim, as on the page.
+     * track. A default picture rather than a landmark stays dim, as on the page. Everything is
+     * cut to the card's corners, the way the system's own card is.
      */
     private fun ground(ctx: Context, f: AmapTransitScene.Frame, scale: Float): Bitmap {
         val dp = ctx.resources.displayMetrics.density
@@ -352,6 +361,7 @@ internal object AmapTransitIsland {
         val h = (CARD_DP * dp * scale).toInt().coerceAtLeast(1)
         val b = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         val c = Canvas(b)
+        c.clipPath(corners(w, h, CORNER_DP * dp * scale))
         val p = Paint(Paint.DITHER_FLAG)
         val top = AmapTransitScene.blend(f.lineBg, BOTTOM, 0.42f)
         p.shader = LinearGradient(0f, 0f, w.toFloat(), h.toFloat(),
@@ -380,13 +390,23 @@ internal object AmapTransitIsland {
     }
 
     /** The three stops, the page's own Track, the badge's room only when there is a badge. */
-    private fun track(f: AmapTransitScene.Frame, w: Int, dp: Float): Bitmap {
-        val badged = f.nodes.badge.any { it != null }
+    private fun track(f: AmapTransitScene.Frame, w: Int, dp: Float): Bitmap {        val badged = f.nodes.badge.any { it != null }
         val top = (if (badged) AmapTransitScene.Track.TOP_DP else 12f) * dp
         val h = (top + AmapTransitScene.Track.BOTTOM_DP * dp).toInt()
         val b = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         AmapTransitScene.Track(dp).draw(Canvas(b), f, w * 0.12f, w * 0.88f, top)
         return b
+    }
+
+    /**
+     * A rounded rectangle's path, for cutting a bitmap to the card's corners. `clipPath` is
+     * antialiased while `clipRect` is not, and this is a soft gradient against a light shade.
+     */
+    private fun corners(w: Int, h: Int, r: Float): Path {
+        val radius = r.coerceAtMost(minOf(w, h) / 2f)
+        val p = Path()
+        p.addRoundRect(RectF(0f, 0f, w.toFloat(), h.toFloat()), radius, radius, Path.Direction.CW)
+        return p
     }
 
     /** The line's name in a pill of its colour: 「地铁1号线」 on red. */

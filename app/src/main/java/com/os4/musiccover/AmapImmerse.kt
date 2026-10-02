@@ -176,6 +176,14 @@ internal object AmapImmerse {
             override fun onReceive(c: Context, i: Intent) {
                 if (!ProbeGuard.admit(this, i)) return
                 i.getStringExtra("transit")?.let {
+                    // A payload rides in base64: its JSON holds Chinese and colons, which `am
+                    // broadcast` reads as a URI and cuts apart on the way.
+                    val b64 = i.getStringExtra("json")
+                    AmapTransitShare.json = if (b64.isNullOrEmpty()) ""
+                    else runCatching {
+                        String(android.util.Base64.decode(b64, android.util.Base64.DEFAULT),
+                            Charsets.UTF_8)
+                    }.getOrDefault("")
                     resultData = AmapTransitShare.probe(it)
                     return
                 }
@@ -187,6 +195,24 @@ internal object AmapImmerse {
                     Xp.log(TAG + "SystemUI asked, armed=" + armed)
                     if (armed) tell(true)
                     AmapTransitShare.resend()
+                    return
+                }
+                // Everything at once, for one paste: the ride's own payloads, how often 高德
+                // pushed them, and the probe's state in one answer.
+                if (i.getBooleanExtra("full", false)) {
+                    resultData = AmapTransitShare.eventsDump() + "\n" +
+                        AmapTransitShare.ledgerDump() + "\n" +
+                        AmapTransitShare.describe()
+                    return
+                }
+                // The whole ledger, for a ride's worth of payloads at once.
+                if (i.getBooleanExtra("max", false)) {
+                    resultData = AmapTransitShare.ledgerDump()
+                    return
+                }
+                // How often 高德 pushed, one line per send.
+                if (i.getBooleanExtra("events", false)) {
+                    resultData = AmapTransitShare.eventsDump()
                     return
                 }
                 val sb = StringBuilder()

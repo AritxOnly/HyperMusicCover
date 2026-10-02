@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import android.os.SystemClock
+import org.json.JSONArray
 import org.json.JSONObject
 import java.util.Collections
 import java.util.WeakHashMap
@@ -57,11 +58,20 @@ internal object AmapTransitShare {
     private const val CODE_OK = 0
     private const val CODE_UNSUPPORTED = 1003
 
-    /**
-     * How often an unchanged state is passed on anyway, so SystemUI knows the navigation is
-     * still on even when 高德 shares nothing new between two stations.
-     */
+    /** How often an unchanged state is passed on anyway, so SystemUI knows the navigation is
+     * still on even when 高德 shares nothing new between two stations. */
     private const val KEEPALIVE_MS = 60_000L
+
+    /** Payloads kept whole in the ledger, and how long one may be before it is cut. */
+    private const val MAX_LEDGER = 28
+    private const val MAX_LEDGER_CHARS = 3600
+    /** Sends kept in the event log, which is what says how often 高德 pushes. */
+    private const val MAX_EVENTS = 90
+    /** What a line without a colour of its own is drawn in: neutral, not a made-up line colour. */
+    private const val NEUTRAL = "#8a8f98"
+    /** Every send, oldest first: "12.3s 103 sendMessage 892B", for the interval between them. */
+    private val events = ArrayList<String>()
+    private val startAt = SystemClock.uptimeMillis()
 
     /** The clients handed out for the authority; weak, so a released one is forgotten. */
     private val ours: MutableSet<ContentProviderClient> =
@@ -70,6 +80,64 @@ internal object AmapTransitShare {
     private const val WEARABLE = "com.amap.bundle.wearable.ajx.NativesModuleWearable"
     /** The script's last call of each kind and bizType, oldest first (watchWearable). */
     private val wearable = LinkedHashMap<String, String>()
+    /** The device layer's last payloads per bizType and method, oldest first (watchWearable). */
+    private val payloads = LinkedHashMap<String, String>()
+    /**
+     * Every payload the device layer carried, whole: "bizType method" -> "12.3s 1234B {json}".
+     * The ride's own data is what this is for, so nothing here is cut without saying so.
+     */
+    private val ledger = LinkedHashMap<String, String>()
+    private val ledgerAt = LinkedHashMap<String, Long>()
+
+    /** 高德's device layer, the one type behind every vendor card. */
+    private const val WEARABLE_SERVICE = "com.amap.bundle.wearable.WearableService"
+    /** The OPPO intelligent card's device class: il3 in 17.00.0.2005, LiveCardOppoIntelligentTemplate. */
+    private const val OPPO_CARD = "il3"
+    /** bizType -> device config factory. Xn0.a(bizType, data) is where a channel's devices come from. */
+    private const val BIZ_TABLE = "xn0"
+    /** The device-config holder a channel is built from: wn0(deviceId). */
+    private const val DEVICE_CONFIG = "wn0"
+    /** 高德's own phone-type answer (com.feather.support.RomUtil): watched, then left alone. */
+    private const val ROM_UTIL = "com.feather.support.RomUtil"
+    /** The channel 高德's own ride card comes down: the OPPO AOD card's bizType. */
+    private const val RIDE_BIZ = 103
+    /** The channel 高德's live ride data comes down (amap_glass). */
+    private const val LIVE_BIZ = 113
+    /** Real ride cards turned into the island's entity (ride). */
+    private val cards = AtomicInteger()
+    /** The plan channel's last card and the live channel's last data, and whether a ride began. */
+    @Volatile private var planCard: JSONObject? = null
+    @Volatile private var plan: JSONArray? = null
+    /**
+     * Each line's own colour, by name, kept beside the plan: 高德 sends it on the plan's capsules
+     * (7号线's #86B81C), and a plan rebuilt without them - the simulation's, say - must not cost
+     * the ride the colour the line actually has.
+     */
+    private val lineColors = HashMap<String, String>()
+    /** The lines a simulation is using, which the real plan replaces on its next card. */
+    @Volatile private var simPlan: JSONArray? = null
+    @Volatile private var live: JSONObject? = null
+    @Volatile private var liveAt = 0L
+    @Volatile private var riding = false
+    @Volatile private var lastRide: String? = null
+    /** How many sendMessages each bizType has taken since this process started. */
+    private val sends = java.util.concurrent.ConcurrentHashMap<Int, AtomicInteger>()
+    /** The OPPO intelligent card's channel, the one 高德's Java opens for any phone that asks. */
+    private const val OPPO_BIZ = 10200
+    private const val OPPO_DEVICE = "thid_sdk_template_oppo_intelligent"
+    /** What the card's device needs before it will reach the provider at all (il3.isSupport). */
+    private const val PROVIDER = "IntelligentIntent"
+    private const val INTENT = "Navigation.NotifyPublicTransportStatus"
+    /** The begin-data that sets those two on the card; the same one an OPPO's script sends. */
+    private const val OPPO_BEGIN_DATA =
+        "{\"authority\":\"$PROVIDER\",\"intentName\":\"$INTENT\"}"
+    /** Set while [bridgeOppo] is inside the service, so its own call is not bridged again. */
+    private val bridging = java.util.concurrent.atomic.AtomicBoolean(false)
+    /** The bizTypes the bridge has opened OPPO's channel for, and how it went. */
+    private val bridged = LinkedHashMap<String, String>()
+    @Volatile private var oppoCard: Class<*>? = null
+    /** Device-config holder the table handed out for 10200, the one 高德 itself would build. */
+    @Volatile private var oppoConfig: Any? = null
 
     private val acquires = AtomicInteger()
     private val queries = AtomicInteger()
@@ -171,8 +239,9 @@ internal object AmapTransitShare {
         lastShareAt = SystemClock.uptimeMillis()
         val json = JSONObject(intentData)
         val name = json.optString("intentName")
+        ledger("shareIntent", listOf(OPPO_BIZ, intentData))
         if (name != INTENT_NAME) {
-            Xp.log(TAG + "shareIntent for $name, not ours")
+            Xp.log(TAG + "shareIntent for '$name', not ours: " + intentData.take(200))
             return result(CODE_OK, null)
         }
         val entity = json.optJSONObject("intentEntity") ?: return result(CODE_UNSUPPORTED, null)
@@ -233,8 +302,123 @@ internal object AmapTransitShare {
         when (what) {
             "demo" -> tell(JSONObject(AmapTransitScene.DEMO).toString(), "demo")
             "end" -> tell(null, "demo")
+            "进站", "enter" -> simulate("进站")
+            "乘车", "ride" -> simulate("乘车")
+            "换乘", "transfer" -> simulate("换乘")
+            "到达", "arrive" -> simulate("到达")
+            // `AMAPPROBE --es transit raw --es json '<the payload 高德 sent>'`: the payload itself,
+            // back through the same `ride()` a real one goes through. A card's shape that arrives
+            // from a real ride is the only way to try the reading of it.
+            "raw", "payload" -> raw(json)
         }
         return describe()
+    }
+
+    /** One payload 高德 sent, taken as if it had just arrived on its channel. */
+    private fun raw(json: String) {
+        if (json.isEmpty()) {
+            Xp.log(TAG + "raw: nothing to take")
+            return
+        }
+        val o = try {
+            JSONObject(json)
+        } catch (t: Throwable) {
+            Xp.log(TAG + "raw: not JSON: " + t)
+            return
+        }
+        // The whole message, as `sendMessage` hands it over: either a 103 card or a 113 payload,
+        // with the channel taken from `bizType` when the message carries one.
+        val biz = o.optInt("bizType", -1)
+        val card = o.optJSONObject("cardData")
+        if (card != null) {
+            Xp.log(TAG + "raw: 103 card " + card.optString("title"))
+            ride(RIDE_BIZ, o.toString())
+            return
+        }
+        if (o.optString("datas").isNotEmpty()) {
+            Xp.log(TAG + "raw: 113 payload")
+            ride(LIVE_BIZ, o.toString())
+            return
+        }
+        Xp.log(TAG + "raw: neither a card nor a live payload, bizType=" + biz)
+    }
+
+    /** The payload a `raw` probe carried in, on its way to [raw]. */
+    @Volatile var json: String = ""
+
+    /**
+     * `AMAPPROBE --es transit 进站|乘车|换乘|到达`: the ride card 高德 sends for that stage of the
+     * trip, made here and fed through the same `ride()` a real card goes through, so the whole
+     * way to the island can be tried without a train. The card is 高德's own shape (titleItems,
+     * subTitleItems, planData, location), and the lines are the plan's own.
+     */
+    private fun simulate(stage: String) {
+        // The simulation's own plan, built from the real one where it is there: the capsules carry
+        // each line's own colour (7号线's #86B81C, say), and a capsule with only a name would make
+        // the badge fall back to a colour the line does not have.
+        val lines = ArrayList<String>()
+        val colors = HashMap<String, String>()
+        for (i in 0 until (plan?.length() ?: 0)) {
+            val p = plan!!.optJSONObject(i) ?: continue
+            val name = p.optString("name")
+            lines.add(name)
+            val c = p.optString("color").trim()
+            if (c.startsWith("#")) colors[name] = c
+        }
+        // Whatever the plan already knew about a line's colour, the rebuilt capsules keep. A plan
+        // that arrives without its capsules' colours (高德's own does carry them) must not be the
+        // reason the badge shows a colour the line does not have.
+        synchronized(lineColors) {
+            for (l in lines) if (!colors.containsKey(l)) lineColors[l]?.let { colors[l] = it }
+            // The line the real card named is the one being simulated when the plan is its own.
+            for (i in 0 until (planCard?.optJSONArray("planData")?.length() ?: 0)) {
+                val o = planCard!!.optJSONArray("planData")!!.optJSONObject(i) ?: continue
+                val bg = o.optString("bgColor").trim()
+                val name = o.optString("text").trim()
+                if (name.isNotEmpty() && bg.startsWith("#")) {
+                    lineColors[name] = bg
+                    colors[name] = bg
+                }
+            }
+        }
+        if (lines.isEmpty()) lines.addAll(listOf("7号线", "3号线", "番29路"))
+        val at = when (stage) {
+            "进站" -> 0
+            "乘车" -> 0
+            "换乘" -> 1
+            else -> lines.size - 1
+        }
+        val line = lines[at]
+        val next = if (at + 1 < lines.size) lines[at + 1] else ""
+        val station = if (stage == "换乘") "汉溪长隆" else "大学城南"
+        val action = if (stage == "到达") "已到达" else stage
+        val card = JSONObject()
+            .put("title", if (stage == "进站") "步行至 $station 地铁站" else "$action $line")
+            .put("arrived", stage == "到达")
+            .put("mainText", line)
+            .put("subText", if (stage == "进站") "$station(E口)" else station)
+            .put("remainMessage", if (stage == "到达") "已到达" else "约12分钟·09:31到达")
+            .put("titleItems", JSONArray()
+                .put(JSONObject().put("text", station))
+                .put(JSONObject().put("text", "(E口)"))
+                .put(JSONObject().put("text", action)))
+            .put("subTitleItems", JSONArray()
+                .put(JSONObject().put("text", line))
+                .put(JSONObject().put("text", "(美的大道方向)")))
+            .put("location", JSONObject().put("index", at).put("persent", 0)
+                .put("remainStations", if (stage == "到达") 0 else 3))
+        val plans = JSONArray()
+        card.put("planData", plans)
+        for (l in lines) {
+            val c = JSONObject().put("text", l)
+            colors[l]?.let { c.put("bgColor", it) }
+            plans.put(c)
+        }
+        // The simulation's own lines, so a stage without a next one cannot overwrite the plan
+        // 高德 gave (lineAt reads this first, and the real channel clears it again).
+        simPlan = rides(card.optJSONArray("planData"))
+        Xp.log(TAG + "simulate $stage: $line" + (if (next.isEmpty()) "" else " -> $next"))
+        ride(RIDE_BIZ, JSONObject().put("cardData", card).toString())
     }
 
     /** SystemUI started over: the last state again, if the navigation has not ended since. */
@@ -250,6 +434,10 @@ internal object AmapTransitShare {
      * The OPPO card is bizType 10200 (thid_sdk_template_oppo_intelligent, il3) and nothing in
      * 高德's Java holds it back on another phone; whether the script begins it is the question,
      * and a ride with this on answers it.
+     *
+     * Every string argument is kept whole - the ride's own JSON is the point of this - and the
+     * same calls are hooked once more on the service underneath, where a channel that the AJX
+     * module never reaches (a page's own begin, say) still shows up.
      */
     private fun watchWearable(cl: ClassLoader) {
         try {
@@ -258,16 +446,16 @@ internal object AmapTransitShare {
                     "sendNotify", "sendLockScreenMessage")) {
                 try {
                     Xp.hookAll(module, name) { chain ->
-                        val a = chain.args
-                        val biz = a.firstOrNull { it is Int } as Int?
-                        val text = a.firstOrNull { it is String } as String?
-                        val line = "$name($biz)" + (text?.let { " " + it.take(160) } ?: "")
-                        synchronized(wearable) {
-                            wearable.remove(line.substringBefore(' '))
-                            wearable[line.substringBefore(' ')] = line
-                            while (wearable.size > 12) wearable.remove(wearable.keys.first())
+                        record(name, chain.args)
+                        if (name == "sendMessage") {
+                            val a = chain.args
+                            val biz = a.firstOrNull { it is Int } as Int?
+                            val text = a.firstOrNull { it is String } as String?
+                            if (text != null && (biz == RIDE_BIZ || biz == LIVE_BIZ)) ride(biz, text)
                         }
-                        if (name != "sendMessage" && name != "sendNotify") Xp.log(TAG + "script: $line")
+                        if (name != "sendMessage" && name != "sendNotify") {
+                            Xp.log(TAG + "script: " + describeCall(name, chain.args))
+                        }
                         chain.proceed()
                     }
                 } catch (t: Throwable) {
@@ -277,7 +465,807 @@ internal object AmapTransitShare {
         } catch (t: Throwable) {
             Xp.log(TAG + "wearable module not watched: $t")
         }
+        try {
+            val service = Xp.findClass(WEARABLE_SERVICE, cl)
+            bridgeOppo(service, cl)
+            for (name in arrayOf("bizBegin", "bizEnd", "sendMessage", "sendNotify")) {
+                try {
+                    Xp.hookAll(service, name) { chain ->
+                        // Inside the bridge's own call: the plain one, no record, no bridge.
+                        if (bridging.get()) return@hookAll chain.proceed()
+                        record("svc." + name, chain.args)
+                        if (name == "bizEnd") {
+                            val biz = chain.args.firstOrNull { it is Int } as Int?
+                            val key = "bizBegin($biz)"
+                            val ours = synchronized(bridged) {
+                                biz != null && biz != OPPO_BIZ && bridged.containsKey(key)
+                            }
+                            val svc = chain.thisObject
+                            chain.proceed()
+                            if (ours && svc != null) close(svc, biz!!)
+                            return@hookAll null
+                        }
+                        Xp.log(TAG + "service " + name + " " + describeCall(name, chain.args))
+                        chain.proceed()
+                    }
+                } catch (t: Throwable) {
+                    Xp.log(TAG + "service $name not watched: $t")
+                }
+            }
+        } catch (t: Throwable) {
+            Xp.log(TAG + "wearable service not watched: $t")
+        }
     }
+
+    /**
+     * The channel 高德's script never opens here. 高德's Java keeps the OPPO intelligent card
+     * (bizType 10200, thid_sdk_template_oppo_intelligent, il3) unconditional - `xn0`'s table maps
+     * it and `jl3.getConfig` hands it back for any phone - so a begin for it needs no machine
+     * check at all; only the script's decision is missing.
+     *
+     * Two halves, because the card on its own is a dead end:
+     *  - `bizBegin(10200)` is called beside every channel the script does begin, with the begin
+     *    data that sets the card's provider and intent (il3.onReceiveBizBeginData) and the intent
+     *    itself pre-armed on the instance (isSupport reads both before it will call at all). The
+     *    provider it then asks for is this module's own stand-in, so the card is supported here.
+     *  - the card's device config is put into the channel's own device list as well (`xn0.a`), so
+     *    every payload the script sends for the ride reaches the card too, in 高德's own words.
+     * What comes out is whatever 高德's script sends for a bus or subway ride, passed through the
+     * same path SceneService uses on an OPPO; the probe reports both halves.
+     */
+    private fun bridgeOppo(service: Class<*>, cl: ClassLoader) {
+        try {
+            oppoCard = Xp.findClass(OPPO_CARD, cl)
+            hookOppoCard()
+        } catch (t: Throwable) {
+            Xp.log(TAG + "OPPO card hooks failed: $t")
+        }
+        try {
+            val table = Xp.findClass(BIZ_TABLE, cl)
+            for (m in table.declaredMethods) {
+                if (m.name != "a" || m.parameterTypes.size != 2 ||
+                    m.parameterTypes[0] != Integer.TYPE
+                ) continue
+                m.isAccessible = true
+                Xp.hook(m) { chain ->
+                    val out = chain.proceed()
+                    // Only a channel the bridge opened, and never 10200's own list.
+                    val biz = chain.args.firstOrNull { it is Int } as Int?
+                    if (biz != null && biz != OPPO_BIZ && out is MutableList<*>) inject(biz, out)
+                    out
+                }
+            }
+        } catch (t: Throwable) {
+            Xp.log(TAG + "device table not hooked: $t")
+        }
+        // The script's own door: the AJX module's begin, on whichever object carries it - here the
+        // script's bizBegin never reaches WearableService itself, so the service is called directly.
+        try {
+            val module = Xp.findClass(WEARABLE, cl)
+            val begins = module.declaredMethods.filter {
+                (it.name == "bizBegin" || it.name == "bizBeginWithData") &&
+                    it.parameterTypes.firstOrNull() == Integer.TYPE
+            }
+            for (begin in begins) {
+                begin.isAccessible = true
+                val iface = ifaceOf(begin)
+                val data = begin.parameterTypes.getOrNull(1) == String::class.java
+                Xp.hook(begin) { chain ->
+                    val a = chain.args
+                    val biz = a.firstOrNull { it is Int } as Int?
+                    val svc = a.firstOrNull { iface.isInstance(it) }
+                    if (biz != null && biz != OPPO_BIZ && svc != null) {
+                        open(svc, begin, biz, a.getOrNull(1) as? String, data)
+                    }
+                    chain.proceed()
+                }
+            }
+            Xp.log(TAG + "OPPO channel bridge armed on " + begins.size + " module begin(s)")
+        } catch (t: Throwable) {
+            Xp.log(TAG + "OPPO channel bridge failed: $t")
+        }
+    }
+
+    /** The wearable service type the module's begin carries, whatever it is called. */
+    private fun ifaceOf(begin: java.lang.reflect.Method): Class<*> =
+        begin.parameterTypes.firstOrNull { it.name.contains("earable") && it.isInterface }
+            ?: begin.parameterTypes[1]
+
+    /**
+     * The card's instance, whichever begin built it: its provider and intent are set before its
+     * own isSupport looks at them, so it counts as supported here even though the script never
+     * handed it the data an OPPO's script would.
+     */
+    private fun hookOppoCard() {
+        val card = oppoCard ?: return
+        try {
+            Xp.hookAll(card, "isSupport") { chain ->
+                arm(chain.thisObject)
+                chain.proceed()
+            }
+        } catch (t: Throwable) {
+            Xp.log(TAG + "card isSupport not hooked: $t")
+        }
+        try {
+            Xp.hookAll(card, "connect") { chain ->
+                setBridged("card", "connected")
+                Xp.log(TAG + "$OPPO_DEVICE connected, provider=$PROVIDER intent=$INTENT")
+                chain.proceed()
+            }
+        } catch (t: Throwable) {
+            Xp.log(TAG + "card connect not hooked: $t")
+        }
+        // What the card is handed, which is what it forwards: a payload with no intentName in it
+        // is one no OPPO card could post, so this is where the script's shape is judged.
+        try {
+            Xp.hookAll(card, "send") { chain ->
+                val a = chain.args
+                ledger("card.send", listOf(OPPO_BIZ, a.getOrNull(0)))
+                chain.proceed()
+            }
+        } catch (t: Throwable) {
+            Xp.log(TAG + "card send not hooked: $t")
+        }
+    }
+
+    /** il3's authority (h) and intent (g), the two isSupport refuses without. */
+    private fun arm(device: Any?) {
+        if (device == null) return
+        try {
+            Xp.setObjectField(device, "h", PROVIDER)
+            Xp.setObjectField(device, "g", INTENT)
+        } catch (t: Throwable) {
+            Xp.log(TAG + "card not armed: $t")
+        }
+    }
+
+    /** Puts 10200's own device config into [list], once per channel. */
+    private fun inject(biz: Int, list: MutableList<*>) {
+        val key = "bizBegin($biz)"
+        synchronized(bridged) { if (!bridged.containsKey(key)) return }
+        try {
+            val cfg = oppoConfig ?: config().also { oppoConfig = it }
+            if (cfg == null) {
+                setBridged(key, "no 10200 config")
+                return
+            }
+            if (list.contains(cfg)) return
+            @Suppress("UNCHECKED_CAST")
+            (list as MutableList<Any?>).add(cfg)
+            setBridged(key, "in channel, " + list.size + " devices")
+            Xp.log(TAG + "$OPPO_DEVICE rides in bizType $biz (" + list.size + " devices)")
+        } catch (t: Throwable) {
+            setBridged(key, "inject failed " + t)
+        }
+    }
+
+    /** One fresh wn0 for the OPPO card, from 高德's own table, never the script's list. */
+    private fun config(): Any? {
+        val table = try {
+            Xp.findClass(BIZ_TABLE, oppoCard?.classLoader)
+        } catch (t: Throwable) {
+            return null
+        }
+        for (m in table.declaredMethods) {
+            if (m.name != "a" || m.parameterTypes.size != 2 ||
+                m.parameterTypes[0] != Integer.TYPE
+            ) continue
+            try {
+                m.isAccessible = true
+                val out = m.invoke(null, OPPO_BIZ, null) as? List<*> ?: continue
+                if (out.isNotEmpty()) return out[0]
+            } catch (t: Throwable) {
+                Xp.log(TAG + "10200 config not read: $t")
+            }
+        }
+        return null
+    }
+
+    /** Opens 10200 beside the channel the script just began, once per bizType. */
+    private fun open(svc: Any, begin: java.lang.reflect.Method, biz: Int, data: String?,
+                     withData: Boolean) {
+        val key = "bizBegin($biz)"
+        Xp.log(TAG + "opening $OPPO_DEVICE for bizType $biz (withData=" + withData + ")")
+        synchronized(bridged) {
+            if (bridged.containsKey(key)) return
+            bridged[key] = "opening"
+            while (bridged.size > 8) bridged.remove(bridged.keys.first())
+        }
+        try {
+            if (!bridging.compareAndSet(false, true)) return
+            try {
+                val method = on(svc, "bizBeginWithData")
+                val plain = on(svc, "bizBegin")
+                val cbType = (method ?: plain)?.parameterTypes?.get(1) ?: return
+                // The service drops a begin whose callback is null, so a stand-in of the script's
+                // own kind is made; only the card's connection state ever goes to it.
+                val cb = java.lang.reflect.Proxy.newProxyInstance(
+                    cbType.classLoader, arrayOf(cbType)
+                ) { _, m, args ->
+                    if (m.name == "callback") setBridged(key, "callback " + args?.firstOrNull())
+                    null
+                }
+                if (method != null) {
+                    // The card's provider and intent come from the begin data (il3.onReceiveBizBeginData),
+                    // so 高德's own for an OPPO is used; the script's is not that shape.
+                    method.invoke(svc, OPPO_BIZ, OPPO_BEGIN_DATA, cb, null)
+                } else if (plain != null) {
+                    plain.invoke(svc, OPPO_BIZ, cb, null)
+                    beginOppoWithData(svc, cb)
+                } else {
+                    setBridged(key, "no begin on the service")
+                    return
+                }
+            } finally {
+                bridging.set(false)
+            }
+            if (bridged[key] == "opening") setBridged(key, "asked")
+            Xp.log(TAG + "bridged $OPPO_DEVICE for bizType $biz -> bizBegin($OPPO_BIZ)")
+        } catch (t: Throwable) {
+            setBridged(key, "failed " + t)
+            Xp.log(TAG + "bridge for $biz failed: $t")
+        }
+    }
+
+    /** One of the service's own methods, by name, whatever its object is. */
+    private fun on(svc: Any, name: String): java.lang.reflect.Method? =
+        svc.javaClass.methods.firstOrNull {
+            it.name == name && it.parameterTypes.firstOrNull() == Integer.TYPE
+        }
+
+    /** il3.onReceiveBizBeginData with the card's two fields, for a data-less begin. */
+    private fun beginOppoWithData(svc: Any, cb: Any) {
+        val method = on(svc, "bizBeginWithData") ?: return
+        method.invoke(svc, OPPO_BIZ, OPPO_BEGIN_DATA, cb, null)
+    }
+
+    /** The card's channel goes when the script's does, so it never outlives the ride. */
+    private fun close(svc: Any, biz: Int) {
+        try {
+            val method = on(svc, "bizEnd") ?: return
+            if (!bridging.compareAndSet(false, true)) return
+            try {
+                method.invoke(svc, OPPO_BIZ)
+            } finally {
+                bridging.set(false)
+            }
+            synchronized(bridged) { bridged.remove("bizBegin($biz)") }
+            Xp.log(TAG + "closed $OPPO_DEVICE with bizType $biz")
+        } catch (t: Throwable) {
+            Xp.log(TAG + "close for $biz failed: $t")
+        }
+    }
+
+    private fun setBridged(key: String, what: String) {
+        synchronized(bridged) { bridged[key] = what }
+    }
+
+    /** The last calls of each kind and bizType and the last payloads of each, capped. */
+    private fun record(name: String, args: List<Any?>) {
+        val biz = args.firstOrNull { it is Int } as Int?
+        val head = "$name($biz)"
+        val line = describeCall(name, args)
+        val text = args.firstOrNull { it is String && (it as String).isNotEmpty() } as String?
+        if (name == "sendMessage" && biz != null) {
+            sends.computeIfAbsent(biz) { AtomicInteger() }.incrementAndGet()
+        }
+        synchronized(wearable) {
+            wearable.remove(head)
+            wearable[head] = line
+            while (wearable.size > 12) wearable.remove(wearable.keys.first())
+        }
+        if (text != null) {
+            synchronized(payloads) {
+                payloads.remove(head)
+                payloads[head] = line
+                while (payloads.size > 8) payloads.remove(payloads.keys.first())
+            }
+        }
+        ledger(name, args)
+    }
+
+    /** Every argument of one device-layer call, strings whole. */
+    private fun describeCall(name: String, args: List<Any?>): String {
+        val biz = args.firstOrNull { it is Int } as Int?
+        val sb = StringBuilder(name).append('(').append(biz)
+        for (a in args) {
+            if (a is Int) continue
+            sb.append(", ").append(
+                when (a) {
+                    null -> "null"
+                    is String -> '"' + a + '"'
+                    is Boolean -> a.toString()
+                    else -> a.javaClass.simpleName + '@' + Integer.toHexString(System.identityHashCode(a))
+                }
+            )
+        }
+        return sb.append(')').toString()
+    }
+
+    /**
+     * The whole payload under the channel it went down, kept per bizType and method. A payload
+     * longer than [MAX_LEDGER_CHARS] is cut with its length said, so a schema that runs long is
+     * still recognisable; the probe's `max` dump answers with all of them.
+     */
+    private fun ledger(name: String, args: List<Any?>) {
+        val biz = args.firstOrNull { it is Int } as Int?
+        val text = args.firstOrNull { it is String && (it as String).length > 2 } as String?
+            ?: return
+        val key = "$biz " + name
+        val now = SystemClock.uptimeMillis()
+        val at = ((now - startAt).toDouble() / 1000.0).toString()
+        val cut = if (text.length > MAX_LEDGER_CHARS)
+            text.take(MAX_LEDGER_CHARS) + "…(+" + (text.length - MAX_LEDGER_CHARS) + " chars)"
+        else text
+        synchronized(ledger) {
+            ledger[key] = at + "s " + text.length + "B " + cut
+            ledgerAt[key] = now
+            while (ledger.size > MAX_LEDGER) {
+                val first = ledger.keys.first()
+                ledger.remove(first)
+                ledgerAt.remove(first)
+            }
+        }
+        // The event log, which answers "how often does 高德 push": one line per send, with the
+        // gap since the one before it, so a ride's opening burst, its steady countdown and its
+        // station changes are each visible as their own spacing.
+        synchronized(events) {
+            val gap = if (events.isEmpty()) 0.0
+            else ((now - startAt).toDouble() / 1000.0) - events.last().substringBefore('s').toDouble()
+            events.add(String.format("%.1fs +%.1fs %s %dB", (now - startAt) / 1000.0, gap, key,
+                text.length))
+            while (events.size > MAX_EVENTS) events.removeAt(0)
+        }
+    }
+
+    /** Every send, oldest first, and how far apart they were. */
+    fun eventsDump(): String {
+        val sb = StringBuilder("events:")
+        synchronized(events) {
+            if (events.isEmpty()) return sb.append(" nothing yet").toString()
+            for (e in events) sb.append("\n  ").append(e)
+        }
+        return sb.toString()
+    }
+
+    /** The ledger, whole, for a probe that asked for everything. */
+    fun ledgerDump(): String {
+        val sb = StringBuilder("ledger:")
+        synchronized(ledger) {
+            if (ledger.isEmpty()) return sb.append(" nothing yet").toString()
+            for ((k, v) in ledger) sb.append("\n  ").append(k).append("  ").append(v)
+        }
+        return sb.toString()
+    }
+
+    /**
+     * The ride card 高德 really sends, turned into the entity this module already draws.
+     *
+     * 高德 keeps two channels for a bus or subway navigation, and between them they carry the whole
+     * ride. Neither is an intent entity - nothing in 高德's Java builds one - so both are turned
+     * into the same GaoDePtIntentEntity-shaped JSON the IntelligentIntent provider answers with,
+     * and AmapTransitScene and the island need no change at all.
+     *
+     * bizType 103, the plan (its own OPPO AOD card's channel, third_sdk_oppo_aod):
+     *
+     *   {"cardData":{"planData":[{"icon":"bus_foot_a","subText":"13"},{"text":"7号线",
+     *      "bgColor":"#86B81C"},{"text":"3号线","bgColor":"#FFA500"},{"text":"番29路"}]}}
+     *
+     *   and, once the ride is under way, the trip card itself:
+     *
+     *   {"cardData":{"title":"步行至 大学城南地铁站", "mainText":"4号线","subText":"大学城南(E口)",
+     *      "remainMessage":"21分钟·08:21到达",
+     *      "titleItems":[{"text":"大学城南"},{"text":"(E口)"},{"text":"进站"}],
+     *      "subTitleItems":[{"text":"4号线"},{"text":"(南沙客运港方向)"}],
+     *      "arrived":false,"location":{"index":0,"persent":0,"remainStations":1}}}
+     *
+     * bizType 113 (amap_glass) carries the live part: which line is running, where its vehicle is,
+     * how many stops are left, and the next train's countdown.
+     *
+     *   {"datas":"[{\"type\":25,\"data\":{
+     *      \"realtime\":{\"buses\":[{\"line\":\"440100017560\",\"station_index\":\"8\",
+     *         \"trip\":[{\"grade_words\":\"已进站\",\"station_left\":\"0\",\"speed\":\"5\",
+     *            \"track\":{\"xs\":\"113.38520500\",\"ys\":\"22.93589000\"}}]}]},
+     *      \"subway\":[{\"lineId\":\"440100023034\",\"tripTime\":[{\"mainTitle\":\"2分钟\"}]}],
+     *      \"arriveRemind\":{\"remainStopNum\":7,\"remainTime\":4631,\"remainLength\":26553}}}]"}
+     *
+     * The walking phase is left alone (高德 has an island of its own for it) and the card is taken
+     * down once the ride ends.
+     */
+    private fun ride(biz: Int, payload: String) {
+        try {
+            val root = JSONObject(payload)
+            if (biz == RIDE_BIZ) {
+                val data = root.optJSONObject("cardData") ?: return
+                val fresh = rides(data.optJSONArray("planData"))
+                if (plan == null || fresh.length() != plan!!.length()) {
+                    plan = fresh
+                    simPlan = null
+                    Xp.log(TAG + "plan: " + (0 until fresh.length()).joinToString(" -> ") {
+                        fresh.optJSONObject(it)!!.optString("kind") + ":" +
+                            fresh.optJSONObject(it)!!.optString("name")
+                    })
+                }
+                val title = data.optString("title").trim()
+                if (title.isEmpty()) return
+                planCard = data
+                if (title.contains("步行")) {
+                    // The walking phase is 高德's own; the ride starts when the card does.
+                    if (!riding) clear()
+                    return
+                }
+                riding = true
+            } else {
+                val data = root.optJSONArray("datas") ?: return
+                val inner = data.optJSONObject(0)?.optJSONObject("data") ?: return
+                live = inner
+                liveAt = SystemClock.uptimeMillis()
+                if (!riding) return
+            }
+            Xp.log(TAG + "ride: card=" + (planCard != null) + " live=" + (live != null) +
+                " plan=" + (plan?.length() ?: -1) + " riding=" + riding)
+            show()
+        } catch (t: Throwable) {
+            Xp.log(TAG + "ride card failed: " + t + " " + t.stackTrace.take(4).joinToString(" | "))
+        }
+    }
+
+    /**
+     * The ride's lines, in the order the trip takes them. The plan's capsules are a leg each:
+     * a walking one is `capsuleType 0` (or the foot icon), a subway `2`, a bus `1` with a line
+     * name. 「13」 on a walking capsule is its minutes, not a bus.
+     */
+    private fun rides(plans: JSONArray?): JSONArray {
+        val out = JSONArray()
+        for (i in 0 until (plans?.length() ?: 0)) {
+            val o = plans!!.optJSONObject(i) ?: continue
+            val name = o.optString("text").trim()
+            if (name.isEmpty()) continue
+            if (o.optString("icon").startsWith("bus_foot")) continue
+            if (o.optString("capsuleType") == "0") continue
+            val bg = o.optString("bgColor").trim()
+            if (name.isNotEmpty() && bg.startsWith("#")) {
+                synchronized(lineColors) { lineColors[name] = bg }
+            }
+            out.put(JSONObject()
+                .put("name", name)
+                .put("kind", if (name.contains("号线") || name.endsWith("线")) "2" else "1")
+                .put("color", bg))
+        }
+        return out
+    }
+
+    /** The plan's line [at], or the first when there is no such index. */
+    private fun lineAt(at: Int): JSONObject? {
+        val p = simPlan ?: plan ?: return null
+        if (p.length() == 0) return null
+        return p.optJSONObject(if (at in 0 until p.length()) at else 0)
+    }
+
+    /** Which line the ride is on now, and how far it has got along the plan. */
+    private fun current(planCard: JSONObject?, live: JSONObject?): Int {
+        val said = planCard?.optString("mainText")?.trim().orEmpty()
+        if (said.isNotEmpty()) {
+            for (i in 0 until (plan?.length() ?: 0)) {
+                if (plan!!.optJSONObject(i)?.optString("name") == said) return i
+            }
+        }
+        val busId = live?.optJSONObject("realtime")?.optJSONArray("buses")
+            ?.optJSONObject(0)?.optString("line").orEmpty()
+        if (busId.isNotEmpty()) {
+            for (i in 0 until (plan?.length() ?: 0)) {
+                val p = plan!!.optJSONObject(i) ?: continue
+                if (p.optString("kind") == "1") return i
+            }
+        }
+        val location = planCard?.optJSONObject("location")
+        if (location != null) {
+            val index = location.optInt("index", 0)
+            if (index in 0 until (plan?.length() ?: 0)) return index
+        }
+        return 0
+    }
+
+    /** Builds the entity out of whatever the two channels have said, and passes it on. */
+    private fun show() {
+        val card = planCard
+        val at = current(card, live)
+        val mine = lineAt(at)
+        val next = lineAt(at + 1)
+        val line = mine?.optString("name").orEmpty()
+        if (line.isEmpty()) return
+        val kind = mine?.optString("kind").orEmpty().ifEmpty { "1" }
+        val color = mine?.optString("color").orEmpty()
+        val where = live?.optJSONObject("arriveRemind")
+        val bus = live?.optJSONObject("realtime")?.optJSONArray("buses")?.optJSONObject(0)
+        val trip = bus?.optJSONArray("trip")?.optJSONObject(0)
+        // A bus says how many stops are left; a subway only says the next train, so the trip
+        // card's own count stands in for it. 高德's `location.remainStations` is the count for the
+        // ride it drew, and a bus's own stop count is finer, so a bus keeps its own.
+        val cardCount = card?.optJSONObject("location")?.optInt("remainStations", -1) ?: -1
+        val remain = when {
+            kind == "1" && where?.has("remainStopNum") == true ->
+                where.optInt("remainStopNum", 0)
+            cardCount >= 0 -> cardCount
+            kind == "1" -> where?.optInt("remainStopNum", 0) ?: 0
+            else -> 0
+        }
+        val countdown = live?.optJSONArray("subway")?.optJSONObject(0)
+            ?.optJSONArray("tripTime")?.optJSONObject(0)?.optString("mainTitle").orEmpty()
+        val items = card?.optJSONArray("titleItems")
+        val title = card?.optString("title").orEmpty()
+        val direction = text(card?.optJSONArray("subTitleItems"), 1)
+        // `titleItems` is one sentence cut into pieces, not fixed slots: a real ride sent
+        // 「1站」「后」「 · 」「邮轮中心」「出站」, which is 「1站后 · 邮轮中心出站」 - the count
+        // first and the stop fourth. Reading a piece by its place therefore reads a count as a
+        // stop's name, which is how 「下一站 2站」 reached the lock screen. The sentence is put
+        // back together and the count, the stop and the action are taken out of its words.
+        val sentence = titleItems(items)
+        val first = text(items, 0)
+        val stopsLeft = Regex("(\\d+)\\s*站").find(sentence)
+            ?.groupValues?.get(1)?.toIntOrNull() ?: 0
+        val destInSentence = Regex("·\\s*([^·\\s]+?)\\s*(出站|下车|换乘|进站)?\\s*$")
+            .find(sentence)?.groupValues?.get(1)?.trim().orEmpty()
+        val stationName = destInSentence.ifEmpty { if (isCount(first)) "" else first }
+        val action = Regex("(进站|出站|下车|换乘|上车)").find(sentence)
+            ?.groupValues?.get(1).orEmpty()
+        val arriveText = bus?.optString("sub_status").orEmpty()
+        val stationAction = action
+        // The two stops 高德 names outright for the ride in progress (`arriveRemind`), which are
+        // not the same as where the card's sentence is taking you: on a bus with six stops to go
+        // the sentence's stop is the line's end, and 「下一站」 must not be that.
+        val curStop = where?.optString("curStopName").orEmpty().replace(" ", "").trim()
+        val nextStop = where?.optString("nextStopName").orEmpty().replace(" ", "").trim()
+        val dest = destName(title)
+        // 高德's own status codes, as its card sends them: 1 near the origin, 2 waiting, 3 the next
+        // stop, 5 arrived at a stop, 6 a transfer, 7 the line's end. (The 4/5 in ColorOS's
+        // GaoDePublicTransportNavMilestone are that enum's own ordinals, not these.)
+        val arrived = card?.optBoolean("arrived", false) == true || title.contains("已到达") ||
+            (kind == "1" && bus?.optString("status") == "0" && remain <= 0)
+        val status = when {
+            arrived -> "7"
+            stationAction.contains("换乘") -> "6"
+            stationAction.contains("进站") || title.contains("候车") -> "2"
+            remain == 1 || cardCount == 0 -> "5"
+            else -> "3"
+        }
+        // A count in the name's slot is the count of stops left, and when 高德 has said nothing
+        // else about the distance that count is the ride's progress.
+        val left = if (stopsLeft > 0) stopsLeft else remain
+        // The stops the card draws (its stationList), left to right: where the ride boards, the
+        // stop it is at or coming to, and where the line ends. 高德 names them in pieces, and the
+        // two it names outright for the ride in progress (`curStopName` / `nextStopName`) beat
+        // what the card's sentence can be read for - that sentence names the line's end, which a
+        // 「下一站」 is not while stops are left. A stop repeated in two slots is one stop, and the
+        // page drops the repeat, so nothing here should invent one.
+        val atStop = when {
+            !nextStop.isEmpty() && status == "3" -> nextStop
+            !curStop.isEmpty() -> curStop
+            else -> ""
+        }
+        val here = atStop.ifEmpty { stationName }.ifEmpty { station(whereStation(card)) }
+        val board = here.ifEmpty { stationName }
+        val stops = ArrayList<String>(3)
+        for (name in listOf(board, here, dest)) {
+            if (name.isNotEmpty() && (stops.isEmpty() || stops.last() != name)) stops.add(name)
+        }
+        val two = stops.size <= 2 || status == "5" || status == "7"
+        val coord = coords(trip)
+        val leg = JSONObject()
+            .put("transportType", kind)
+            .put("lineName", line)
+            .put("lineDirection", direction)
+            .put("lineBgColor", color.ifEmpty { lineColor(line) })
+            .put("remainStations", left)
+            .put("isCurrent", true)
+            .put("on_station", JSONObject()
+                .put("stationName", board)
+                .put("coord", coord))
+            .put("off_station", JSONObject()
+                .put("stationName", dest)
+                .put("coord", coord)
+                .put("port_list", JSONArray()))
+        // The exits 高德 names for the stop the ride ends at (GaoDePtPort.port_list).
+        val exit = exit(title)
+        if (exit.isNotEmpty()) {
+            leg.getJSONObject("off_station").put("port_list",
+                JSONArray().put(JSONObject().put("name", exit)
+                    .put("coord", coord).put("status_desc", "")))
+        }
+        // Every arrival 高德 mentioned, in order (GaoDePtWaitInfo.realTime).
+        val times = live?.optJSONArray("subway")
+        val arrivals = JSONArray()
+        if (kind == "2" && times != null) {
+            for (i in 0 until times.length()) {
+                val t = times.optJSONObject(i)?.optJSONArray("tripTime") ?: continue
+                val first = t.optJSONObject(0) ?: continue
+                arrivals.put(JSONObject()
+                    .put("mainTitle", first.optString("mainTitle"))
+                    .put("orderTiptext", first.optString("orderTiptext"))
+                    .put("status", first.optInt("status", -1))
+                    .put("titleRange", first.optInt("titleRange", 0))
+                    .put("textColor", first.optString("mainColor"))
+                    .put("isShowSignal", first.optBoolean("isShowSignal", false)))
+            }
+        }
+        if (arriveText.isNotEmpty() && arrivals.length() == 0) {
+            arrivals.put(JSONObject().put("mainTitle", arriveText)
+                .put("orderTiptext", "").put("status", -1))
+        }
+        if (arrivals.length() > 0) {
+            leg.getJSONObject("on_station").put("waitInfo",
+                JSONObject().put("realTime", arrivals))
+        }
+        if (stops.size == 3) {
+            // The middle stop, which is what makes the track three nodes rather than two.
+            leg.put("via_st_list", JSONArray().put(JSONObject()
+                .put("name", stops[1]).put("coord", coord).put("isTransferStation", false)))
+        }
+        val realtime = when {
+            kind == "1" && arriveText.isNotEmpty() -> if (arriveText == "已进站") "车辆已进站" else arriveText
+            kind == "2" && countdown.isNotEmpty() -> countdown + "进站"
+            else -> ""
+        }
+        if (realtime.isNotEmpty()) {
+            leg.put("on_station", JSONObject()
+                .put("stationName", stationName)
+                .put("coord", coord)
+                .put("waitInfo", JSONObject().put("realTime",
+                    JSONArray().put(JSONObject().put("mainTitle", realtime)))))
+        }
+        val navi = JSONArray().put(leg)
+        if (next != null) {
+            navi.put(JSONObject().put("transportType", next.optString("kind"))
+                .put("lineName", next.optString("name")))
+        }
+        val count = cards.incrementAndGet()
+        Xp.log(TAG + "ride #" + count + ": leg " + at + "/" + ((plan?.length() ?: 1) - 1) +
+            " " + kind + " " + line + " remain=" + remain + " status=" + status +
+            (if (stationName.isNotEmpty()) " at=" + stationName else "") +
+            (if (realtime.isNotEmpty()) " rt=" + realtime else ""))
+        // Every field 高德's GaoDePtIntentEntity carries, so what the page reads is the same
+        // shape ColorOS's wrapper reads (its status/total*/entity*/arrived/offRoute/gpsSignalStatus).
+        val location = live?.optJSONObject("locationData")
+        // 高德's own GPS note rides on the card (`tip.text` "信号弱"), and it also sends the
+        // status outright; either says the fix is poor.
+        val gpsText = card?.optJSONObject("tip")?.optString("text").orEmpty()
+        val gps = card?.optInt("gpsSignalStatus", 0) ?: 0
+        tell(JSONObject()
+            .put("status", status)
+            .put("naviInfo", navi)
+            .put("entityId", entityId(line, at))
+            .put("entityName", line)
+            .put("originStation", board)
+            .put("destStation", dest)
+            .put("exitName", exit)
+            .put("guideInfo", card?.optString("remainMessage").orEmpty())
+            .put("arrived", status == "7")
+            .put("offRoute", false)
+            .put("isPublic", true)
+            .put("gpsSignalStatus", if (gps > 0 || gpsText.contains("弱")) 1 else 0)
+            .put("totalDistance", metres(where?.optInt("remainLength", 0) ?: 0))
+            .put("totalDuration", (where?.optInt("remainTime", 0) ?: 0).toDouble())
+            .put("deepLink", card?.optString("scheme").orEmpty())
+            .put("destLatitude", location?.optDouble("latitude", 0.0) ?: 0.0)
+            .put("destLongitude", location?.optDouble("longitude", 0.0) ?: 0.0)
+            .toString(), "update")
+    }
+
+    /** One identifier for the ride, stable across its updates (the card's own key). */
+    private fun entityId(line: String, at: Int): String = "gaode-pt-" + line + "-" + at
+
+    /** Metres as the words 高德 uses: 「3.0公里」 / 「800米」. */
+    private fun metres(m: Int): String = when {
+        m <= 0 -> ""
+        m >= 1000 -> String.format("%.1f公里", m / 1000.0)
+        else -> m.toString() + "米"
+    }
+
+    /** The bus's own point, as the leg's coordinates; 0 when 高德 has not given one. */
+    private fun coords(trip: JSONObject?): JSONObject {
+        val track = trip?.optJSONObject("track")
+        val lat = track?.optString("ys")?.toDoubleOrNull() ?: 0.0
+        val lng = track?.optString("xs")?.toDoubleOrNull() ?: 0.0
+        return JSONObject().put("lat", lat).put("lng", lng)
+    }
+
+    private fun coord(lat: Double?, lng: Double?): JSONObject =
+        JSONObject().put("lat", lat ?: 0.0).put("lng", lng ?: 0.0)
+
+    /**
+     * 高德's `titleItems` as the one sentence its pieces spell: 「1站」「后」「 · 」「邮轮中心」
+     * 「出站」 is 「1站后 · 邮轮中心出站」. Its pieces carry their own spaces, and the gaps are
+     * closed so the sentence can be searched.
+     */
+    private fun titleItems(items: JSONArray?): String {
+        if (items == null) return ""
+        val sb = StringBuilder()
+        for (i in 0 until items.length()) {
+            val t = items.optJSONObject(i)?.optString("text").orEmpty()
+            if (t.isEmpty()) continue
+            if (sb.isNotEmpty() && !t.startsWith(" ") && sb.last() != ' ') sb.append(' ')
+            sb.append(t.trim())
+        }
+        return sb.toString().trim()
+    }
+
+    /** 「步行至 大学城南地铁站」 -> 「大学城南地铁站」. */
+    private fun destName(title: String): String =
+        Regex("至\\s*(.+)$").find(title)?.groupValues?.get(1)?.trim().orEmpty()
+
+    /**
+     * Whether one of 高德's title slots holds a count of stops rather than a name. Its card fills
+     * `titleItems[0]` with the stop's name while the ride is under way and with the count of stops
+     * left in other phases - seen as 「7站」 and, on a later ride, as a bare 「2」. The two have to
+     * be told apart before either is drawn, and a slot that is nothing but digits is a count: no
+     * stop on a line is named 「2」.
+     */
+    private fun isCount(text: String): Boolean {
+        val t = text.trim()
+        if (t.isEmpty() || t.length > 12) return false
+        if (t.all { it.isDigit() }) return true
+        return t.contains("站") && Regex("\\d+").containsMatchIn(t)
+    }
+
+    /**
+     * The stop's name out of the card's own words, for the phases in which its name slot holds a
+     * count instead: 「步行至 翁角路地铁站」 -> 「翁角路地铁站」.
+     */
+    private fun whereStation(card: JSONObject?): String {
+        if (card == null) return ""
+        for (key in listOf("subText", "mainText")) {
+            val v = card.optString(key).trim()
+            if (v.isEmpty() || isCount(v)) continue
+            val m = Regex("[至到]\\s*(.+)$").find(v)
+            if (m != null) return m.groupValues[1].trim()
+        }
+        val t = card.optString("title").trim()
+        val m = Regex("[至到]\\s*(.+)$").find(t)
+        return m?.groupValues?.get(1)?.trim().orEmpty()
+    }
+
+    /** 「大学城南(E口)」 -> 「大学城南」: a stop, with the exit it named taken off. */
+    private fun station(text: String): String =
+        text.replace(Regex("[\\(（][^)\\)）]*[\\)）]"), "").trim()
+
+    /** 「大学城南(E口)」 -> 「E口」. */
+    private fun exit(title: String): String {
+        val m = Regex("[\\(（]([^)\\)）]+)[\\)）]").find(title) ?: return ""
+        return m.groupValues[1].trim()
+    }
+
+    private fun clear() {
+        if (lastRide == null) return
+        lastRide = null
+        tell(null, "end")
+    }
+
+    /** item[at].text of a card's titleItems / subTitleItems, or empty. */
+    private fun text(items: JSONArray?, at: Int): String {
+        val o = items?.optJSONObject(at) ?: return ""
+        return o.optString("text").trim()
+    }
+
+    /** The line's colour from the plan capsule, or the page's blue when it only names a token. */
+    /** The line's colour as 高德 gives it, and a neutral grey when it gives none. */
+    private fun lineColor(line: String): String {
+        synchronized(lineColors) { lineColors[line] }?.let { return it }
+        val plans = plan ?: return NEUTRAL
+        for (i in 0 until plans.length()) {
+            val o = plans.optJSONObject(i) ?: continue
+            if (o.optString("text").trim() != line) continue
+            val bg = o.optString("bgColor").trim()
+            if (bg.startsWith("#")) return bg
+            when (bg) {
+                "@Color_Hue220_L1" -> return "#4a86ff"
+                "@Color_Text_Brand" -> return "#018237"
+            }
+        }
+        return NEUTRAL
+    }
+
+    private fun station(name: String, lat: Double?, lng: Double?): JSONObject =
+        JSONObject().put("stationName", name).put("coord", coord(lat, lng))
 
     fun describe(): String {
         val sb = StringBuilder("transit: acquires=").append(acquires.get())
@@ -294,6 +1282,26 @@ internal object AmapTransitShare {
         synchronized(wearable) {
             sb.append("\nscript: ").append(if (wearable.isEmpty()) "nothing yet" else
                 wearable.values.joinToString("\n  "))
+        }
+        synchronized(payloads) {
+            sb.append("\npayload: ").append(if (payloads.isEmpty()) "nothing yet" else
+                payloads.values.joinToString("\n  "))
+        }
+        synchronized(bridged) {
+            sb.append("\nbridge: ").append(if (bridged.isEmpty()) "nothing yet" else
+                bridged.entries.joinToString(" ") { it.key + "=" + it.value })
+        }
+        sb.append("\ncard: ").append(cards.get()).append(" real ride card(s)")
+        synchronized(sends) {
+            sb.append("\nsends: ").append(if (sends.isEmpty()) "nothing yet" else
+                sends.entries.joinToString(" ") { it.key.toString() + "x" + it.value.get() })
+        }
+        synchronized(ledger) {
+            sb.append("\nledger: ").append(ledger.size).append(" kind(s)")
+            for ((k, v) in ledger) {
+                val size = v.substringAfter(' ').substringBefore('B')
+                sb.append("\n  ").append(k).append("  ").append(size).append("B")
+            }
         }
         return sb.toString()
     }
