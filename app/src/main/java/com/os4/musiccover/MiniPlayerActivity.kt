@@ -112,6 +112,12 @@ private fun MiniPlayerPage(blur: Boolean, refreshKey: Int, onBack: () -> Unit) {
                         enabled = ready && config.optBoolean(MiniPlayerConfig.ENABLED),
                         onSelectedIndexChange = { push(MiniPlayerConfig.STYLE, it) },
                     )
+                    SwitchPreference(title = "按应用堆叠通知",
+                        summary = "同一应用合成一层；点击展开该应用，上滑展开全部",
+                        checked = config.optBoolean(MiniPlayerConfig.GROUP_NOTIFICATIONS_BY_APP),
+                        enabled = ready && config.optBoolean(MiniPlayerConfig.ENABLED) &&
+                            config.optInt(MiniPlayerConfig.STYLE) == MiniPlayerConfig.STYLE_STACK,
+                        onCheckedChange = { push(MiniPlayerConfig.GROUP_NOTIFICATIONS_BY_APP, it) })
                     SwitchPreference(title = "媒体通知默认收起为锁屏岛",
                         summary = "新媒体出现时保持锁屏岛，点击可展开封面",
                         checked = config.optBoolean(MiniPlayerConfig.MEDIA_COLLAPSED_DEFAULT),

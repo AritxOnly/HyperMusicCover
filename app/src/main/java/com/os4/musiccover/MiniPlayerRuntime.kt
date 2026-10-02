@@ -73,9 +73,17 @@ object MiniPlayerRuntime {
 
     @JvmStatic fun applyConfig(context: Context, raw: String?) {
         MiniPlayerConfig.apply(prefs(context), raw)
+        syncNotificationGrouping(context)
         Main.onMiniBackdropSettingChanged(sinkWithExpandedBackground(context))
         lastRoot?.get()?.let { root -> root.post { attach(root, lastShortcutController?.get()) } }
         refresh()
+    }
+
+    private fun syncNotificationGrouping(context: Context) {
+        val config = JSONObject(configJson(context))
+        LockIslands.setGroupByApp(config.optBoolean(MiniPlayerConfig.ENABLED) &&
+            config.optInt(MiniPlayerConfig.STYLE) == MiniPlayerConfig.STYLE_STACK &&
+            config.optBoolean(MiniPlayerConfig.GROUP_NOTIFICATIONS_BY_APP))
     }
 
     /** The old state file is migration data; current preferences must win on every restart. */
@@ -828,6 +836,7 @@ object MiniPlayerRuntime {
 
     private fun attach(root: View, shortcutController: Any?) {
         val config = JSONObject(configJson(root.context))
+        syncNotificationGrouping(root.context)
         val host = root.rootView as? ViewGroup ?: return
         val old = synchronized(controllers) { controllers[host] }
         if (!config.getBoolean(MiniPlayerConfig.ENABLED)) {
@@ -4287,14 +4296,18 @@ private class MiniPlayerController(
      * pulled down (releasedRowAt), else the newest - the one it shows.
      */
     private var stackLeadKey: String? = null
+    private val appLeadKeys = HashMap<String, String>()
 
-    private fun stackLead(): String? {
-        val members = LockIslands.stackMembers
-        val preferred = stackLeadKey?.takeIf { it in members }
+    private fun groupLead(key: String): String? {
+        val members = LockIslands.membersOf(key)
+        val preferred = (if (key == STACK_ISLAND) stackLeadKey else appLeadKeys[key])
+            ?.takeIf { it in members }
         if (preferred != null && hasLaidOutRow(preferred)) return preferred
         // A filter after ours can still keep a member out of the stack: the island opened into a
         // row that was never there, and waited it out, while the others' rows stood ready (PR #15).
-        return members.firstOrNull(::hasLaidOutRow)?.also { stackLeadKey = it }
+        return members.firstOrNull(::hasLaidOutRow)?.also {
+            if (key == STACK_ISLAND) stackLeadKey = it else appLeadKeys[key] = it
+        }
             ?: preferred ?: members.firstOrNull()
     }
 
@@ -4316,6 +4329,7 @@ private class MiniPlayerController(
 
     private val piles = HashMap<View, PileRow>()
     private var pileLast = 0L
+    private var pileKey = STACK_ISLAND
 
     /** Where the island was, the last frame the lead drew: the rows go home under it after the lead has landed. */
     private var pileFrom: CoverMorphMotion.Box? = null
@@ -4341,7 +4355,8 @@ private class MiniPlayerController(
      * version before scrolled the rows through the stack's own calculator, followed the lead's
      * progress with none of their own, and came up alone at the card's place before the card.
      */
-    private fun pileStack(progress: Float, from: CoverMorphMotion.Box?) = traced("MC pileLookup") {
+    private fun pileGroup(key: String, progress: Float, from: CoverMorphMotion.Box?) = traced("MC pileLookup") {
+        pileKey = key
         Choreographer.getInstance().removeFrameCallback(pileSettle)
         if (from != null) pileFrom = from
         pileAt = progress
@@ -4355,20 +4370,21 @@ private class MiniPlayerController(
         val now = android.os.SystemClock.uptimeMillis()
         if (now - pileFoundAt < PILE_FIND_MS && !pileTraceNext) return@traced
         pileFoundAt = now
-        val lead = stackLead() ?: return@traced
+        val lead = groupLead(key) ?: return@traced
+        val members = LockIslands.membersOf(key)
         val stack = notificationStack() ?: return@traced
         val children = (0 until stack.childCount).map { stack.getChildAt(it) }
             .filter { it.javaClass.name.contains("ExpandableNotificationRow") }
         val index = MiniPlayerRowIndex.build(children, ::rowKey, ::childRows,
             kept.filterValues { it.row.isAttachedToWindow }.mapValues { it.value.row })
         val keep = index[lead] ?: return@traced
-        val rows = LockIslands.stackMembers.asSequence().filter { it != lead }
+        val rows = members.asSequence().filter { it != lead }
             .mapNotNull { index[it] }
             .filter { it !== keep && !isInside(keep, it) }.distinct().toList()
         if (pileTraceNext) trace("pile p=${"%.2f".format(progress)} lead=${shortKey(lead)} keep=${shortName(keep)}" +
-            "@${(keep.translationY).toInt()} members=${LockIslands.stackMembers.joinToString(",") { shortKey(it) }} " +
+            "@${(keep.translationY).toInt()} members=${members.joinToString(",") { shortKey(it) }} " +
             "rows=${rows.joinToString(",") { shortName(it) + "@" + it.translationY.toInt() }} " +
-            "missing=${LockIslands.stackMembers.filter { it != lead && it !in index }.joinToString(",") { shortKey(it) }}")
+            "missing=${members.filter { it != lead && it !in index }.joinToString(",") { shortKey(it) }}")
         if (rows.isEmpty()) return@traced
         // Their turns: the nearest to the lead in the stack first.
         val at = stackTargetY(keep) + keep.top
@@ -4502,8 +4518,8 @@ private class MiniPlayerController(
 
     /** The stack island is on its way back into the row: by a switch, or a morph of its own. */
     private fun stackGoingHome(): Boolean =
-        exchange?.movers?.get(STACK_ISLAND)?.headedHome == true ||
-            noteMorphKey == STACK_ISLAND && morph?.toNative == false
+        exchange?.movers?.get(pileKey)?.headedHome == true ||
+            noteMorphKey == pileKey && morph?.toNative == false
 
     /** The last tenth of a pile's progress traced, so a pile is traced ten times, not every frame. */
     private var pileTraceBucket = -1
@@ -4542,14 +4558,16 @@ private class MiniPlayerController(
             if (toRow) showRow(row)
             else {
                 row.transitionAlpha = 0f
-                hideRowUntilGone(row, STACK_ISLAND)
+                hideRowUntilGone(row, pileKey)
             }
         }
         pileRows.clear()
         piles.clear()
         pileLast = 0L
         pileFrom = null
-        if (!toRow) stackLeadKey = null
+        if (!toRow) {
+            if (pileKey == STACK_ISLAND) stackLeadKey = null else appLeadKeys.remove(pileKey)
+        }
     }
 
     /** NotificationStackingCalculator.calculateScaleForOtherStackedCards. */
@@ -5817,7 +5835,7 @@ private class MiniPlayerController(
             val key = x.pending ?: return
             val native = traced("MC x.findUp") { nativeFor(key) }
             native?.let(::hideRow)
-            if (key == STACK_ISLAND) pileStack(0f, null)
+            if (key == STACK_ISLAND || LockIslands.isAppGroup(key)) pileGroup(key, 0f, null)
             val out = x.expanded
             // A row given back early is a transient view: detached and re-attached as one, it has
             // lost its laid-out flag and is never laid out again, and the switch waited for it
@@ -5928,11 +5946,12 @@ private class MiniPlayerController(
         override fun canSettle(morph: MiniCardMorph, toNative: Boolean) = true
         override fun artBridged() = m.key == MUSIC_ISLAND && artBridged
         override fun onFrame(morph: MiniCardMorph, progress: Float) {
-            if (m.key == STACK_ISLAND) pileStack(progress, morph.miniEndBox())
+            if (m.key == STACK_ISLAND || LockIslands.isAppGroup(m.key))
+                pileGroup(m.key, progress, morph.miniEndBox())
             moverFrame(m)
         }
         override fun onSettled(morph: MiniCardMorph, toNative: Boolean, completed: Boolean) {
-            if (m.key == STACK_ISLAND) endPile(toNative)
+            if (m.key == STACK_ISLAND || LockIslands.isAppGroup(m.key)) endPile(toNative)
             moverSettled(m, toNative, completed)
         }
     }
@@ -6534,8 +6553,11 @@ private class MiniPlayerController(
         val out = LockIslands.releasedKeys().filter {
             it != STACK_ISLAND && it !in islandKeys && rowFor(it) != null
         }
-        val items = islandKeys.filter { it != STACK_ISLAND }.map { SpreadItem(it, seatOf(it)) } +
-            out.map { SpreadItem(it, SEAT_HIDDEN, wasOut = true) }
+        val items = islandKeys.filter { it != STACK_ISLAND }.flatMap { key ->
+            listOf(SpreadItem(key, seatOf(key))) +
+                if (LockIslands.isAppGroup(key)) LockIslands.membersOf(key)
+                    .map { SpreadItem(it, SEAT_HIDDEN) } else emptyList()
+        } + out.map { SpreadItem(it, SEAT_HIDDEN, wasOut = true) }
         val s = Spread(items, if (STACK_ISLAND in islandKeys) seatOf(STACK_ISLAND) else SEAT_NONE,
             stackedStyle())
         s.since = android.os.SystemClock.uptimeMillis()
@@ -6582,7 +6604,7 @@ private class MiniPlayerController(
         for (item in s.items) {
             // A card out already is in the list as it is.
             if (item.key == MUSIC_ISLAND || item.wasOut) continue
-            coming++
+            if (LockIslands.noteFor(item.key)?.focus == true) coming++
             val row = rowFor(item.key)
             if (row == null || !row.isAttachedToWindow || !row.isLaidOut || row.width <= 0 || row.height <= 0) {
                 ready = false
@@ -6631,10 +6653,14 @@ private class MiniPlayerController(
      */
     private fun startSpreadMorphs(s: Spread, toCards: Boolean) {
         val pill = player
+        val claimedRows = HashSet<View>()
         // Closing, the row is drawn again: its places fade in as the cards come down.
         if (!toCards) pill?.visibility = View.VISIBLE
         for (item in s.items) {
             val native = nativeFor(item.key)
+            // An app's several notification keys can resolve to one OEM group row. Only its
+            // group island morphs that shared row; a second morph would fight its matrix.
+            if (native != null && !claimedRows.add(native)) continue
             item.native = native
             if (native == null) continue
             // Out as its card already: it stays as it is while the list opens round it.
@@ -7013,7 +7039,7 @@ private class MiniPlayerController(
         snapSmallOnce = smallTaken || cameHome == null
         spreadTrace("spread end ($why) folded=$folded")
         MiniPlayerRuntime.noteTouch("spread end ($why) folded=$folded")
-        LockIslands.setSpread(false)
+        LockIslands.setSpread(false, folded)
         // Folded home but the stack left at its pile (a let-go it read as the pile): folded too.
         if (folded) NumState.foldIfPiled("spread folded")
         // The row as it is now: the media card put away again, the small island in its place.
@@ -7034,6 +7060,7 @@ private class MiniPlayerController(
 
     private var rowWaitKey: String? = null
     private var rowWaitSince = 0L
+    private var appListAsked = false
     private var stackRef: WeakReference<View>? = null
 
     /**
@@ -7088,6 +7115,7 @@ private class MiniPlayerController(
         endSwap()
         // Opened, the stack island leads with its newest notification, the one it shows.
         if (key == STACK_ISLAND) stackLeadKey = null
+        else if (LockIslands.isAppGroup(key)) appLeadKeys.remove(key)
         noteMorphKey = key
         flightFromSmall = fromSmall
         flightHome = if (fromSmall) HOME_SMALL else HOME_PILL
@@ -7097,8 +7125,10 @@ private class MiniPlayerController(
         // straight to its place in the list. Asked once the morph had begun, it landed in the
         // pile first and the list opened after (2026-09-26).
         if (key == STACK_ISLAND) showStackAsList("open")
+        else if (LockIslands.isAppGroup(key)) NumState.goTo("LIST", why = "app group open")
         rowWaitKey = key
         rowWaitSince = android.os.SystemClock.uptimeMillis()
+        appListAsked = false
         Choreographer.getInstance().postFrameCallback(rowWait)
     } finally { android.os.Trace.endSection() } }
 
@@ -7107,11 +7137,17 @@ private class MiniPlayerController(
         override fun doFrame(frameTimeNanos: Long) { android.os.Trace.beginSection("MC rowWait"); try {
             val key = rowWaitKey ?: return
             // The stack island's other rows stay out of sight, piled, till the morph moves them.
-            if (key == STACK_ISLAND) pileStack(0f, null)
+            if (key == STACK_ISLAND || LockIslands.isAppGroup(key)) pileGroup(key, 0f, null)
             val row = nativeFor(key)
             // The stack fades a returned row in on its own: seen before the morph took it, it
             // stood there whole, went, and came back as the morph's end (filmed 2026-09-25).
-            if (row != null) hideRow(row)
+            if (row != null) {
+                hideRow(row)
+                if (LockIslands.isAppGroup(key) && !appListAsked && row.isLaidOut) {
+                    appListAsked = true
+                    NumState.goTo("LIST", why = "app group rows ready")
+                }
+            }
             val flightReady = flight?.let { it.isLaidOut && it.width > 1 } ?: true
             if (row != null && row.isAttachedToWindow && row.isLaidOut && row.height > 0 &&
                 row.width > 0 && flightReady && rowOnScreen(row)) {
@@ -7426,7 +7462,8 @@ private class MiniPlayerController(
         override fun artBridged() = key == MUSIC_ISLAND && artBridged
 
         override fun onFrame(morph: MiniCardMorph, progress: Float) {
-            if (key == STACK_ISLAND && this@MiniPlayerController.morph === morph) pileStack(progress, morph.miniEndBox())
+            if ((key == STACK_ISLAND || LockIslands.isAppGroup(key)) &&
+                this@MiniPlayerController.morph === morph) pileGroup(key, progress, morph.miniEndBox())
             val f = flight ?: return
             if (this@MiniPlayerController.morph !== morph) return
             val stackedSmall = stackedStyle() && flightHome == HOME_SMALL
@@ -7466,7 +7503,7 @@ private class MiniPlayerController(
             flushTurn(key)
             trace("settled toRow=$toNative completed=$completed " +
                 (if (completed) "" else "why=${morph.lastCancel} ") + smallState())
-            if (key == STACK_ISLAND) endPile(toNative)
+            if (key == STACK_ISLAND || LockIslands.isAppGroup(key)) endPile(toNative)
             if (key == MUSIC_ISLAND) morphScene = false
             traceFrames = 30
             Choreographer.getInstance().removeFrameCallback(traceFrame)
@@ -7656,6 +7693,7 @@ private class MiniPlayerController(
         letOut(key)
         rowWaitKey = key
         rowWaitSince = android.os.SystemClock.uptimeMillis()
+        appListAsked = false
         Choreographer.getInstance().postFrameCallback(rowWait)
         return true
     }
@@ -7736,7 +7774,7 @@ private class MiniPlayerController(
     /** A notification that set out and did not open: back in the row as it was. */
     private fun abandonNoteMorph(key: String) {
         flushTurn(key)
-        if (key == STACK_ISLAND) endPile(toRow = false)
+        if (key == STACK_ISLAND || LockIslands.isAppGroup(key)) endPile(toRow = false)
         // Whatever the finger had pulled goes home.
         player?.springNudgeBack(0f, 0f)
         springSmallNudgeBack(0f, 0f)
@@ -7761,6 +7799,8 @@ private class MiniPlayerController(
                 row.getLocationOnScreen(xy)
                 if (x >= xy[0] && x < xy[0] + row.width && y >= xy[1] && y < xy[1] + row.height) {
                     if (key == STACK_ISLAND && noteMorphKey != STACK_ISLAND) stackLeadKey = member
+                    else if (LockIslands.isAppGroup(key) && noteMorphKey != key)
+                        appLeadKeys[key] = member
                     return key
                 }
             }
@@ -7894,7 +7934,8 @@ private class MiniPlayerController(
      * was never found: the media card's morph left its row standing, unfolded (2026-09-25).
      */
     private fun findRow(key: String): Pair<View, View>? {
-        if (key == STACK_ISLAND) return findRow(stackLead() ?: return null)
+        if (key == STACK_ISLAND || LockIslands.isAppGroup(key))
+            return findRow(groupLead(key) ?: return null)
         // Given back early and drawn on as a transient view: no longer among the stack's rows.
         kept[key]?.row?.takeIf { it.isAttachedToWindow }?.let { return it to it }
         val stack = notificationStack() ?: return null
@@ -8026,8 +8067,8 @@ private class MiniPlayerController(
         return "${shortName(row)} v=${row.visibility} shown=${row.isShown} a=${"%.2f".format(row.alpha)} " +
             "ta=${"%.2f".format(row.transitionAlpha)} parentA=${parent?.let { "%.2f".format(drawnAlpha(it)) }} " +
             "y=${xy[1]} h=${row.height} laid=${row.isLaidOut} bottom=${player?.restBoxOnScreen()?.y?.toInt()} " +
-            "folded=${stackFolded()} lead=${stackLead()?.let(::shortKey)} hiddenBy=" + hiddenAncestors(row) +
-            (findRow(stackLead() ?: "")?.second?.takeIf { it !== row }?.let { top ->
+            "folded=${stackFolded()} lead=${groupLead(STACK_ISLAND)?.let(::shortKey)} hiddenBy=" + hiddenAncestors(row) +
+            (findRow(groupLead(STACK_ISLAND) ?: "")?.second?.takeIf { it !== row }?.let { top ->
                 " group: v=${top.visibility} a=${"%.2f".format(top.alpha)} ta=${"%.2f".format(top.transitionAlpha)} " +
                     "h=${top.height} y=${IntArray(2).also(top::getLocationOnScreen)[1]} " +
                     "expanded=${runCatching { Xp.callMethod(top, "isGroupExpanded") }.getOrNull()}"
@@ -8605,7 +8646,7 @@ private class MiniPlayerController(
         if (spread != null) {
             spread?.items?.forEach { it.morph?.cancel() }
             spread = null
-            LockIslands.setSpread(false)
+            LockIslands.setSpread(false, folded = true)
         }
         restoreHeader()
         removeDiscs()

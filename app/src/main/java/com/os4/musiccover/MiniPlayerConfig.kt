@@ -8,7 +8,7 @@ import org.json.JSONObject
 /** Portable settings for the HyperChanger lockscreen mini player. */
 object MiniPlayerConfig {
     /** Sent by SystemUI so the settings app can reject an older loaded module. */
-    const val SCHEMA_VERSION = 4
+    const val SCHEMA_VERSION = 5
     const val ENABLED = "enabled"
     const val WIDTH = "widthDp"
     const val HEIGHT_RADIUS = "heightRadiusDp"
@@ -21,6 +21,7 @@ object MiniPlayerConfig {
     const val NOTIFICATION_MATERIAL = "notificationMaterial"
     const val MEDIA_COLLAPSED_DEFAULT = "mediaCollapsedDefault"
     const val SINK_WITH_EXPANDED_BACKGROUND = "sinkWithExpandedBackground"
+    const val GROUP_NOTIFICATIONS_BY_APP = "groupNotificationsByApp"
     const val STYLE = "style"
     const val STYLE_ROW = 0
     const val STYLE_STACK = 1
@@ -39,6 +40,7 @@ object MiniPlayerConfig {
         NOTIFICATION_MATERIAL to false,
         MEDIA_COLLAPSED_DEFAULT to false,
         SINK_WITH_EXPANDED_BACKGROUND to false,
+        GROUP_NOTIFICATIONS_BY_APP to false,
         STYLE to STYLE_ROW,
     )
 
@@ -67,7 +69,8 @@ object MiniPlayerConfig {
                     .takeIf { it == STYLE_ROW || it == STYLE_STACK } ?: STYLE_ROW
             } else if (key == ENABLED || key == ADAPTIVE_WIDTH ||
                 key == HIDE_AOD_SHORTCUTS || key == MARQUEE || key == NOTIFICATION_MATERIAL ||
-                key == MEDIA_COLLAPSED_DEFAULT || key == SINK_WITH_EXPANDED_BACKGROUND) {
+                key == MEDIA_COLLAPSED_DEFAULT || key == SINK_WITH_EXPANDED_BACKGROUND ||
+                key == GROUP_NOTIFICATIONS_BY_APP) {
                 runCatching { input.getBoolean(key) }.getOrDefault(fallback)
             } else {
                 fallback
