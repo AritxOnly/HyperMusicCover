@@ -1792,7 +1792,7 @@ public class WallpaperProbe {
         class Probe extends ProbeGuard.Receiver {
             @Override
             public void onReceive(Context c, Intent i) {
-                if (!ProbeGuard.admit(this)) return;
+                if (!ProbeGuard.admit(this, i)) return;
                 String op = i.getStringExtra("op");
                 byte[] carried = i.getByteArrayExtra("jpg");
                 Xp.log(TAG + "recv op=" + op
