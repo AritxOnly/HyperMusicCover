@@ -187,6 +187,11 @@ internal object AmapImmerse {
                     resultData = AmapTransitShare.probe(it)
                     return
                 }
+                i.getStringExtra("oppo")?.let {
+                    AmapTransitShare.spoof(it.toBoolean())
+                    resultData = AmapTransitShare.describe()
+                    return
+                }
                 i.getStringExtra("island")?.let {
                     resultData = AmapTransitIsland.setStyle(appCtx, it)
                     return

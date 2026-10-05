@@ -695,7 +695,11 @@ final class AmapTransitScene implements ImmersiveScene {
                     f.primary = "准备换乘";
                     f.secondary = remaining(t);
                     f.islandLeft = "换乘";
-                    f.islandRight = (f.line + " " + f.direction).trim();
+                    // The other half names the line being changed TO - ColorOS's capsule carries
+                    // that line's name in its colour - and only falls back to the line being left
+                    // when 高德 has not said which one comes next.
+                    f.islandRight = !t.nextLine.isEmpty() ? t.nextLine
+                            : (f.line + " " + f.direction).trim();
                     f.nodes = nodes(t, index, 0);
                     break;
                 case "7":

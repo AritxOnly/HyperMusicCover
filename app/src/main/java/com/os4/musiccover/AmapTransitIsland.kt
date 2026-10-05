@@ -197,7 +197,11 @@ internal object AmapTransitIsland {
      * the style, and the ride again in it.
      */
     fun setStyle(ctx: Context?, name: String): String {
-        val s = Style.values().firstOrNull { it.name.equals(name, ignoreCase = true) }
+        // SCENE is chosen by a scene's own name below, never by the word "scene": matching that
+        // here would set the style and clear the scene it is the whole point of.
+        val s = Style.values().firstOrNull {
+            it != Style.SCENE && it.name.equals(name, ignoreCase = true)
+        }
         if (s != null) {
             style = s
             scene = null

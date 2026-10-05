@@ -63,8 +63,8 @@ internal object AmapTransitShare {
     private const val KEEPALIVE_MS = 60_000L
 
     /** Payloads kept whole in the ledger, and how long one may be before it is cut. */
-    private const val MAX_LEDGER = 28
-    private const val MAX_LEDGER_CHARS = 3600
+    private const val MAX_LEDGER = 16
+    private const val MAX_LEDGER_CHARS = 8000
     /** Sends kept in the event log, which is what says how often 高德 pushes. */
     private const val MAX_EVENTS = 90
     /** What a line without a colour of its own is drawn in: neutral, not a made-up line colour. */
@@ -103,6 +103,14 @@ internal object AmapTransitShare {
     private const val RIDE_BIZ = 103
     /** The channel 高德's live ride data comes down (amap_glass). */
     private const val LIVE_BIZ = 113
+    /** The `type` of the ride's own entry in a 113 payload; the channel carries other kinds too. */
+    private const val RIDE_TYPE = 25
+    /**
+     * The `type` of the ride's whole route plan, also on 113: `segmentlist[]` with each leg's
+     * `on_station`, `via_st_list` and `off_station` (names, coordinates, `is_trans`), its line's
+     * name and colour and its exits. This is where the stop the ride is coming to comes from.
+     */
+    private const val PLAN_TYPE = 24
     /** Real ride cards turned into the island's entity (ride). */
     private val cards = AtomicInteger()
     /** The plan channel's last card and the live channel's last data, and whether a ride began. */
@@ -118,8 +126,9 @@ internal object AmapTransitShare {
     @Volatile private var simPlan: JSONArray? = null
     @Volatile private var live: JSONObject? = null
     @Volatile private var liveAt = 0L
+    /** The ride's own route plan (the 113 channel's `type 24`), for the stations it names. */
+    @Volatile private var route: JSONObject? = null
     @Volatile private var riding = false
-    @Volatile private var lastRide: String? = null
     /** How many sendMessages each bizType has taken since this process started. */
     private val sends = java.util.concurrent.ConcurrentHashMap<Int, AtomicInteger>()
     /** The OPPO intelligent card's channel, the one 高德's Java opens for any phone that asks. */
@@ -138,6 +147,15 @@ internal object AmapTransitShare {
     @Volatile private var oppoCard: Class<*>? = null
     /** Device-config holder the table handed out for 10200, the one 高德 itself would build. */
     @Volatile private var oppoConfig: Any? = null
+    /** 高德's own phone-type answers here, for the probe. */
+    @Volatile private var rom = ""
+    /**
+     * Whether 高德 is told it is on an OPPO phone. Off by default: the OPPO card's channel carries
+     * the ride's `via_st_list`, which nothing else here has, but answering OPPO is the phone
+     * lying about itself to a whole app, so it is a switch the probe turns on rather than
+     * something the module does on its own.
+     */
+    @Volatile private var spoofOppo = false
 
     private val acquires = AtomicInteger()
     private val queries = AtomicInteger()
@@ -153,6 +171,7 @@ internal object AmapTransitShare {
     fun handle(cl: ClassLoader) {
         AmapTransitIsland.handle()
         watchWearable(cl)
+        watchRom(cl)
         try {
             for (name in arrayOf("acquireUnstableContentProviderClient", "acquireContentProviderClient")) {
                 Xp.hookAll(ContentResolver::class.java, name) { chain ->
@@ -256,7 +275,10 @@ internal object AmapTransitShare {
     private fun delete(method: String, extras: Bundle?): JSONObject {
         deletes.incrementAndGet()
         Xp.log(TAG + "$method " + extras?.keySet()?.joinToString())
-        tell(null, method)
+        // 高德 deleting the intent is the ride being over: everything of it is let go, or the
+        // state survives the end and the next payload - a late one, or the ride's own trailing
+        // updates - puts the card back up with nothing riding.
+        clear(method)
         return result(CODE_OK, null)
     }
 
@@ -426,6 +448,58 @@ internal object AmapTransitShare {
         val entity = lastSent ?: return
         lastSentAt = SystemClock.uptimeMillis()
         send(entity, "resend")
+    }
+
+    /**
+     * What 高德's own phone-type answer says on this phone. Whether the OPPO card's channel is
+     * opened at all (bizType 10200, the one that carries a real `intentEntity` - and with it the
+     * ride's `via_st_list`, which nothing else on a Xiaomi phone has) is decided in 高德's
+     * encrypted script, not in its Java: its Java holds that channel back for no phone. The only
+     * handle on that decision is what the script is told about the phone, and this is the class
+     * 高德 answers that with. Read, not spoofed, until the probe says what it says.
+     */
+    private fun watchRom(cl: ClassLoader) {
+        try {
+            val cls = Xp.findClass(ROM_UTIL, cl)
+            val out = StringBuilder()
+            for (m in cls.declaredMethods.sortedBy { it.name }) {
+                if (m.parameterTypes.isNotEmpty()) continue
+                if (!java.lang.reflect.Modifier.isStatic(m.modifiers)) continue
+                // The predicates, and 高德's own two names - not every no-arg method a class
+                // happens to have, invoked inside 高德's own process to build a probe line.
+                val pred = m.name.startsWith("is") &&
+                    (m.returnType == java.lang.Boolean.TYPE || m.returnType == java.lang.Boolean::class.java)
+                if (!pred && m.name != "getName" && m.name != "getVersion") continue
+                m.isAccessible = true
+                val v = try {
+                    m.invoke(null)?.toString() ?: "null"
+                } catch (t: Throwable) {
+                    "!"
+                }
+                if (out.isNotEmpty()) out.append(' ')
+                out.append(m.name).append('=').append(v)
+            }
+            rom = if (out.isEmpty()) "no static methods" else out.toString()
+            Xp.log(TAG + "rom: " + rom)
+        } catch (t: Throwable) {
+            rom = "not visible: " + t
+            Xp.log(TAG + "rom: " + rom)
+        }
+        // The one answer that decides whether the script opens the OPPO card's channel. Answered
+        // only while the probe has asked for it; the rest of the class is left exactly as it is.
+        try {
+            val cls = Xp.findClass(ROM_UTIL, cl)
+            Xp.hookAll(cls, "isOppo") { chain -> if (spoofOppo) true else chain.proceed() }
+            Xp.log(TAG + "isOppo hooked (spoof " + spoofOppo + ")")
+        } catch (t: Throwable) {
+            Xp.log(TAG + "isOppo not hooked: " + t)
+        }
+    }
+
+    /** `AMAPPROBE --es oppo true|false`: answer 高德's `isOppo` that way, or not at all. */
+    fun spoof(on: Boolean) {
+        spoofOppo = on
+        Xp.log(TAG + "isOppo spoof " + on)
     }
 
     /**
@@ -791,7 +865,11 @@ internal object AmapTransitShare {
         val biz = args.firstOrNull { it is Int } as Int?
         val text = args.firstOrNull { it is String && (it as String).length > 2 } as String?
             ?: return
-        val key = "$biz " + name
+        // One ledger entry per payload *shape*, not per channel: the 113 channel alone carries
+        // several kinds of payload (a ride's own `type 25`, walking's 7 and 24), and keying by
+        // channel kept whichever arrived last, so a whole ride's worth of the others was never in
+        // the ledger to be read.
+        val key = "$biz " + name + " " + shape(text)
         val now = SystemClock.uptimeMillis()
         val at = ((now - startAt).toDouble() / 1000.0).toString()
         val cut = if (text.length > MAX_LEDGER_CHARS)
@@ -815,6 +893,36 @@ internal object AmapTransitShare {
             events.add(String.format("%.1fs +%.1fs %s %dB", (now - startAt) / 1000.0, gap, key,
                 text.length))
             while (events.size > MAX_EVENTS) events.removeAt(0)
+        }
+    }
+
+    /**
+     * What a payload is, for the ledger's key: a `datas` payload by the `type`s it carries, a
+     * card by the sort of fields its `cardData` has, and anything else by its own top-level keys.
+     * Values are left out on purpose - the shape is what tells one kind of payload from another.
+     */
+    private fun shape(text: String): String {
+        // Cheap on purpose: this runs on every device-layer call, on 高德's own message path, and
+        // most of those carry nothing worth parsing.
+        if (text.length < 64 || (!text.contains("datas") && !text.contains("cardData"))) {
+            return "text:" + text.take(24)
+        }
+        return try {
+            val o = JSONObject(text)
+            val datas = array(o.opt("datas"))
+            if (datas != null) {
+                val types = ArrayList<String>()
+                for (i in 0 until datas.length()) {
+                    types.add(datas.optJSONObject(i)?.optInt("type", -1)?.toString() ?: "?")
+                }
+                "datas:" + types.joinToString(",")
+            } else {
+                val card = o.optJSONObject("cardData")
+                val keys = (card ?: o).keys().asSequence().sorted().joinToString(",")
+                (if (card != null) "card:" else "keys:") + keys
+            }
+        } catch (t: Throwable) {
+            "?"
         }
     }
 
@@ -885,6 +993,12 @@ internal object AmapTransitShare {
                 if (plan == null || !samePlan(fresh, plan!!)) {
                     plan = fresh
                     simPlan = null
+                    // The route is NOT dropped here. A plan card and the route plan are two views
+                    // of the same trip and arrive in either order, so dropping one when the other
+                    // changes threw the stations away a moment after they arrived (a route panel
+                    // sends the plan card for every line it shows). A route is used by matching
+                    // the line being ridden against its segments, so a stale one simply does not
+                    // match and the fallback takes over.
                     Xp.log(TAG + "plan: " + (0 until fresh.length()).joinToString(" -> ") {
                         fresh.optJSONObject(it)!!.optString("kind") + ":" +
                             fresh.optJSONObject(it)!!.optString("name")
@@ -894,8 +1008,17 @@ internal object AmapTransitShare {
                 if (title.isEmpty()) return
                 planCard = data
                 if (title.contains("步行")) {
-                    // The walking phase is 高德's own; the ride starts when the card does.
-                    if (!riding) clear()
+                    // A walking card is 高德's own phase, and before the ride there is nothing of
+                    // ours up at all. After one it means the ride is over - unless the walk is a
+                    // change in the middle of the trip, which the plan's own index tells apart:
+                    // a plan's capsules are its legs in order, and a walk on the last of them is
+                    // the end of the trip.
+                    // 高德's index counts legs in its own planData, walking capsules and all,
+                    // while `plan` here has had every walking capsule dropped - so the leg count
+                    // that index belongs to is the card's own, not this one.
+                    val index = data.optJSONObject("location")?.optInt("index", -1) ?: -1
+                    val legs = data.optJSONArray("planData")?.length() ?: 0
+                    if (riding && (index < 0 || legs == 0 || index >= legs - 1)) clear()
                     return
                 }
                 riding = true
@@ -904,10 +1027,20 @@ internal object AmapTransitShare {
                 // ({"datas":"[{\"type\":25,\"data\":{...}}]"}); reading it with optJSONArray
                 // returns null, and the whole live channel - the stop the ride is at, the stops
                 // left, the countdown - never arrives.
+                // The channel carries more than the ride's live data: a payload's `datas` holds
+                // entries of several `type`s - the ride's own 25, its route plan 24, walking's 7
+                // (naviType) - and taking the first one regardless put `{naviType:3}` in for the
+                // ride's live data whenever a walking payload went past. Each is taken by its
+                // type, and the plan is kept for the stations it names.
                 val data = array(root.opt("datas")) ?: return
-                val inner = data.optJSONObject(0)?.optJSONObject("data") ?: return
-                live = inner
-                liveAt = SystemClock.uptimeMillis()
+                val plan = dataOf(data, PLAN_TYPE)
+                if (plan != null) route = plan
+                val inner = dataOf(data, RIDE_TYPE)
+                if (inner != null) {
+                    live = inner
+                    liveAt = SystemClock.uptimeMillis()
+                }
+                if (plan == null && inner == null) return
                 if (!riding) return
             }
             Xp.log(TAG + "ride: card=" + (planCard != null) + " live=" + (live != null) +
@@ -917,6 +1050,82 @@ internal object AmapTransitShare {
             Xp.log(TAG + "ride card failed: " + t + " " + t.stackTrace.take(4).joinToString(" | "))
         }
     }
+
+    /**
+     * The entry of a 113 payload of that `type`, or null when the payload is another kind's - a
+     * walking payload must not be taken for the ride's.
+     */
+    private fun dataOf(data: JSONArray, type: Int): JSONObject? {
+        for (i in 0 until data.length()) {
+            val e = data.optJSONObject(i) ?: continue
+            if (e.optInt("type", -1) == type) return e.optJSONObject("data")
+        }
+        return null
+    }
+
+    /**
+     * The stations of the leg being ridden, in order, out of the route plan: its `on_station`,
+     * its `via_st_list` and its `off_station`. 高德's own card names only the line's end and the
+     * live payload only the stop the ride is at, so this is the one place the stop being
+     * approached can be read from.
+     */
+    private fun sequence(line: String): List<String> =
+        segment(line)?.let { stations(it) } ?: emptyList()
+
+    /** One segment's stations in order: on_station, its `via_st_list`, off_station. */
+    private fun stations(seg: JSONObject): List<String> {
+        val out = ArrayList<String>()
+        val via = seg.optJSONArray("via_st_list")
+        name(seg.optJSONObject("on_station"))?.let { out.add(it) }
+        for (i in 0 until (via?.length() ?: 0)) {
+            name(via!!.optJSONObject(i))?.let { out.add(it) }
+        }
+        name(seg.optJSONObject("off_station"))?.let { out.add(it) }
+        return out
+    }
+
+    /** The plan's segment for the line being ridden, or its only segment when there is one. */
+    private fun segment(line: String): JSONObject? {
+        val list = route?.optJSONArray("segmentlist") ?: return null
+        if (list.length() == 0) return null
+        if (line.isEmpty()) return if (list.length() == 1) list.optJSONObject(0) else null
+        // The exact name first: the segment's own key name is 「7号线」 and the card's line is
+        // 「7号线」, and looking for one inside the other would take 「11号线」 for 「1号线」.
+        for (i in 0 until list.length()) {
+            val s = list.optJSONObject(i) ?: continue
+            if (s.optString("bus_key_name").trim() == line) return s
+        }
+        // Then inside either: 「番29路」 against 「番29路(短线)」, 「地铁4号线(南沙客运港--黄村)」
+        // against 「4号线」.
+        for (i in 0 until list.length()) {
+            val s = list.optJSONObject(i) ?: continue
+            if (inside(s.optString("bus_key_name").trim(), line) ||
+                inside(s.optString("busname").trim(), line)) return s
+        }
+        return if (list.length() == 1) list.optJSONObject(0) else null
+    }
+
+    /**
+     * Whether [line] names a whole line in [name]. 「4号线」 inside 「地铁4号线(南沙客运港--黄村)」
+     * is one; 「1号线」 inside 「11号线」 is not - the character before it there is a digit, so what
+     * was found is the tail of a longer number.
+     */
+    private fun inside(name: String, line: String): Boolean {
+        var at = name.indexOf(line)
+        while (at >= 0) {
+            if (at == 0 || !name[at - 1].isDigit()) return true
+            at = name.indexOf(line, at + 1)
+        }
+        return false
+    }
+
+    /** The segment being ridden's last station, as the route plan has it, or "". */
+    private fun segmentDest(line: String): String =
+        name(segment(line)?.optJSONObject("off_station")) ?: ""
+
+    /** A station object's name, or null when it has none. */
+    private fun name(station: JSONObject?): String? =
+        station?.optString("name")?.trim()?.takeIf { it.isNotEmpty() }
 
     /**
      * The ride's lines, in the order the trip takes them. The plan's capsules are a leg each:
@@ -1035,8 +1244,19 @@ internal object AmapTransitShare {
         // after the current one can only be worked out at the end: with one stop left, the next
         // stop is the destination the card itself names.
         val curStop = where?.optString("curStopName").orEmpty().replace(" ", "").trim()
-        val nextStop = where?.optString("nextStopName").orEmpty().replace(" ", "").trim()
-        val dest = destName(title).ifEmpty { stationName }
+        // The stop the ride is coming to. 高德 names it in `nextStopName`, which a real ride left
+        // empty for its whole length; the route plan's own station list has it, so that is read
+        // first - the stop after the one the ride is at, in the leg's own order.
+        val seq = sequence(line)
+        val after = seq.indexOf(curStop)
+        val routeNext = if (after >= 0 && after + 1 < seq.size) seq[after + 1] else ""
+        val nextStop = routeNext.ifEmpty {
+            where?.optString("nextStopName").orEmpty().replace(" ", "").trim()
+        }
+        // The line's end: the route plan names it outright, and the card's own words are the
+        // fallback - on a ride card that sentence's stop is the same end, but on another card it
+        // is the stop being announced, which is not where the line finishes.
+        val dest = segmentDest(line).ifEmpty { destName(title) }.ifEmpty { stationName }
         // 高德's own status codes, as its card sends them: 1 near the origin, 2 waiting, 3 the next
         // stop, 5 arrived at a stop, 6 a transfer, 7 the line's end. (The 4/5 in ColorOS's
         // GaoDePublicTransportNavMilestone are that enum's own ordinals, not these.)
@@ -1293,8 +1513,15 @@ internal object AmapTransitShare {
      */
     private fun stopIn(parts: List<String>): String {
         val sep = parts.indexOfFirst { it.contains('·') }
-        if (sep >= 0 && sep + 1 < parts.size) return station(parts[sep + 1])
+        if (sep >= 0) {
+            // The stop is either its own piece after the separator or glued to it (「· 南村万博」),
+            // and a separator with nothing after it is none of the pieces at all.
+            val tail = parts[sep].substringAfter('·').trim()
+            if (tail.isNotEmpty()) return station(tail)
+            if (sep + 1 < parts.size) return station(parts[sep + 1])
+        }
         for (p in parts) {
+            if (p.contains('·')) continue
             if (isCount(p) || isExit(p) || ACTION.containsMatchIn(p) || p == "后") continue
             return station(p)
         }
@@ -1322,10 +1549,20 @@ internal object AmapTransitShare {
         return m.groupValues[1].trim()
     }
 
-    private fun clear() {
-        if (lastRide == null) return
-        lastRide = null
-        tell(null, "end")
+    /**
+     * The ride is over: nothing of it is held, and SystemUI is told so it takes the card and the
+     * page down. `riding` is what says there is anything to take down - it used to be a flag
+     * that only the ride's own end could clear, and nothing ever cleared it, so the card stayed
+     * up until SystemUI's own ten-minute silence gave up on it.
+     */
+    private fun clear(action: String = "end") {
+        route = null
+        live = null
+        liveAt = 0L
+        planCard = null
+        if (!riding) return
+        riding = false
+        tell(null, action)
     }
 
     /** item[at].text of a card's titleItems / subTitleItems, or empty. */
@@ -1378,6 +1615,22 @@ internal object AmapTransitShare {
         synchronized(bridged) {
             sb.append("\nbridge: ").append(if (bridged.isEmpty()) "nothing yet" else
                 bridged.entries.joinToString(" ") { it.key + "=" + it.value })
+        }
+        sb.append("\nrom: ").append(rom).append("  spoofOppo=").append(spoofOppo)
+        // Every segment the route plan has, which is what a multi-line trip comes as - one line
+        // per segment, so the one being ridden can be seen among them.
+        val segments = route?.optJSONArray("segmentlist")
+        if (segments == null || segments.length() == 0) {
+            sb.append("\nroute: nothing yet")
+        } else {
+            for (i in 0 until segments.length()) {
+                val seg = segments.optJSONObject(i) ?: continue
+                val stops = stations(seg)
+                sb.append("\nroute[").append(i).append("] ")
+                    .append(seg.optString("bus_key_name").ifEmpty { seg.optString("busname") })
+                    .append(": ")
+                    .append(if (stops.isEmpty()) "no stations" else stops.joinToString(" → "))
+            }
         }
         sb.append("\ncard: ").append(cards.get()).append(" real ride card(s)")
         synchronized(sends) {
