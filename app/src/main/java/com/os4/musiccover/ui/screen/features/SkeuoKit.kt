@@ -12,7 +12,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.pager.HorizontalPager
@@ -22,8 +21,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -34,8 +31,7 @@ import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.coroutineScope
@@ -66,23 +62,40 @@ import kotlin.random.Random
  */
 
 /**
- * One page of a demonstration: what it is called and what it shows, as string resources rather
- * than as text. The pages are declared where the motion they describe is, and that is not a
- * composable - so the words are resolved here, where they are drawn, and not at the page's own
- * declaration.
+ * The gap between the phone and the page's title, and between the title and the dots. One number
+ * for both, because the title is centred between the two of them - and the picture's own air comes
+ * off the first (see [DemoPager]'s pictureAir), so what is measured is the phone. The one place to
+ * move the title up or down by.
  */
-internal class DemoText(@StringRes val title: Int, @StringRes val body: Int)
+private val TITLE_GAP = 12.dp
+
+/**
+ * One page of a demonstration: what it is called, as a string resource rather than as text. The
+ * pages are declared where the motion they name is, and that is not a composable - so the word is
+ * resolved here, where it is drawn, and not at the page's own declaration.
+ *
+ * A page has no line of its own under the title: the animation is the explanation, and the
+ * sentence that used to sit there only said the same thing in words (user, 2026-10-05).
+ */
+internal class DemoText(@StringRes val title: Int)
 
 /**
  * The frame both demonstrations play in: pages side by side, each on to the next when it has
- * played, the last back to the first; its title and a line under the picture; dots for where it
- * is. `picture` draws a page's animation and calls `done` when it has played through - it is
- * handed whether it is the page on screen, and starts over each time it becomes it.
+ * played, the last back to the first; the page's title under the picture, centred between the
+ * phone and the dots. `picture` draws a page's animation and calls `done` when it has played
+ * through - it is handed whether it is the page on screen, and starts over each time it becomes
+ * it.
+ *
+ * [pictureAir] is half of what that picture's camera fill leaves over under the phone, and it
+ * comes off the space above the title. Centring the title between two boxes is not the same as
+ * centring it between the phone and the dots: the band a fill below 1 leaves is empty to the
+ * reader, so counting it as picture puts the title low.
  */
 @Composable
 internal fun DemoPager(
     pages: List<DemoText>,
     modifier: Modifier = Modifier,
+    pictureAir: Dp = 0.dp,
     picture: @Composable (page: Int, playing: Boolean, done: () -> Unit) -> Unit,
 ) {
     val n = pages.size
@@ -93,26 +106,14 @@ internal fun DemoPager(
             val playing = pager.settledPage == page && !pager.isScrollInProgress
             Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
                 picture(page, playing) { scope.launch { pager.animateScrollToPage((page + 1) % n) } }
-                Spacer(Modifier.height(10.dp))
-                Text(stringResource(pages[page].title), fontSize = 17.sp, fontWeight = FontWeight.Bold,
-                    color = MiuixTheme.colorScheme.onSurface)
-                // Every page's line is laid out on every page and only this page's is shown, so all
-                // of them are as tall as the longest. The pager is as tall as the pages it has up,
-                // and with one line a line longer than the rest, the page furthest from it came up
-                // a line short (user, 2026-09-30).
-                Box(Modifier.padding(horizontal = 24.dp).padding(top = 6.dp).heightIn(min = 38.dp),
-                    contentAlignment = Alignment.TopCenter) {
-                    pages.forEachIndexed { i, t ->
-                        val shown = i == page
-                        Text(stringResource(t.body), fontSize = 13.sp, textAlign = TextAlign.Center,
-                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                            modifier = Modifier.alpha(if (shown) 1f else 0f)
-                                .then(if (shown) Modifier else Modifier.clearAndSetSemantics { }))
-                    }
-                }
+                Spacer(Modifier.height((TITLE_GAP - pictureAir).coerceAtLeast(0.dp)))
+                // Set as the line under it used to be, size, weight and colour: the title is all
+                // that is left of that text, so it reads as it did (user, 2026-10-05).
+                Text(stringResource(pages[page].title), fontSize = 13.sp,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary)
             }
         }
-        Row(Modifier.fillMaxWidth().padding(top = 10.dp, bottom = 14.dp),
+        Row(Modifier.fillMaxWidth().padding(top = TITLE_GAP, bottom = 14.dp),
             horizontalArrangement = Arrangement.Center) {
             val on = MiuixTheme.colorScheme.onSurface
             repeat(n) { i ->

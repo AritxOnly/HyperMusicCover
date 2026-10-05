@@ -89,9 +89,12 @@ private fun MiniPlayerPage(blur: Boolean, refreshKey: Int, onBack: () -> Unit) {
             // into a switched-off shortcut's place.
             Card(Modifier.padding(horizontal = 12.dp, vertical = 12.dp)) {
                 Column {
+                    // The one line the switch still carries, and only while the module is away:
+                    // a switch that cannot be moved and does not say why reads as the switch
+                    // being broken. Nothing here describes the feature itself any more.
                     SwitchPreference(title = stringResource(R.string.mini_enabled),
-                        summary = stringResource(if (alive) R.string.mini_enabled_shown
-                                                 else R.string.mini_enabled_waiting),
+                        summary = if (alive) null
+                                  else stringResource(R.string.mini_enabled_waiting),
                         checked = config.optBoolean(MiniPlayerConfig.ENABLED), enabled = alive,
                         onCheckedChange = { push(MiniPlayerConfig.ENABLED, it) })
                     SwitchPreference(title = stringResource(R.string.mini_widen),

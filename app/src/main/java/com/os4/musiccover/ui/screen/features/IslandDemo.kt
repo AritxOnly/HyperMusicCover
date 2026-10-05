@@ -63,15 +63,25 @@ import kotlin.math.sin
  * (MiniPlayerRuntime: CHANGE, APPEAR, SHOW, the card morph's), so what plays here is what the
  * phone does, at its own pace.
  */
+/**
+ * The picture's box, the camera fill inside it, and what that leaves empty under the phone. The
+ * pager centres the title under the phone rather than under the box, so it is handed the air.
+ */
+private val PICTURE_H = 236.dp
+private const val PICTURE_FILL = 0.9f
+private val PICTURE_AIR = PICTURE_H * (1f - PICTURE_FILL) / 2f
+
 @Composable
 fun IslandDemo(modifier: Modifier = Modifier) {
-    DemoPager(DEMO_PAGES, modifier) { page, playing, done -> DemoPage(page, playing, done) }
+    DemoPager(DEMO_PAGES, modifier, pictureAir = PICTURE_AIR) { page, playing, done ->
+        DemoPage(page, playing, done)
+    }
 }
 
 private val DEMO_PAGES = listOf(
-    DemoText(R.string.demo_island_switch_title, R.string.demo_island_switch_body),
-    DemoText(R.string.demo_island_immersive_title, R.string.demo_island_immersive_body),
-    DemoText(R.string.demo_island_stack_title, R.string.demo_island_stack_body),
+    DemoText(R.string.demo_island_switch_title),
+    DemoText(R.string.demo_island_immersive_title),
+    DemoText(R.string.demo_island_stack_title),
 )
 
 @Composable
@@ -90,7 +100,7 @@ private fun DemoPage(page: Int, playing: Boolean, onDone: () -> Unit) {
         }
         onDone()
     }
-    Canvas(Modifier.fillMaxWidth().height(236.dp).clipToBounds()) {
+    Canvas(Modifier.fillMaxWidth().height(PICTURE_H).clipToBounds()) {
         drawScene(scene, page, pal, measurer, clockSp)
     }
 }
@@ -407,7 +417,7 @@ private class Camera(val s: Float, val o: Offset) {
 }
 
 private fun DrawScope.drawScene(sc: Scene, page: Int, pal: SkeuoPalette, measurer: TextMeasurer, clockSp: TextUnit) {
-    val (camS, camO) = sc.cam.view(size.width, size.height)
+    val (camS, camO) = sc.cam.view(size.width, size.height, fill = PICTURE_FILL)
     val cam = Camera(camS, camO)
     withTransform({
         translate(cam.o.x, cam.o.y)
