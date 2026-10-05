@@ -42,7 +42,7 @@
    都没有实测记录。注意息屏录屏录不到，得看真机。
 4. **分支落后 main 三个提交**（`ea45a40` / `4afcbc6` / `65defc5`，动的是首页、设置页、SkeuoKit、
    strings），要进 main 得先合。
-5. 焦点卡的 `template` / `flat` 两种样式现在是纯备用（`card` 能上屏了）。确认过没人用之后再决定
+5. 焦点卡默认是 `template`（系统大模板，带进度条），`card` 和 `flat` 是备用。确认过没人用之后再决定
    要不要删。
 
 ## 调试命令（完整表在 `docs/amap-transit-island.md` §7）

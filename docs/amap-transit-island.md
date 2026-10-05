@@ -178,8 +178,8 @@ shanghai, 021,  TheBund        (31.241969,121.490214) ...
 
 - **id 1239**（避开 1236，以及高德自己的 `XiaomiUAConnectedDevice` 1237）；卡在时把 1237 拦掉（`handle()` hook `NotificationManager.notify`），免得一条行程两个岛。
 - 三种样式，探针可切（`--es island card|template|flat`）：
-  - **`card`（默认）**：`miui.focus.rv` 自定义布局 `res/layout/mc_transit_card.xml`，由 SystemUI 从**模块包**inflate（高德有 `QUERY_ALL_PACKAGES`，能引用）。176dp、24dp 圆角，地面（线路色渐变 + 地标图，在**高德进程**里下载缓存）、线路色胶囊、方向、大字里程碑、剩余站数、底部三节点轨道（复用 `AmapTransitScene.Track`）。ticker / AOD / 超级岛在 `miui.focus.param.custom`。
-  - **`template`**：系统大模板 `param_v2`（baseInfo + multiProgressInfo + bgInfo + picInfo）。
+  - **`template`（默认）**：系统大模板 `param_v2`——baseInfo（里程碑大字 + 线路和方向 + 副文案）、multiProgressInfo（按剩余站数走的进度条，线路色，副文案在条子上方重复一行）、picInfo（线路号圆牌）、bgInfo（地面）。
+  - **`card`**：`miui.focus.rv` 自定义布局 `res/layout/mc_transit_card.xml`，由 SystemUI 从**模块包**inflate（高德有 `QUERY_ALL_PACKAGES`，能引用）。176dp、24dp 圆角，地面（线路色渐变 + 地标图，在**高德进程**里下载缓存）、线路色胶囊、方向、大字里程碑、剩余站数、底部三节点轨道（复用 `AmapTransitScene.Track`）。ticker / AOD / 超级岛在 `miui.focus.param.custom`。
   - **`flat`**：protocol 1 两行小模板。
 - `FLOAT_AT = {4,6,7}`：下一站即终点、换乘、到站时上浮一次；同一状态重发不浮。
 - **`AmapFocus.java`（SystemUI 进程）是这套能成立的前提**。焦点插件会把 1239 直接丢掉：

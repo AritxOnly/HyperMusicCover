@@ -36,13 +36,13 @@ import org.json.JSONObject
  * ([handle]) - two islands for one ride is one too many.
  *
  * HyperOS's flat template (protocol 1: title, content, ticker) is a one-line card, too small for
- * any of this, so by default the ride is a focus notification with its own layout
- * (miui.focus.rv, [Style.CARD]): this module's R.layout.mc_transit_card, which SystemUI inflates
- * from this package (高德 holds QUERY_ALL_PACKAGES, so it may name it); its ticker, AOD line and
- * super island are in miui.focus.param.custom. [Style.TEMPLATE] is the system's large template
- * instead (param_v2: baseInfo, multiProgressInfo, bgInfo), [Style.FLAT] the old small one; the
- * probe switches between them (`AMAPPROBE --es island card|template|flat`), for a HyperOS build
- * that will not show one of them for 高德.
+ * any of this. By default the ride is the system's large template ([Style.TEMPLATE], param_v2:
+ * baseInfo, multiProgressInfo, bgInfo) - the milestone over the line and where it is heading, the
+ * stops left again over the leg's progress in the line's colour, the line's badge, and the ground.
+ * [Style.CARD] is this module's own layout instead (miui.focus.rv, R.layout.mc_transit_card, which
+ * SystemUI inflates from this package - 高德 holds QUERY_ALL_PACKAGES, so it may name it), with its
+ * ticker, AOD line and super island in miui.focus.param.custom; [Style.FLAT] is the old small one.
+ * The probe switches between them (`AMAPPROBE --es island card|template|flat`).
  *
  * Tapping it on the lock screen opens the page (AmapTransitScene.servesKey); tapping it elsewhere
  * opens 高德 at the navigation. Only while the current leg is a bus or a subway: a walking leg is
@@ -76,7 +76,7 @@ internal object AmapTransitIsland {
 
     enum class Style { CARD, TEMPLATE, FLAT }
 
-    @Volatile var style = Style.CARD
+    @Volatile var style = Style.TEMPLATE
         private set
 
     @Volatile private var posted = false
