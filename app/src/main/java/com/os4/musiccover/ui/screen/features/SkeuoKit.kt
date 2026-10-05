@@ -1,5 +1,6 @@
 package com.os4.musiccover.ui.screen.features
 
+import androidx.annotation.StringRes
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.tween
@@ -32,6 +33,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -63,8 +65,13 @@ import kotlin.random.Random
  * the way it is in the videos - a camera closing in must not turn it into a ball.
  */
 
-/** One page of a demonstration: what it is called and what it shows. */
-internal class DemoText(val title: String, val body: String)
+/**
+ * One page of a demonstration: what it is called and what it shows, as string resources rather
+ * than as text. The pages are declared where the motion they describe is, and that is not a
+ * composable - so the words are resolved here, where they are drawn, and not at the page's own
+ * declaration.
+ */
+internal class DemoText(@StringRes val title: Int, @StringRes val body: Int)
 
 /**
  * The frame both demonstrations play in: pages side by side, each on to the next when it has
@@ -87,7 +94,7 @@ internal fun DemoPager(
             Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
                 picture(page, playing) { scope.launch { pager.animateScrollToPage((page + 1) % n) } }
                 Spacer(Modifier.height(10.dp))
-                Text(pages[page].title, fontSize = 17.sp, fontWeight = FontWeight.Bold,
+                Text(stringResource(pages[page].title), fontSize = 17.sp, fontWeight = FontWeight.Bold,
                     color = MiuixTheme.colorScheme.onSurface)
                 // Every page's line is laid out on every page and only this page's is shown, so all
                 // of them are as tall as the longest. The pager is as tall as the pages it has up,
@@ -97,7 +104,7 @@ internal fun DemoPager(
                     contentAlignment = Alignment.TopCenter) {
                     pages.forEachIndexed { i, t ->
                         val shown = i == page
-                        Text(t.body, fontSize = 13.sp, textAlign = TextAlign.Center,
+                        Text(stringResource(t.body), fontSize = 13.sp, textAlign = TextAlign.Center,
                             color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                             modifier = Modifier.alpha(if (shown) 1f else 0f)
                                 .then(if (shown) Modifier else Modifier.clearAndSetSemantics { }))

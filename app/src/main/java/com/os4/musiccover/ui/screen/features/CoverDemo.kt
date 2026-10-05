@@ -39,6 +39,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
+import com.os4.musiccover.R
 import com.os4.musiccover.ui.util.isInDarkTheme
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
@@ -99,9 +100,9 @@ fun CoverDemo(coverStyle: Int, bias: Float, clockSize: Float, modifier: Modifier
  *   (ClockCollapse.aodHeld), which is an OEM setting, so the page says so.
  */
 private val COVER_PAGES = listOf(
-    DemoText("封面接管锁屏", "点按胶囊展开成媒体卡片，专辑封面随之接管锁屏，时钟缩小让出位置；卡片下滑收回胶囊，封面退出。"),
-    DemoText("锁屏歌词", "有歌词的歌曲在封面上逐字唱出。双指单击锁屏，在歌词和封面之间切换。"),
-    DemoText("息屏保持", "开启全屏息屏显示时，息屏后仍保留封面的小时钟和歌词，亮屏接着唱。"),
+    DemoText(R.string.demo_cover_takeover_title, R.string.demo_cover_takeover_body),
+    DemoText(R.string.demo_cover_lyrics_title, R.string.demo_cover_lyrics_body),
+    DemoText(R.string.demo_cover_aod_title, R.string.demo_cover_aod_body),
 )
 
 private class Look(val style: Int, val bias: Float, val clockSize: Float)

@@ -185,4 +185,26 @@
     <string name="shade_mode">When it applies</string>
     <string name="shade_mode_restore">System default</string>
     <string name="shade_mode_keep">Keep the album cover</string>
+
+    <!-- The islands' page, which the features page opens. -->
+    <string name="mini_page_title">Lock screen super island</string>
+    <string name="mini_enabled">Enable the lock screen super island</string>
+    <string name="mini_enabled_shown">Sits between the shortcuts at the bottom of the lock screen</string>
+    <string name="mini_enabled_waiting">Waiting for the SystemUI module to answer</string>
+    <string name="mini_widen">Widen when a shortcut is off</string>
+    <string name="mini_widen_summary">When the flashlight or the camera is turned off in system settings, the island takes the space it leaves</string>
+
+    <!-- What the two demonstrations say, page by page; see the default strings for the rule. -->
+    <string name="demo_cover_takeover_title">The cover takes the lock screen</string>
+    <string name="demo_cover_takeover_body">Tap the pill and it opens into the media card; the album cover takes the lock screen and the clock shrinks out of the way. Swipe the card down and it closes back into the pill, cover and all.</string>
+    <string name="demo_cover_lyrics_title">Lyrics on the lock screen</string>
+    <string name="demo_cover_lyrics_body">A song with lyrics sings them word by word over the cover. Two-finger tap the lock screen to switch between the lyrics and the cover.</string>
+    <string name="demo_cover_aod_title">Kept on the always-on display</string>
+    <string name="demo_cover_aod_body">With the full-screen always-on display on, the cover\'s small clock and the lyrics stay after the screen goes dark, and carry on when it lights up again.</string>
+    <string name="demo_island_switch_title">Switching and interrupting</string>
+    <string name="demo_island_switch_body">Swipe left or right to switch islands. Tap one and it opens into a card, swapping places with the one already open, and any island can be tapped mid-animation to interrupt it. Swipe up or down on the card to close it back into the island.</string>
+    <string name="demo_island_immersive_title">Immersive pages</string>
+    <string name="demo_island_immersive_body">Tap a navigation, countdown or music island and the lock screen becomes the map, the timer or the album cover; tap another island to go straight to it.</string>
+    <string name="demo_island_stack_title">The stack island</string>
+    <string name="demo_island_stack_body">Ordinary notifications go into one island; tap it or swipe up to open them into a list, and the whole row turns into cards with the clock shrinking along with it. Swipe up or down on the list to close them all.</string>
 </resources>

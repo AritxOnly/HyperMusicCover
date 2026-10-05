@@ -40,6 +40,7 @@ import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import com.os4.musiccover.ui.util.isInDarkTheme
+import com.os4.musiccover.R
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -68,9 +69,9 @@ fun IslandDemo(modifier: Modifier = Modifier) {
 }
 
 private val DEMO_PAGES = listOf(
-    DemoText("切换与打断", "左右滑动切换岛；点按岛展开成卡片，和展开的卡片互换位置，动画中途点哪个岛都能随时打断；在卡片上下滑收回岛里。"),
-    DemoText("沉浸页面", "点按导航、倒计时或音乐的岛，锁屏换成地图、倒计时或专辑封面；点另一个岛直接切过去。"),
-    DemoText("聚合岛", "普通通知收进一个岛，点按或上滑展开成列表，整排岛一起变成卡片、时钟跟着缩小；在列表上下滑全部收回。"),
+    DemoText(R.string.demo_island_switch_title, R.string.demo_island_switch_body),
+    DemoText(R.string.demo_island_immersive_title, R.string.demo_island_immersive_body),
+    DemoText(R.string.demo_island_stack_title, R.string.demo_island_stack_body),
 )
 
 @Composable
