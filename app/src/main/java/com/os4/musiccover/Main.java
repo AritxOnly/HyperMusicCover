@@ -1913,6 +1913,7 @@ public class Main extends XposedModule {
                     // the key did not exist before this setting did, and the lyrics are supposed
                     // to look the way they always have on a file that predates it.
                     + "\nlyrictrans=" + (LockLyrics.sTrans ? 1 : 0)
+                    + "\nlyricroma=" + (LockLyrics.sRoma ? 1 : 0)
                     // 0 left, 1 centre, 2 right, and left when the key is absent: a file from
                     // before this setting is one where the lyrics always sat left.
                     + "\nlyricalign=" + LockLyrics.sAlign
@@ -2021,6 +2022,7 @@ public class Main extends XposedModule {
                         else if ("lyrichidden".equals(k)) LockLyrics.sTapHidden = "1".equals(v);
                         else if ("lyrichdr".equals(k)) LockLyrics.sHdr = "1".equals(v);
                         else if ("lyrictrans".equals(k)) LockLyrics.sTrans = "1".equals(v);
+                        else if ("lyricroma".equals(k)) LockLyrics.setRoma("1".equals(v), "", null);
                         // Clamped in the setter; absent or unreadable means left, see saveState.
                         else if ("lyricalign".equals(k)) LockLyrics.setAlign(Integer.parseInt(v));
                         // The dp lyricoff and lyricgap from before the shares are dropped: what
@@ -2322,6 +2324,12 @@ public class Main extends XposedModule {
                         // it; refresh only has to start the frames that let it.
                         LockLyrics.refresh();
                         saveState();
+                    } else if ("lyricroma".equals(op)) {
+                        boolean on = i.getBooleanExtra("on", !LockLyrics.sRoma);
+                        if (LockLyrics.setRoma(on, sTrackKey, sWatched)) {
+                            Xp.log(TAG + "lyrics romanisation: " + LockLyrics.sRoma);
+                            saveStateSoon();
+                        }
                     } else if ("lyricstyle".equals(op)) {
                         String key = i.getStringExtra("key");
                         if (LockLyrics.setStyle(key, i.getFloatExtra("v", Float.NaN))) {
@@ -2789,6 +2797,7 @@ public class Main extends XposedModule {
                         out.putBoolean("lyrickeep", LockLyrics.sKeepOn);
                         out.putBoolean("lyrichdr", LockLyrics.sHdr);
                         out.putBoolean("lyrictrans", LockLyrics.sTrans);
+                        out.putBoolean("lyricroma", LockLyrics.sRoma);
                         out.putInt("lyricalign", LockLyrics.sAlign);
                         out.putFloat("lyricfill", LockLyrics.sStyle.fill);
                         out.putFloat("lyricpos", LockLyrics.sStyle.pos);
@@ -2797,8 +2806,7 @@ public class Main extends XposedModule {
                         out.putInt("lyricweight", LockLyrics.sStyle.weight);
                         // Whether anything has actually written a lyric to a session, which is
                         // what tells a working provider module from a merely installed one.
-                        out.putBoolean("sessionlyric", LockLyrics.sSawSessionLyric
-                                || LyricSource.hasLyricInfo(sWatched));
+                        out.putBoolean("sessionlyric", false);
                         out.putInt("fpavoid", sFpAvoid);
                         // Everything the app's preview needs to be to scale. It draws a lock
                         // screen it cannot see, and every one of these is device-specific, so

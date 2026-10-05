@@ -15,6 +15,15 @@ import com.mocharealm.accompanist.lyrics.core.parser.AutoParser
  */
 object LyricParse {
 
+    /** Whether romanisation is allowed to be merged into the text shown below a lyric line. */
+    @Volatile
+    private var displayRoma: Boolean = false
+
+    @JvmStatic
+    fun setDisplayRoma(enabled: Boolean) {
+        displayRoma = enabled
+    }
+
     /**
      * The same thing for a source that ships its translation separately.
      *
@@ -48,7 +57,7 @@ object LyricParse {
     @JvmStatic
     fun parse(body: String, translation: String?, roma: String?): List<LyricLine> {
         val lines = parse(body, translation)
-        if (roma.isNullOrBlank() || lines.isEmpty()) return lines
+        if (!displayRoma || roma.isNullOrBlank() || lines.isEmpty()) return lines
         val ro = lrc(roma)
         if (ro.isEmpty()) return lines
         val best = assign(lines, ro)
@@ -60,6 +69,94 @@ object LyricParse {
                 else withTranslation(line, merged))
         }
         return out
+    }
+
+    /** Whether an online copy is worth asking for after a local lyric was found. */
+    @JvmStatic
+    fun needsSupplement(lines: List<LyricLine>): Boolean {
+        for (line in lines) {
+            val t = line.translation?.trim()
+            if (t.isNullOrBlank()) return true
+            if (displayRoma && !t.contains('\n')) return true
+        }
+        return false
+    }
+
+    /**
+     * Supplements an authoritative local/file lyric with translation or romanisation from an
+     * online copy without replacing the local original or its word timings. This is deliberately
+     * a merge, not a second source choice: Salt's file remains the displayed source, while a
+     * catalogue is only allowed to fill something the file does not have.
+     */
+    @JvmStatic
+    fun mergeSupplement(base: List<LyricLine>, online: List<LyricLine>): List<LyricLine> {
+        if (base.isEmpty() || online.isEmpty()) return base
+        val candidates = online.filter { !it.translation.isNullOrBlank() }
+        if (candidates.isEmpty()) return base
+
+        val starts = IntArray(candidates.size) { candidates[it].start }
+        val out = ArrayList<LyricLine>(base.size)
+        var changed = false
+        for (line in base) {
+            val current = line.translation?.trim()
+            val candidate = nearestTranslation(candidates, starts, line.start)
+            if (candidate.isNullOrBlank()) {
+                out.add(line)
+                continue
+            }
+
+            val merged = when {
+                current.isNullOrBlank() -> candidate
+                displayRoma && candidate.contains('\n') && !current.contains('\n') -> candidate
+                displayRoma && !current.contains('\n') && looksRomanisation(candidate, line.text) ->
+                    candidate + "\n" + current
+                else -> current
+            }
+            if (merged == current) out.add(line)
+            else {
+                out.add(withTranslation(line, merged))
+                changed = true
+            }
+        }
+        return if (changed) out else base
+    }
+
+    /** A small per-line nearest match; network copies routinely disagree by a few hundred ms. */
+    private fun nearestTranslation(
+        lines: List<LyricLine>,
+        starts: IntArray,
+        at: Int,
+    ): String? {
+        if (lines.isEmpty()) return null
+        var i = starts.binarySearch(at)
+        if (i < 0) {
+            val ins = -i - 1
+            i = when {
+                ins == 0 -> 0
+                ins >= starts.size -> starts.size - 1
+                at - starts[ins - 1] <= starts[ins] - at -> ins - 1
+                else -> ins
+            }
+        }
+        return if (kotlin.math.abs(starts[i] - at) <= TRANSLATION_WINDOW_MS) {
+            lines[i].translation?.trim()
+        } else null
+    }
+
+    /**
+     * A candidate with Latin letters but no CJK/Japanese syllabary is a safe enough romanisation
+     * signal for this supplement. The main line must contain non-Latin text, so an English lyric
+     * cannot turn into a duplicated second line by accident.
+     */
+    private fun looksRomanisation(candidate: String, main: String): Boolean {
+        if (!candidate.any { it.isLetter() && it.code < 0x200 }) return false
+        if (!main.any { it.isLetter() && it.code >= 0x200 }) return false
+        if (candidate.any {
+                (it in '\u3040'..'\u30ff') ||
+                (it in '\u3400'..'\u4dbf') ||
+                (it in '\u4e00'..'\u9fff')
+            }) return false
+        return true
     }
 
     /**
@@ -123,7 +220,9 @@ object LyricParse {
         val out = ArrayList<Pair<Int, String>>()
         for (raw in body.split('\n')) {
             val m = LRC_TIME.find(raw) ?: continue
-            val text = raw.substring(m.range.last + 1).trim()
+            val text = raw.substring(m.range.last + 1)
+                .replace(LRC_TIME_TAG, " ")
+                .trim()
             if (text.isEmpty()) continue
             val min = m.groupValues[1].toIntOrNull() ?: continue
             val sec = m.groupValues[2].toIntOrNull() ?: continue
@@ -142,6 +241,7 @@ object LyricParse {
     }
 
     private val LRC_TIME = Regex("^\\[(\\d{1,3}):(\\d{2})(?:[.:](\\d{1,3}))?]")
+    private val LRC_TIME_TAG = Regex("\\[\\d{1,3}:\\d{2}(?:[.:]\\d{1,3})?]")
 
     /** The same line carrying a translation it did not come with. */
     private fun withTranslation(line: LyricLine, text: String): LyricLine {
@@ -153,7 +253,13 @@ object LyricParse {
 
     @JvmStatic
     fun parse(body: String): List<LyricLine> {
-        val lyrics = AutoParser().parse(body)
+        // Normalize the raw LRC before AutoParser sees it. This follows the proven LyricInfo
+        // approach: word-level [time] tags are converted to Enhanced-LRC <time> tags first,
+        // so an end timestamp such as [01:15.342] is timing metadata rather than lyric text.
+        // Speaker prefixes are also removed before parsing, which keeps charEnd in the same
+        // coordinate space as the final displayed text and avoids the old first-character loss.
+        val normalized = normalizeLyricBody(normalizeSpeakerPrefixes(body))
+        val lyrics = AutoParser().parse(normalized.body)
         val src = lyrics.lines
         val out = ArrayList<LyricLine>(src.size)
         // Where the tail of a line may run to when the file left it without an end of its own:
@@ -207,9 +313,273 @@ object LyricParse {
             }
         }
         out.sortBy { it.start }
-        return speakers(out)
+        var spoken = applySpeakerSides(out, normalized.speakerSides)
+        if (normalized.translation.isNotEmpty()) {
+            val assigned = assignWindow(spoken, normalized.translation, LOCAL_TRANSLATION_WINDOW_MS)
+            val with = ArrayList<LyricLine>(spoken.size)
+            for (i in spoken.indices) {
+                val tr = assigned[i]
+                with.add(if (tr == null) spoken[i] else withTranslation(spoken[i], tr))
+            }
+            spoken = with
+        }
+        return spoken
     }
 
+    private data class SpeakerPrepared(
+        val body: String,
+        val speakerSides: Map<Int, Boolean>,
+    )
+
+    private data class BodyNormalized(
+        val body: String,
+        val translation: List<Pair<Int, String>>,
+        val speakerSides: Map<Int, Boolean>,
+    )
+
+    private data class MainRange(val start: Int, val end: Int)
+
+    /**
+     * The old good Salt/LI route stripped duet labels before lyric normalization. Do the same in
+     * HMC instead of removing the label after AutoParser has already calculated word ranges.
+     * Once the parser never sees "女：" at all, its charEnd naturally lines up with "镜中的自己".
+     */
+    private fun normalizeSpeakerPrefixes(body: String): SpeakerPrepared {
+        val rows = body.split('\n')
+        data class Hit(val index: Int, val start: Int, val label: String, val prefixEnd: Int, val raw: String)
+
+        val hits = ArrayList<Hit>()
+        for ((index, raw) in rows.withIndex()) {
+            val m = RAW_SPEAKER_PREFIX.find(raw) ?: continue
+            val startMatch = LRC_TIME_ALL.find(raw) ?: continue
+            val start = timeMillis(startMatch) ?: continue
+            val label = m.groupValues[5]
+            if (label in TOGETHER || isCredit(label + ":")) continue
+            hits.add(Hit(index, start, label, m.range.last + 1, raw))
+        }
+
+        val counts = hits.groupingBy { it.label }.eachCount()
+        val singers = LinkedHashSet<String>()
+        for (hit in hits) if ((counts[hit.label] ?: 0) >= 2) singers.add(hit.label)
+        if (singers.size < 2) return SpeakerPrepared(body, emptyMap())
+
+        val order = singers.toList()
+        val sideByStart = HashMap<Int, Boolean>()
+        val out = rows.toMutableList()
+        for (hit in hits) {
+            if (hit.label !in singers && hit.label !in TOGETHER) continue
+            val right = hit.label !in TOGETHER && order.indexOf(hit.label) % 2 == 1
+            sideByStart[hit.start] = right
+            val m = RAW_SPEAKER_PREFIX.find(hit.raw)!!
+            out[hit.index] = hit.raw.removeRange(m.range.first + m.groupValues[1].length, m.range.last + 1)
+        }
+        return SpeakerPrepared(out.joinToString("\n"), sideByStart)
+    }
+
+    /**
+     * Mirrors the useful part of the previous LyricNormalizer.wordLrcToElrc implementation:
+     * [line]word[end] becomes [line]<line>word, and the final bracket tag is omitted when it has
+     * no following text. This fixes [01:12.392]Goodbyes[01:15.342] before AutoParser can expose the
+     * end timestamp as visible lyric text.
+     */
+    private fun normalizeLyricBody(prepared: SpeakerPrepared): BodyNormalized {
+        val rows = prepared.body.split('\n')
+        val parsed = rows.map { raw ->
+            val matches = LRC_TIME_ALL.findAll(raw).toList()
+            val times = matches.mapNotNull { timeMillis(it) }
+            val first = matches.firstOrNull()
+            val text = when {
+                first != null -> raw.substring(first.range.last + 1).trim()
+                else -> raw.trim()
+            }
+            Triple(raw, times, Pair(first, matches.lastOrNull())) to text
+        }
+
+        val mainRanges = parsed.mapNotNull { (pair, text) ->
+            val (raw, times, tags) = pair
+            val matches = LRC_TIME_ALL.findAll(raw).toList()
+            if (times.size < 2 || text.isBlank()) return@mapNotNull null
+            if (times.first() == times.last()) return@mapNotNull null
+            val hasWordText = matches.drop(1).any { tag ->
+                val prev = matches[matches.indexOf(tag) - 1]
+                raw.substring(prev.range.last + 1, tag.range.first).isNotBlank()
+            }
+            if (!hasWordText) return@mapNotNull null
+            MainRange(times.first(), times.last())
+        }
+
+        val translations = ArrayList<Pair<Int, String>>()
+        val kept = ArrayList<String>(rows.size)
+
+        for ((raw, times, _) in parsed.map { it.first }) {
+            val matches = LRC_TIME_ALL.findAll(raw).toList()
+            if (matches.size == 2 && times.firstOrNull() == times.lastOrNull()) {
+                val text = raw.substring(matches[0].range.last + 1, matches[1].range.first).trim()
+                if (text.isNotBlank() && !isTranslationNotice(text) && !isCredit(text)) {
+                    val at = times.first()
+                    val sortedRanges = mainRanges.sortedBy { it.start }
+                    val nextIndex = sortedRanges.indexOfFirst { it.start >= at }
+                    val next = if (nextIndex >= 0) sortedRanges[nextIndex] else null
+                    val previous = if (nextIndex > 0) sortedRanges[nextIndex - 1] else null
+
+                    // LDDC's local translation lane often sits immediately before the next
+                    // original line (typically 1 ms earlier), not at the previous line's start.
+                    // Prefer that structural signal over a nearest-start match.
+                    val owner = when {
+                        previous != null && next != null && next.start - at in 0..LOCAL_NEXT_LINE_TRANSLATION_MS -> previous
+                        else -> sortedRanges.minByOrNull { distanceToRange(at, it) }
+                    }
+                    if (owner != null && isUsableLocalTranslationOwner(at, owner, next)) {
+                        translations.add(Pair(owner.start, text))
+                        continue
+                    }
+                } else if (text.isNotBlank()) {
+                    // Known notices/credits are metadata, not the song's primary lyric.
+                    continue
+                }
+                // Preserve an unpaired duplicate row as ordinary text, but without the tail tag.
+                val first = raw.substring(0, matches[0].range.last + 1)
+                kept.add(first + text)
+                continue
+            }
+            kept.add(normalizeWordLrcLine(raw))
+        }
+
+        return BodyNormalized(kept.joinToString("\n"), translations, prepared.speakerSides)
+    }
+
+    private fun distanceToRange(at: Int, range: MainRange): Int = when {
+        at < range.start -> range.start - at
+        at > range.end -> at - range.end
+        else -> 0
+    }
+
+    private fun isUsableLocalTranslationOwner(
+        at: Int,
+        owner: MainRange,
+        next: MainRange?,
+    ): Boolean {
+        if (at in (owner.start - LOCAL_TRANSLATION_WINDOW_MS)..(owner.end + LOCAL_TRANSLATION_WINDOW_MS)) return true
+        if (next != null && next.start >= at && next.start - at <= LOCAL_NEXT_LINE_TRANSLATION_MS) return true
+        return distanceToRange(at, owner) <= LOCAL_TRANSLATION_WINDOW_MS
+    }
+
+    private fun normalizeWordLrcLine(raw: String): String {
+        val matches = LRC_TIME_ALL.findAll(raw).toList()
+        if (matches.size < 2) return raw
+        val first = matches[0]
+        val body = raw.substring(first.range.last + 1)
+        val inline = LRC_TIME_ALL.findAll(body).toList()
+        if (inline.isEmpty()) return raw
+
+        // Multiple line timestamps at the very front are repeated LRC timing tags, not word tags.
+        val repeatedLineTags = when {
+            inline.size == 1 -> body.substring(0, inline[0].range.first).isBlank()
+            else -> inline.drop(1).all { tag ->
+                val i = inline.indexOf(tag)
+                body.substring(inline[i - 1].range.last + 1, tag.range.first).isBlank()
+            }
+        }
+        if (repeatedLineTags) return raw
+
+        val lineTime = first.value
+        val out = StringBuilder(lineTime)
+        val leading = body.substring(0, inline[0].range.first)
+        if (leading.isNotBlank()) {
+            out.append('<').append(lineTime.substring(1, lineTime.length - 1)).append('>').append(leading)
+        }
+        for (i in inline.indices) {
+            val tag = inline[i]
+            val textStart = tag.range.last + 1
+            val textEnd = if (i + 1 < inline.size) inline[i + 1].range.first else body.length
+            val text = body.substring(textStart, textEnd)
+            if (text.isNotBlank()) {
+                val tagValue = tag.value
+                out.append('<').append(tagValue.substring(1, tagValue.length - 1)).append('>')
+            }
+            out.append(text)
+        }
+        return out.toString()
+    }
+
+    private fun isTranslationNotice(text: String): Boolean {
+        val s = text.replace(Regex("\\s+"), "")
+        return s.startsWith("以下歌词翻译") ||
+            s.contains("歌词翻译由") ||
+            s.contains("翻译由") ||
+            s.startsWith("translationprovided") ||
+            s.startsWith("lyricstranslation")
+    }
+
+    /** Labels that mean everyone at once. Drawn on the first singer's side. */
+    private val TOGETHER = setOf("合", "合唱", "全", "All", "ALL", "all")
+
+    private val RAW_SPEAKER_PREFIX = Regex(
+        "^(\\s*\\[(\\d{1,3}):(\\d{2})(?:[.:](\\d{1,3}))?]\\s*(?:<[^>]+>\\s*)*)([^\\s\\d:：]{1,6})\\s*[:：]\\s*"
+    )
+
+    private val LRC_TIME_ALL = Regex("\\[(\\d{1,3}):(\\d{2})(?:[.:](\\d{1,3}))?]")
+
+    private const val LOCAL_TRANSLATION_WINDOW_MS = 1500
+    /** LDDC commonly writes the translation 1-2 ms before the next original line. */
+    private const val LOCAL_NEXT_LINE_TRANSLATION_MS = 20
+
+    private fun timeMillis(m: MatchResult): Int? {
+        val min = m.groupValues[1].toIntOrNull() ?: return null
+        val sec = m.groupValues[2].toIntOrNull() ?: return null
+        val frac = m.groupValues[3]
+        val ms = when (frac.length) {
+            0 -> 0
+            1 -> (frac.toIntOrNull() ?: 0) * 100
+            2 -> (frac.toIntOrNull() ?: 0) * 10
+            else -> (frac.take(3).toIntOrNull() ?: 0)
+        }
+        return min * 60000 + sec * 1000 + ms
+    }
+
+    private fun isCredit(text: String): Boolean {
+        val compact = text.replace(Regex("\\s+"), "")
+        if (compact.contains("著作权") || compact.contains("版权")) return true
+        return compact.matches(Regex("^(作词|作曲|编曲|制作|制作人|监制|统筹|混音|母带|录音|演奏|吉他|贝斯|鼓|键盘|词|曲)[:：].*"))
+    }
+
+    private fun assignWindow(
+        lines: List<LyricLine>,
+        entries: List<Pair<Int, String>>,
+        windowMs: Int,
+    ): Array<String?> {
+        val starts = IntArray(lines.size) { lines[it].start }
+        val best = arrayOfNulls<String>(lines.size)
+        val gaps = IntArray(lines.size) { Int.MAX_VALUE }
+        for ((at, text) in entries) {
+            if (starts.isEmpty()) continue
+            var i = starts.binarySearch(at)
+            if (i < 0) {
+                val ins = -i - 1
+                i = when {
+                    ins == 0 -> 0
+                    ins >= starts.size -> starts.size - 1
+                    at - starts[ins - 1] <= starts[ins] - at -> ins - 1
+                    else -> ins
+                }
+            }
+            val gap = kotlin.math.abs(starts[i] - at)
+            if (gap <= windowMs && gap < gaps[i]) {
+                gaps[i] = gap
+                best[i] = text
+            }
+        }
+        return best
+    }
+
+    /** Belt-and-suspenders guard for parser versions that still expose a terminal end-tag as text. */
+    private val TRAILING_TIME_TAG = Regex("\\s*\\[(\\d{1,3}):(\\d{2})(?:[.:](\\d{1,3}))?]\\s*$")
+
+    internal fun stripTrailingTimeTag(text: String): String {
+        val m = TRAILING_TIME_TAG.find(text) ?: return text
+        if (m.range.first <= 0) return text
+        return text.substring(0, m.range.first).trimEnd()
+    }
     /**
      * The first of the sorted starts that is later than t: when the line starting at t is followed
      * by another. The last line of a song has nothing after it, and gets the fallback.
@@ -236,16 +606,24 @@ object LyricParse {
         // Trailing spaces belong to the last word in English files and would push a wrapped
         // line's measured width past its ink. Leading ones cannot be trimmed without shifting
         // every syllable's character range, and the files do not have them.
-        var n = text.length
-        while (n > 0 && text[n - 1].isWhitespace()) n--
+        //
+        // Some enhanced-LRC files also end a word-timed row with an explicit end timestamp, e.g.
+        // [01:12.392]Goodbyes[01:15.342]. lyrics-core can expose that final tag as literal text.
+        // Remove only that terminal tag; timestamps that occur before later words remain untouched.
+        val rawText = text.toString()
+        val shownText = stripTrailingTimeTag(rawText)
+        var n = shownText.length
+        while (n > 0 && shownText[n - 1].isWhitespace()) n--
         if (n == 0) return null
         for (k in chars.indices) if (chars[k] > n) chars[k] = n
         closeUntimedTail(starts, ends, line.end, nextStart)
         // The file's own romanisation - TTML's x-roman, a KRC's language block - joins the
         // translation the same way a separately shipped one does.
-        val shown = text.substring(0, n)
-        return LyricLine(shown, withRoma(line.phonetic, shown, line.translation), line.start,
-            line.end, line.alignment == KaraokeAlignment.End, starts, ends, chars)
+        val shown = shownText.substring(0, n)
+        val below = if (displayRoma) withRoma(line.phonetic, shown, line.translation)
+        else line.translation
+        return LyricLine(shown, below, line.start, line.end,
+            line.alignment == KaraokeAlignment.End, starts, ends, chars)
     }
 
     /**
@@ -324,68 +702,69 @@ object LyricParse {
      */
     private const val MAX_HELD_MS = 4000
 
-    /** "筷：" or "Jay: " at the head of a line - a name, then a full- or half-width colon. */
-    private val LABEL = Regex("^([^\\s\\d:：]{1,6})\\s*[:：]\\s*")
-
-    /** Labels that mean everyone at once. Drawn on the first singer's side. */
-    private val TOGETHER = setOf("合", "合唱", "全", "All", "ALL", "all")
-
     /**
-     * Duets marked the way NetEase lyrics mark them: the singer's name as a prefix on the line
-     * where the voice changes ("筷：苍茫的天涯是我的爱", "凤：变成蜡烛燃烧自己"), holding until
-     * the next prefix. MeiLoX reads the same prefixes to put the two voices on either side; the
-     * files carry no other trace of who sings what.
-     *
-     * A name only counts once it has marked two lines, which leaves out the credits at the top
-     * ("作词: ...", "作曲: ...") that appear once each. It takes two such names to be a duet; the
-     * first to sing is on the left, the second on the right, and the prefix is not shown. A file
-     * whose lines already say which side they are on (TTML's agents) is left as it is.
+     * Apply singer-side information captured before AutoParser. If a source format defeated the
+     * raw-prefix detector and AutoParser still exposed a singer label, strip that label here as a
+     * safety net. Crucially, the fallback drops word ranges for that line rather than attempting a
+     * guessed charEnd shift; the full text must remain visible even when the source's coordinate
+     * space is ambiguous.
      */
-    private fun speakers(lines: List<LyricLine>): List<LyricLine> {
-        if (lines.any { it.opposite }) return lines
+    private fun applySpeakerSides(lines: List<LyricLine>, sides: Map<Int, Boolean>): List<LyricLine> {
+        val preKnown = sides.isNotEmpty()
         val labels = lines.map { LABEL.find(it.text)?.groupValues?.get(1) }
         val counts = labels.filterNotNull().groupingBy { it }.eachCount()
-        val singers = LinkedHashSet<String>()
-        for (l in labels) {
-            if (l != null && l !in TOGETHER && (counts[l] ?: 0) >= 2) singers.add(l)
+        val detected = LinkedHashSet<String>()
+        for (label in labels) {
+            if (label != null && label !in TOGETHER && (counts[label] ?: 0) >= 2) {
+                detected.add(label)
+            }
         }
-        if (singers.size < 2) return lines
-        val order = singers.toList()
+        val fallbackIsDuet = detected.size >= 2
+        val order = if (fallbackIsDuet) detected.toList() else emptyList()
+
+        if (!preKnown && !fallbackIsDuet) return lines
+
         val out = ArrayList<LyricLine>(lines.size)
-        var right = false
-        for ((i, line) in lines.withIndex()) {
-            val label = labels[i]
-            val known = label != null && (label in TOGETHER || label in singers)
-            if (known) right = label !in TOGETHER && order.indexOf(label) % 2 == 1
-            val cut = if (known) LABEL.find(line.text)!!.range.last + 1 else 0
-            out.add(relabel(line, cut, right) ?: continue)
+        var currentRight = false
+        for (line in lines) {
+            val rawLabel = LABEL.find(line.text)?.groupValues?.get(1)
+            val knownLabel = rawLabel != null && (rawLabel in TOGETHER || rawLabel in detected)
+
+            val side = sides[line.start] ?: if (knownLabel) {
+                currentRight = rawLabel !in TOGETHER && order.indexOf(rawLabel) % 2 == 1
+                currentRight
+            } else {
+                currentRight
+            }
+
+            if (knownLabel) {
+                val match = LABEL.find(line.text)!!
+                val text = line.text.substring(match.range.last + 1)
+                val copy = LyricLine(text, line.translation, line.start, line.end, side,
+                    null, null, null)
+                copy.bg = line.bg
+                out.add(copy)
+                continue
+            }
+
+            if (sides.containsKey(line.start) && side) {
+                val copy = LyricLine(line.text, line.translation, line.start, line.end, true,
+                    line.sylStart, line.sylEnd, line.charEnd)
+                copy.bg = line.bg
+                out.add(copy)
+            } else {
+                out.add(line)
+            }
         }
         return out
     }
 
-    /** The same line with its first `cut` characters gone and put on the given side. */
-    private fun relabel(line: LyricLine, cut: Int, opposite: Boolean): LyricLine? {
-        if (cut >= line.text.length) return null
-        val text = line.text.substring(cut)
-        val result = if (line.sylStart == null) {
-            LyricLine(text, line.translation, line.start, line.end, opposite, null, null, null)
-        } else {
-            // Syllables that lay wholly inside the prefix go with it; the rest shift left.
-            val starts = ArrayList<Int>()
-            val ends = ArrayList<Int>()
-            val chars = ArrayList<Int>()
-            for (k in line.sylStart.indices) {
-                val e = line.charEnd[k] - cut
-                if (e <= 0) continue
-                starts.add(line.sylStart[k])
-                ends.add(line.sylEnd[k])
-                chars.add(e)
-            }
-            if (chars.isEmpty()) return null
-            LyricLine(text, line.translation, line.start, line.end, opposite,
-                starts.toIntArray(), ends.toIntArray(), chars.toIntArray())
-        }
-        result.bg = line.bg
-        return result
-    }
+    /**
+     * Speaker labels such as "女：" are parsed with the normal one-line label pattern. This is
+     * kept separate from the raw-prefix regex because a provider can insert other timing syntax
+     * between the line timestamp and the visible text.
+     */
+    private val LABEL = Regex("^([^\\s\\d:：]{1,6})\\s*[:：]\\s*")
+
+
 }

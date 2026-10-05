@@ -97,6 +97,8 @@ final class LockLyrics {
      * than leaving a gap where it was.
      */
     static volatile boolean sTrans = true;
+    /** Whether romanisation is included in the fetched lyric payloads. Off by default. */
+    static volatile boolean sRoma = false;
     /** Where the lines settle in their column: left, centre or right, as the settings offer. */
     static final int ALIGN_LEFT = 0, ALIGN_CENTER = 1, ALIGN_RIGHT = 2;
     /**
@@ -115,6 +117,27 @@ final class LockLyrics {
      * Applies one alignment pref, validated here rather than at the callers: a state file and an
      * adb broadcast are both untrusted, and no screen could have set a fourth value.
      */
+    static boolean setRoma(boolean enabled, String key, MediaController controller) {
+        if (sRoma == enabled) {
+            LyricParse.setDisplayRoma(enabled);
+            return false;
+        }
+        sRoma = enabled;
+        LyricParse.setDisplayRoma(enabled);
+        if (key != null && !key.isEmpty() && controller != null && sEnabled) {
+            // Keep the currently displayed lines while the same source is reparsed, so toggling
+            // the switch never creates a blank frame. The next answer is cached with the new
+            // romanisation policy.
+            CACHE.remove(key);
+            sInfoSeen = null;
+            sInfoTries = 0;
+            lookup(key, controller, true);
+        } else {
+            refresh();
+        }
+        return true;
+    }
+
     static boolean setAlign(int mode) {
         int next = mode <= ALIGN_LEFT ? ALIGN_LEFT : Math.min(mode, ALIGN_RIGHT);
         if (next == sAlign) return false;
@@ -814,7 +837,7 @@ final class LockLyrics {
         }
         // What the lookup about to start will read the session as, so a payload that turns up
         // after it - the provider module's real one - can be told apart from this one.
-        sInfoSeen = LyricSource.infoFor(c);
+        sInfoSeen = null;
         lookup(key, c, false);
     }
 
@@ -832,25 +855,8 @@ final class LockLyrics {
      * done at +2s, read only at the next entry at +5s).
      */
     private static void rereadIfNewPayload(String key, MediaController c) {
-        // Parked is loading only in name: nothing is running, it is waiting for exactly this.
-        if (!sEnabled || key.isEmpty() || (sLoading && sParked == null) || sDemo) return;
-        if (sParked != null && sParked.rereading) return;
-        String info = LyricSource.infoFor(c);
-        if (info == null || info.equals(sInfoSeen) || !LyricSource.usable(info)
-                || sInfoTries >= MAX_INFO_TRIES) {
-            return;
-        }
-        sInfoSeen = info;
-        sInfoTries++;
-        Xp.log(TAG + "the session is carrying a lyric " + key
-                + " has not been read against; re-reading (" + sInfoTries + ")");
-        CACHE.remove(key);
-        // The lines already up are NOT cleared. A re-read is looking for something
-        // better than what is on screen, and the first version emptied the view before
-        // it knew whether there was any: a re-read that came back with nothing left the
-        // song with no lyrics at all for the rest of its play. lookup() keeps them.
-        lookup(key, c, true);
-        if (sParked != null) sParked.rereading = true;
+        // Session/provider lyricInfo is intentionally not part of the lookup chain in this build.
+        // Keeping this hook as a no-op avoids stale state-machine behaviour from older versions.
     }
 
     /** How many times one song may be re-read because the session published something new. */
@@ -1290,7 +1296,7 @@ final class LockLyrics {
                 + " demo=" + sDemo + " key=" + sKey + " lines=" + sLines.size()
                 + " has=" + hasLyrics() + " loading=" + sLoading
                 + " (" + sWhy + ") src=" + srcName(sSource)
-                + " sessionHasLyric=" + LyricSource.hasLyricInfo(sController)
+                + " sessionHasLyric=false"
                 + " pos=" + positionMs() + " playing=" + playing()
                 + " cover=" + Main.coverModeOn() + " screen=" + Main.screenOnCached()
                 // What the wallpaper process was last told, and when: the other side prints the

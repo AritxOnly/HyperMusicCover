@@ -102,6 +102,7 @@
     <string name="home_device_model">Model</string>
     <string name="home_hyperos_version">HyperOS</string>
     <string name="home_android_version">Android</string>
+    <string name="home_module_version">Module version</string>
     <string name="home_unknown">Unknown</string>
     <string name="home_loading">Loading…</string>
     <string name="donate_title">Donate</string>
@@ -137,6 +138,8 @@
     <string name="lyrics_provider_got_it">Got it</string>
     <string name="lyrics_provider_got_it_wait">Got it (%1$d)</string>
     <string name="lyrics_trans">Show translations</string>
+    <string name="lyrics_roma">Show romanisation</string>
+    <string name="lyrics_roma_summary">Show romanisation when the lyric source provides it; songs without romanisation will not show it</string>
     <string name="lyrics_align">Lyric alignment</string>
     <string name="lyrics_align_left">Left</string>
     <string name="lyrics_align_center">Center</string>
@@ -184,19 +187,4 @@
     <string name="shade_mode">When it applies</string>
     <string name="shade_mode_restore">System default</string>
     <string name="shade_mode_keep">Keep the album cover</string>
-
-    <!-- The islands' page, which the features page opens. -->
-    <string name="mini_page_title">Lock screen super island</string>
-    <string name="mini_enabled">Enable the lock screen super island</string>
-    <string name="mini_enabled_waiting">Waiting for the SystemUI module to answer</string>
-    <string name="mini_widen">Widen when a shortcut is off</string>
-    <string name="mini_widen_summary">When the flashlight or the camera is turned off in system settings, the island takes the space it leaves</string>
-
-    <!-- What the two demonstrations are called, page by page; see the default strings for the rule. -->
-    <string name="demo_cover_takeover_title">The cover takes the lock screen</string>
-    <string name="demo_cover_lyrics_title">Lyrics on the lock screen</string>
-    <string name="demo_cover_aod_title">Kept on the always-on display</string>
-    <string name="demo_island_switch_title">Switching and interrupting</string>
-    <string name="demo_island_immersive_title">Immersive pages</string>
-    <string name="demo_island_stack_title">The stack island</string>
 </resources>

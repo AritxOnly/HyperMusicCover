@@ -10,11 +10,11 @@ import java.util.concurrent.TimeUnit;
 /**
  * The by-name catalogues, in the order HyperLyrics Enhanced asks them, and the one answer taken.
  *
- * Its order is by player: a NetEase player's song is looked for on NetEase first and a QQ
- * Music player's on QQ first, because a player's own catalogue is the one whose entry is that
- * recording; everything else starts with QQ, the bigger catalogue, then NetEase. HyperLyrics
- * Enhanced stops there. This goes on to Kuwo, KuGou and LrcLib, one after another, for a song
- * neither of the two had - with KuGou and Kuwo moved to the front for their own players.
+ * Its order is by player, with QQ deliberately preferred for NetEase as well: QQ's search
+ * catalogue is broader for the songs we care about here, while the candidate is still required
+ * to pass LyricMatch's title/artist/duration check before its lyric is accepted. NetEase is the
+ * second choice, followed by Kuwo, KuGou and LrcLib. HyperLyrics Enhanced stops there. KuGou
+ * and Kuwo are still moved to the front for their own players.
  *
  * The first two are asked together and the earlier one in the order is preferred - an answer
  * from the second waits for the first to finish, so the choice is the order's and not the
@@ -78,18 +78,25 @@ final class OnlineLyrics {
         }
     }
 
-    /** The order for a player - HyperLyrics Enhanced's first two, then ours. */
+    /**
+     * One deterministic order for every non-Salt online lookup. Salt itself uses the local file
+     * first and only reaches this class when it needs a translation/romanisation supplement.
+     *
+     * QQ is always first and NetEase is always second. The third slot is the player's own
+     * catalogue when HMC has a supported player mapping (KuGou -> KuGou, Kuwo -> Kuwo). For every
+     * other player, the third slot defaults to Kuwo, followed by KuGou and LrcLib.
+     */
     static List<Src> order(String pkg) {
-        if ("com.netease.cloudmusic".equals(pkg)) {
-            return Arrays.asList(Src.NETEASE, Src.QQ, Src.KUWO, Src.KUGOU, Src.LRCLIB);
+        final boolean kugou = "com.kugou.android".equals(pkg)
+                || "com.kugou.android.lite".equals(pkg);
+        final boolean kuwo = "cn.kuwo.player".equals(pkg);
+
+        if (kugou) {
+            return Arrays.asList(Src.QQ, Src.NETEASE, Src.KUGOU, Src.KUWO, Src.LRCLIB);
         }
-        if ("com.kugou.android".equals(pkg) || "com.kugou.android.lite".equals(pkg)) {
-            return Arrays.asList(Src.KUGOU, Src.QQ, Src.NETEASE, Src.KUWO, Src.LRCLIB);
+        if (kuwo) {
+            return Arrays.asList(Src.QQ, Src.NETEASE, Src.KUWO, Src.KUGOU, Src.LRCLIB);
         }
-        if ("cn.kuwo.player".equals(pkg)) {
-            return Arrays.asList(Src.KUWO, Src.QQ, Src.NETEASE, Src.KUGOU, Src.LRCLIB);
-        }
-        // QQ Music's own and everyone else's: QQ, then NetEase.
         return Arrays.asList(Src.QQ, Src.NETEASE, Src.KUWO, Src.KUGOU, Src.LRCLIB);
     }
 
@@ -98,6 +105,53 @@ final class OnlineLyrics {
 
     /** The first two in the order, together. Null when neither placed the song. */
     static Found first(final String pkg, final NcmLyrics.Query q) {
+        final List<Src> order = order(pkg);
+        final Found[] got = new Found[2];
+        final boolean[] finished = new boolean[2];
+        final BlockingQueue<Integer> done = new LinkedBlockingQueue<>();
+        for (int i = 0; i < 2; i++) {
+            final int slot = i;
+            new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        got[slot] = ask(order.get(slot), q);
+                    } finally {
+                        finished[slot] = true;
+                        done.offer(slot);
+                    }
+                }
+            }, "MCLyric" + order.get(i)).start();
+        }
+        long deadline = android.os.SystemClock.uptimeMillis() + BUDGET_MS;
+        for (int n = 0; n < 2; n++) {
+            long left = deadline - android.os.SystemClock.uptimeMillis();
+            if (left <= 0) break;
+            Integer slot;
+            try {
+                slot = done.poll(left, TimeUnit.MILLISECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+            if (slot == null) break;
+            // The first in the order decides as soon as it has answered; the second only once
+            // the first has answered with nothing.
+            if (finished[0] && got[0] != null) return got[0];
+            if (finished[0] && finished[1]) break;
+        }
+        // Out of time for the first, or both done: whichever has something.
+        return got[0] != null ? got[0] : got[1];
+    }
+
+    /**
+     * An online copy specifically for supplementing a local lyric. Unlike first(), this route
+     * prefers the first result that actually carries translation/romanisation. A source can know
+     * a song but still return only the original text; for Salt that is not enough, because the
+     * whole point of this request is to fill what the local file lacks. Source priority remains
+     * the tie-breaker.
+     */
+    static Found supplement(final String pkg, final NcmLyrics.Query q) {
         final List<Src> order = order(pkg);
         final Found[] got = new Found[2];
         final BlockingQueue<Integer> done = new LinkedBlockingQueue<>();
@@ -112,13 +166,12 @@ final class OnlineLyrics {
                         done.offer(slot);
                     }
                 }
-            }, "MCLyric" + order.get(i)).start();
+            }, "MCLyricSupplement" + order.get(i)).start();
         }
         long deadline = android.os.SystemClock.uptimeMillis() + BUDGET_MS;
-        boolean[] finished = new boolean[2];
         for (int n = 0; n < 2; n++) {
             long left = deadline - android.os.SystemClock.uptimeMillis();
-            if (left <= 0) break;
+            if (left <= 0L) break;
             Integer slot;
             try {
                 slot = done.poll(left, TimeUnit.MILLISECONDS);
@@ -127,14 +180,29 @@ final class OnlineLyrics {
                 break;
             }
             if (slot == null) break;
-            finished[slot] = true;
-            // The first in the order decides as soon as it has answered; the second only once
-            // the first has answered with nothing.
-            if (finished[0] && got[0] != null) return got[0];
-            if (finished[0] && finished[1]) break;
         }
-        // Out of time for the first, or both done: whichever has something.
-        return got[0] != null ? got[0] : got[1];
+
+        if (got[0] != null && hasSupplement(got[0])) return got[0];
+        if (got[1] != null && hasSupplement(got[1])) return got[1];
+        Found fallback = got[0] != null ? got[0] : got[1];
+        for (int i = 2; i < order.size(); i++) {
+            Found f = ask(order.get(i), q);
+            if (f == null) continue;
+            if (fallback == null) fallback = f;
+            if (hasSupplement(f)) return f;
+        }
+        return fallback;
+    }
+
+    private static boolean hasSupplement(Found f) {
+        if (f == null) return false;
+        try {
+            for (LyricLine line : LyricParse.parse(f.body, f.translation, f.roma)) {
+                if (line.translation != null && !line.translation.trim().isEmpty()) return true;
+            }
+        } catch (Throwable ignored) {
+        }
+        return false;
     }
 
     /** The rest of the order, one at a time. Null when none of them had it. */

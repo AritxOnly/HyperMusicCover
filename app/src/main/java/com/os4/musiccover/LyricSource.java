@@ -738,9 +738,8 @@ final class LyricSource {
     static void load(final MediaController c, final Callback cb) {
         final String pkg = c == null ? "?" : c.getPackageName();
 
-        // Not lyricInfoOf: at a track change the field routinely still holds the song before
-        // this one, and believing it is what cost five songs their lyrics. See infoFor().
-        final String info = infoFor(c);
+        // This build deliberately ignores MediaSession lyricInfo. It is diagnostic-only elsewhere;
+        // normal lyric lookup is fully self-contained so LyricInfo cannot affect the result.
         final String dir = dirFor(c);
         // An id is only worth having when there is a directory it belongs to; without one it
         // cannot be looked up anywhere, and pretending otherwise is how a lookup lands in the
@@ -754,8 +753,8 @@ final class LyricSource {
         // Held now, on the caller's thread, because the worker below has no way to reach one.
         final android.content.Context ctx = Main.sAppCtx;
         final MediaController controller = c;
-        if (info == null && id == null && q == null && ctx == null) {
-            Xp.log("[MCLyric] " + pkg + " publishes neither lyricInfo, a song id, nor a name");
+        if (id == null && q == null && ctx == null) {
+            Xp.log("[MCLyric] " + pkg + " publishes neither a song id nor a name");
             onMain(cb, java.util.Collections.<LyricLine>emptyList(),
                     "nothing to read from " + pkg, SRC_NONE);
             return;
@@ -764,50 +763,62 @@ final class LyricSource {
             @Override
             public void run() {
                 Rows r = new Rows();
-                // Five sources, best first, each one asked only because the one before it came
-                // up empty. Every step falls through rather than stopping, which is the whole
-                // shape of this: a source that is present but useless - a provider module that
-                // wrote a lyricInfo it could not fill, an id the database does not have - used
-                // to end the search, and the song played on with nothing on screen while a
-                // perfectly good answer sat one step further down.
-                if (info != null) {
-                    session(info, r);
-                }
-                // The bridge, when the session had nothing. Same standing as the session's own
-                // payload and for the same reason - both are the player's lyric, handed over by
-                // whoever managed to reach it - so it is asked here rather than below the file,
-                // and what it brings is word-timed often enough to keep the file out.
-                if (r.lines.isEmpty()) {
-                    lyricon(controller, r);
-                }
-                // The file's own lyric, which outranks what the session is carrying - with one
-                // exception, and the exception is the reason the session is read first at all.
-                //
-                // For music on this phone the file is the authority: its lyric is the one the
-                // person keeps with it, and reading it cannot land on the wrong song. What the
-                // session has is usually that same lyric relayed by a provider module, so
-                // preferring the file costs nothing and stops depending on the module. But a
-                // module that has word timings publishes them in rawLyric, and no .lrc or tag
-                // has ever carried any - so when the session's answer is word-timed it is the
-                // better of two readings of the same words, and it keeps the screen.
-                if (!words(r.lines)) {
+                final boolean salt = "com.salt.music".equals(pkg);
+
+                // HMC is self-contained in this build: do not read MediaSession lyricInfo or
+                // the Lyricon bridge. Both can be populated by LyricInfo/other provider modules
+                // and would silently reintroduce the dependency this build is intended to remove.
+                // Salt is a local-file player, so its embedded/sidecar lyric is authoritative.
+                if (salt) {
+                    // The local file is Salt's authoritative original lyric. Publish it first so
+                    // lockscreen timing/word animation never waits for the network. If the file
+                    // is missing translation (or roma when enabled), a catalogue is fetched as a
+                    // supplement and merged into the file's lines without changing the source
+                    // label or its word timings.
                     local(ctx, controller, r);
+                    if (!r.lines.isEmpty()) {
+                        final List<LyricLine> base = r.lines;
+                        final String baseWhy = r.why;
+                        Xp.log("[MCLyric] " + pkg + " -> " + baseWhy);
+                        onMain(cb, base, baseWhy, r.source);
+                        if (q != null && LyricParse.needsSupplement(base)) {
+                            Rows extra = new Rows();
+                            supplementOnline(pkg, q, extra);
+                            List<LyricLine> merged = LyricParse.mergeSupplement(base, extra.lines);
+                            if (merged != base) {
+                                String why = baseWhy + " + online translation/romanisation supplement";
+                                Xp.log("[MCLyric] " + pkg + " -> " + why);
+                                onMain(cb, merged, why, SRC_LOCAL);
+                            }
+                        }
+                        return;
+                    }
+                    if (q != null) {
+                        online(pkg, q, r);
+                        if (r.lines.isEmpty()) web(pkg, q, r);
+                    }
+                } else {
+                    // All non-Salt players use the by-name online catalogues first, regardless
+                    // of which player published the MediaSession. The catalogue order is fixed in
+                    // OnlineLyrics: QQ -> NetEase -> Kuwo -> KuGou -> LrcLib. This makes the lyric
+                    // source deterministic and avoids a player-specific source unexpectedly
+                    // winning with a translation quality that is worse for the current song.
+                    if (q != null) {
+                        online(pkg, q, r);
+                        if (r.lines.isEmpty()) web(pkg, q, r);
+                    }
+                    // Only after all online catalogues miss do we fall back to the original
+                    // id/database/TTML routes. They are never allowed to replace a valid online
+                    // result. Do not ask the online catalogue again inside this race.
+                    if (r.lines.isEmpty() && (id != null || q != null)) {
+                        race(gen, pkg, ctx, id, dir, q, r, false);
+                    }
+                    // A local file is the final fallback for every non-Salt player.
+                    if (r.lines.isEmpty()) {
+                        local(ctx, controller, r);
+                    }
                 }
-                if (r.lines.isEmpty() && (id != null || q != null)) {
-                    race(gen, pkg, ctx, id, dir, q, r);
-                }
-                // A catalogue that places the song and answers that it is instrumental has
-                // answered: the song has no words, and the next catalogue is not asked for some.
-                boolean instrumental = dropPlaceholder(r);
-                // The other two catalogues, in order, and only for a song the first three could
-                // not place. Sequential rather than raced: this is the slow path by definition,
-                // nothing above it is still running by the time it starts, and a song that
-                // already works never reaches it, so what it costs is paid only by songs that
-                // would otherwise show nothing at all.
-                if (r.lines.isEmpty() && q != null && !instrumental) {
-                    web(pkg, q, r);
-                    dropPlaceholder(r);
-                }
+
                 Xp.log("[MCLyric] " + pkg + " -> " + r.why);
                 onMain(cb, r.lines, r.why, r.source);
             }
@@ -845,7 +856,7 @@ final class LyricSource {
      */
     private static void race(final int gen, final String pkg, final android.content.Context ctx,
                              final String id, final String dir,
-                             final NcmLyrics.Query q, Rows out) {
+                             final NcmLyrics.Query q, Rows out, boolean includeOnline) {
         final Rows db = new Rows();
         final Rows ncm = new Rows();
         final Rows hub = new Rows();
@@ -880,7 +891,7 @@ final class LyricSource {
                 }
             }, "MCLyricHub").start();
         }
-        if (q != null) {
+        if (includeOnline && q != null) {
             pending++;
             new Thread(new Runnable() {
                 @Override
@@ -941,7 +952,8 @@ final class LyricSource {
         // Neither had it. Both accounts are worth keeping - which one failed and how is the
         // first thing asked of a song that showed no lyrics.
         String both = join(join(db.why == null || id == null ? null : db.why,
-                hub.why == null || id == null ? null : hub.why), q == null ? null : ncm.why);
+                hub.why == null || id == null ? null : hub.why),
+                includeOnline && q != null ? ncm.why : null);
         out.why = join(out.why, both == null ? "nothing found" : both);
     }
 
@@ -1149,6 +1161,20 @@ final class LyricSource {
      * By name, from the first two catalogues in this player's order - QQ Music and NetEase for
      * most players. See OnlineLyrics.
      */
+    private static void supplementOnline(String pkg, NcmLyrics.Query q, Rows r) {
+        try {
+            OnlineLyrics.Found f = OnlineLyrics.supplement(pkg, q);
+            if (f == null) return;
+            List<LyricLine> lines = LyricParse.parse(f.body, f.translation, f.roma);
+            if (lines.isEmpty()) return;
+            r.lines = lines;
+            r.source = f.source();
+            r.why = lines.size() + " lines from " + f.who() + " supplement";
+        } catch (Throwable t) {
+            Xp.log("[MCLyric] online supplement failed: " + t);
+        }
+    }
+
     private static void online(String pkg, NcmLyrics.Query q, Rows r) {
         String before = r.why;
         try {
