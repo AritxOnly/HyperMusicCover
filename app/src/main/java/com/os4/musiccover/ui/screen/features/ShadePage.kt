@@ -60,11 +60,12 @@ internal fun ShadePageView(
     }
     // Only an answer can put this switch on. The key is missing in two cases - nothing answered,
     // and a module older than the setting - and reading the module's ship default for BOTH is
-    // what made a timed-out query report the feature as on. This is the app's only switch whose
-    // default is on, which is why it was the only one that ever "turned itself back on": the
-    // query after a scope restart lands before SystemUI has a receiver, and the page then showed
-    // 流光 enabled and greyed out, with no way to turn off something that was already off.
-    val master = module.alive && (module.shade["enabled"] ?: 1) != 0
+    // what made a timed-out query report the feature as on: the query after a scope restart lands
+    // before SystemUI has a receiver, and the page then showed 流光 enabled and greyed out, with
+    // no way to turn off something that was already off. The gate on `module.alive` is what keeps
+    // an unanswered query out of it; the fallback below is the module's ship default, which is
+    // off now, so a key that is missing for any other reason reads as off too.
+    val master = module.alive && (module.shade["enabled"] ?: 0) != 0
     // Everything below the master switch greys out with it; the switch itself only needs the module.
     val enabled = module.alive && master
 
