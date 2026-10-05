@@ -5,6 +5,8 @@ import android.content.ContentResolver
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import org.json.JSONArray
 import org.json.JSONObject
@@ -62,13 +64,36 @@ internal object AmapTransitShare {
      * still on even when 高德 shares nothing new between two stations. */
     private const val KEEPALIVE_MS = 60_000L
 
+    /**
+     * How long the card that says the trip has arrived stays up, which is ColorOS's own figure.
+     * SceneService gives its arrival card a 30-second auto-dismiss - both places that build one
+     * pass 30000 (`GaoDePtNaviIntentHandler.showFinalDestCard` outright, `GaoDePtNaviSceneRouter.h`
+     * as the terminal status's delay) - where every other milestone is left half an hour of
+     * silence. The card is not dropped when the ride ends, either: `GaoDePtDismissHandler` returns
+     * on `shouldIgnoreDeleteIntent` while one is due, so 高德 deleting the intent does not take it
+     * down. A ride that has arrived therefore comes back up, and only its not leaving was wrong
+     * here - ours gets the same 30 seconds and is taken down, instead of waiting out SystemUI's
+     * own ten-minute silence.
+     */
+    private const val ARRIVED_MS = 30_000L
+
+    /** Fires the arrival card's own takedown, armed while one is up and cancelled by any other
+     * state of the same ride. */
+    private val arriving = Handler(Looper.getMainLooper())
+    private val takeArrivalDown = Runnable { clear("arrived") }
+
     /** Payloads kept whole in the ledger, and how long one may be before it is cut. */
     private const val MAX_LEDGER = 16
     private const val MAX_LEDGER_CHARS = 8000
     /** Sends kept in the event log, which is what says how often 高德 pushes. */
     private const val MAX_EVENTS = 90
-    /** What a line without a colour of its own is drawn in: neutral, not a made-up line colour. */
-    private const val NEUTRAL = "#8a8f98"
+    /**
+     * What a line whose colour 高德 has not given is drawn in, which is ColorOS's own blue:
+     * SceneService's `ya.b.L` answers `#4A86FF` for a colour it cannot read, and `ya.b.c` uses the
+     * same one for a waiting card whose line named none. (This was a neutral grey, so an
+     * uncoloured line was drawn in no line's colour at all; the ROM draws it in the default one.)
+     */
+    private const val NEUTRAL = "#4a86ff"
     /** Every send, oldest first: "12.3s 103 sendMessage 892B", for the interval between them. */
     private val events = ArrayList<String>()
     private val startAt = SystemClock.uptimeMillis()
@@ -128,6 +153,20 @@ internal object AmapTransitShare {
     @Volatile private var liveAt = 0L
     /** The ride's own route plan (the 113 channel's `type 24`), for the stations it names. */
     @Volatile private var route: JSONObject? = null
+
+    /**
+     * The stop the leg being ridden lets you out at, as the last card to name one named it, and
+     * the line that card was for.
+     *
+     * SceneService reads this from the entity's `off_station` on every payload of the ride
+     * (`ya.b.P`), so its arrival card always knows which stop was arrived at. 高德 names the same
+     * stop in the card's sentence while the ride is moving (「3站后 · 南村万博(B口)出站」) and
+     * stops naming it once the ride has arrived - 「已到达 汕黄牛.牛肉海鲜自助」 names the place
+     * the walk ends at, not the station the ride ended at. Reading the arrival card on its own
+     * therefore gave the restaurant instead of 南村万博, so the last stop the leg named is kept.
+     */
+    @Volatile private var alightStop: String = ""
+    @Volatile private var alightLine: String = ""
     @Volatile private var riding = false
     /** How many sendMessages each bizType has taken since this process started. */
     private val sends = java.util.concurrent.ConcurrentHashMap<Int, AtomicInteger>()
@@ -1069,8 +1108,8 @@ internal object AmapTransitShare {
      * live payload only the stop the ride is at, so this is the one place the stop being
      * approached can be read from.
      */
-    private fun sequence(line: String): List<String> =
-        segment(line)?.let { stations(it) } ?: emptyList()
+    private fun sequence(line: String, alight: String): List<String> =
+        segment(line, alight)?.let { stations(it) } ?: emptyList()
 
     /** One segment's stations in order: on_station, its `via_st_list`, off_station. */
     private fun stations(seg: JSONObject): List<String> {
@@ -1084,26 +1123,56 @@ internal object AmapTransitShare {
         return out
     }
 
-    /** The plan's segment for the line being ridden, or its only segment when there is one. */
-    private fun segment(line: String): JSONObject? {
+    /**
+     * The plan's segment for the leg being ridden - the line's name is not enough to pick it.
+     *
+     * A plan is whatever the last route panel left behind: a ride sends none of its own (the whole
+     * 2026-10-05 ride carried 346 live payloads and not one `type 24`), so the one being held is
+     * regularly another trip's, and 「7号线」 names both of that line's directions. Taking the
+     * first segment whose name matched therefore handed back a leg going the other way, and named
+     * its stations: at 大学城南 with three stops to go the ride said 下一站 深井 where its own
+     * card said the stop after it was 板桥, and at one stop to go it said 下一站 裕丰围 where the
+     * card said 南村万博 - worse than having no plan at all, which gets both right.
+     *
+     * What tells a plan of this ride from a plan of another is the stop the card says this leg
+     * gets off at ([alight]): the card names the stop it lets you out at, and this ride's own
+     * segment ends there. A plan that ends elsewhere is not this ride's, and is let go - the
+     * fallback names the stop from 高德's `nextStopName` and, with one stop left, the card's own
+     * destination, which is where the ride is going anyway.
+     */
+    private fun segment(line: String, alight: String): JSONObject? {
         val list = route?.optJSONArray("segmentlist") ?: return null
         if (list.length() == 0) return null
-        if (line.isEmpty()) return if (list.length() == 1) list.optJSONObject(0) else null
+        // Without the stop the card names there is nothing to check the plan against, and an
+        // unchecked plan is the thing this is here to keep out.
+        if (alight.isEmpty()) return null
+        if (line.isEmpty()) return only(list, alight)
         // The exact name first: the segment's own key name is 「7号线」 and the card's line is
         // 「7号线」, and looking for one inside the other would take 「11号线」 for 「1号线」.
         for (i in 0 until list.length()) {
             val s = list.optJSONObject(i) ?: continue
-            if (s.optString("bus_key_name").trim() == line) return s
+            if (s.optString("bus_key_name").trim() == line && agrees(s, alight)) return s
         }
         // Then inside either: 「番29路」 against 「番29路(短线)」, 「地铁4号线(南沙客运港--黄村)」
         // against 「4号线」.
         for (i in 0 until list.length()) {
             val s = list.optJSONObject(i) ?: continue
-            if (inside(s.optString("bus_key_name").trim(), line) ||
-                inside(s.optString("busname").trim(), line)) return s
+            if ((inside(s.optString("bus_key_name").trim(), line) ||
+                    inside(s.optString("busname").trim(), line)) && agrees(s, alight)) return s
         }
-        return if (list.length() == 1) list.optJSONObject(0) else null
+        return only(list, alight)
     }
+
+    /** The plan's only segment, when it has just the one and it is this ride's. */
+    private fun only(list: JSONArray, alight: String): JSONObject? {
+        if (list.length() != 1) return null
+        val s = list.optJSONObject(0) ?: return null
+        return if (agrees(s, alight)) s else null
+    }
+
+    /** Whether [seg] is the leg being ridden: it has to end at the stop the card names. */
+    private fun agrees(seg: JSONObject, alight: String): Boolean =
+        name(seg.optJSONObject("off_station")) == alight
 
     /**
      * Whether [line] names a whole line in [name]. 「4号线」 inside 「地铁4号线(南沙客运港--黄村)」
@@ -1118,10 +1187,6 @@ internal object AmapTransitShare {
         }
         return false
     }
-
-    /** The segment being ridden's last station, as the route plan has it, or "". */
-    private fun segmentDest(line: String): String =
-        name(segment(line)?.optJSONObject("off_station")) ?: ""
 
     /** A station object's name, or null when it has none. */
     private fun name(station: JSONObject?): String? =
@@ -1164,10 +1229,18 @@ internal object AmapTransitShare {
     }
 
     /** The plan's line [at], or the first when there is no such index. */
+    /**
+     * The plan's leg at [at], or nothing when there is none. The leg after the last one is
+     * nothing, not the first one over again: falling back to index 0 there gave a one-leg ride a
+     * second leg that was the line it was already on, so `next` was never null - the transfer
+     * badge named the line being ridden instead of the one being changed to, and the line under
+     * the milestone said 「换乘」 on a ride that changes to nothing. ([current] only ever answers
+     * 0..length-1, so this is the whole of what the fallback did.)
+     */
     private fun lineAt(at: Int): JSONObject? {
         val p = simPlan ?: plan ?: return null
-        if (p.length() == 0) return null
-        return p.optJSONObject(if (at in 0 until p.length()) at else 0)
+        if (at !in 0 until p.length()) return null
+        return p.optJSONObject(at)
     }
 
     /** Which line the ride is on now, and how far it has got along the plan. */
@@ -1244,19 +1317,29 @@ internal object AmapTransitShare {
         // after the current one can only be worked out at the end: with one stop left, the next
         // stop is the destination the card itself names.
         val curStop = where?.optString("curStopName").orEmpty().replace(" ", "").trim()
+        // The stop this leg lets you out at, which is what the card's sentence names. It is also
+        // the one thing that can tell a plan of this ride from a plan of another - see [segment] -
+        // and the stop the arrival milestone has to name, which is why the last one this leg named
+        // stands in for it on the cards that name none (see [alightStop]).
+        if (stationName.isNotEmpty()) {
+            alightStop = stationName
+            alightLine = line
+        }
+        val alight = stationName.ifEmpty { if (alightLine == line) alightStop else "" }
         // The stop the ride is coming to. 高德 names it in `nextStopName`, which a real ride left
         // empty for its whole length; the route plan's own station list has it, so that is read
         // first - the stop after the one the ride is at, in the leg's own order.
-        val seq = sequence(line)
+        val seq = sequence(line, alight)
         val after = seq.indexOf(curStop)
         val routeNext = if (after >= 0 && after + 1 < seq.size) seq[after + 1] else ""
         val nextStop = routeNext.ifEmpty {
             where?.optString("nextStopName").orEmpty().replace(" ", "").trim()
         }
-        // The line's end: the route plan names it outright, and the card's own words are the
-        // fallback - on a ride card that sentence's stop is the same end, but on another card it
-        // is the stop being announced, which is not where the line finishes.
-        val dest = segmentDest(line).ifEmpty { destName(title) }.ifEmpty { stationName }
+        // The line's end: SceneService's `ya.b.P` reads the leg's own `off_station` and only then
+        // `destStation`, and this is the same stop in the same order - the one the leg's cards
+        // named it, then whatever the card's own words name, then the sentence itself. (The plan
+        // needs no separate look: [segment] only accepts a plan that ends at [alight] anyway.)
+        val dest = alight.ifEmpty { destName(title) }.ifEmpty { stationName }
         // 高德's own status codes, as its card sends them: 1 near the origin, 2 waiting, 3 the next
         // stop, 5 arrived at a stop, 6 a transfer, 7 the line's end. (The 4/5 in ColorOS's
         // GaoDePublicTransportNavMilestone are that enum's own ordinals, not these.)
@@ -1399,6 +1482,15 @@ internal object AmapTransitShare {
             .put("destLatitude", location?.optDouble("latitude", 0.0) ?: 0.0)
             .put("destLongitude", location?.optDouble("longitude", 0.0) ?: 0.0)
             .toString(), "update")
+        // The arrival card's own life, and only the trip's own arrival gets it: a 「已到达」 on a
+        // leg that still has another after it is that line ending, not the trip, and ColorOS keeps
+        // its ordinary long silence for that one (its arrival flow only arms on the last segment).
+        // Anything else the ride sends cancels the takedown, so a card that goes on moving is
+        // never taken down mid-ride.
+        arriving.removeCallbacks(takeArrivalDown)
+        if (status == "7" && at >= (plan?.length() ?: 1) - 1) {
+            arriving.postDelayed(takeArrivalDown, ARRIVED_MS)
+        }
     }
 
     /** One identifier for the ride, stable across its updates (the card's own key). */
@@ -1451,8 +1543,17 @@ internal object AmapTransitShare {
     }
 
     /** 「步行至 大学城南地铁站」 -> 「大学城南地铁站」. */
+    /**
+     * The place 高德's card names as where the ride is going: 「步行至 大学城南地铁站」 ->
+     * 「大学城南地铁站」, and 「已到达 汕黄牛.牛肉海鲜自助」 -> 「汕黄牛.牛肉海鲜自助」.
+     *
+     * The arrival card says 已到达, not 至. Reading only 至 left it with no place at all, and the
+     * card fell back to the bare 「到站 / 已到站」 - ColorOS's own arrival card puts the station in
+     * its big text (`ya.b.P`, the off_station's name and then `destStation`), so what was missing
+     * was the name, not the wording.
+     */
     private fun destName(title: String): String =
-        Regex("至\\s*(.+)$").find(title)?.groupValues?.get(1)?.trim().orEmpty()
+        Regex("(?:已到达|至)\\s*(.+)$").find(title)?.groupValues?.get(1)?.trim().orEmpty()
 
     /**
      * Whether one of 高德's title slots holds a count of stops rather than a name. Its card fills
@@ -1556,7 +1657,10 @@ internal object AmapTransitShare {
      * up until SystemUI's own ten-minute silence gave up on it.
      */
     private fun clear(action: String = "end") {
+        arriving.removeCallbacks(takeArrivalDown)
         route = null
+        alightStop = ""
+        alightLine = ""
         live = null
         liveAt = 0L
         planCard = null

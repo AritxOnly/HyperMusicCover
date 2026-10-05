@@ -58,7 +58,7 @@ internal object AmapTransitIsland {
     private const val AMAP_UA_ID = 1237
     private const val CHANNEL = "mc_transit"
     /** As long as SystemUI believes a silent trip (AmapTransitScene.STALE_MS). */
-    private const val TIMEOUT_MS = 10L * 60_000L
+    private const val TIMEOUT_MS = 30L * 60_000L
 
     private const val PIC = "miui.focus.pic_mc_transit"
     private const val PIC_BG = "miui.focus.pic_mc_transit_bg"

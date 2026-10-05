@@ -75,7 +75,12 @@ final class AmapTransitScene implements ImmersiveScene {
      * milestone and AmapTransitShare repeats the last every minute, so ten minutes of silence is
      * a 高德 that has gone, not a long ride between two stations.
      */
-    private static final long STALE_MS = 10L * 60_000L;
+    /**
+     * How long a silent ride is believed to still be going: ColorOS's own figure for a milestone
+     * card, `GaoDePtNaviSceneRouter.h`'s 1800000. (The arrival card is the exception - SceneService
+     * gives that one 30 seconds, which AmapTransitShare takes down itself.)
+     */
+    private static final long STALE_MS = 30L * 60_000L;
 
     private final Handler mMain = new Handler(Looper.getMainLooper());
 
@@ -691,9 +696,11 @@ final class AmapTransitScene implements ImmersiveScene {
                     break;
                 case "6":
                     // The island says 换乘 and names the line it changes to; the card says 准备换乘
-                    // and how many stops away the change is.
+                    // and names that line too - ColorOS's transfer card carries it as a coloured
+                    // chip on the second line (`ya.b.d` sets `cardSecondaryLineName`), where the
+                    // stops-left sentence belongs to the milestones either side of the change.
                     f.primary = "准备换乘";
-                    f.secondary = remaining(t);
+                    f.secondary = t.nextLine;
                     f.islandLeft = "换乘";
                     // The other half names the line being changed TO - ColorOS's capsule carries
                     // that line's name in its colour - and only falls back to the line being left
@@ -729,18 +736,32 @@ final class AmapTransitScene implements ImmersiveScene {
             return "往" + d;
         }
 
-        /** 高德's guideInfo, else 「N站 XX下车」 (SceneService's ya.b.Y). */
+        /**
+         * 高德's guideInfo, else 「N站 XX下车」 (SceneService's ya.b.Y).
+         *
+         * SceneService takes the guidance line for every milestone except the three its `l0`
+         * names - 下一站, 下一站即终点 and 到达普通站 - where what goes under the milestone is the
+         * 「N站 …」 sentence instead. A real ride's 「28分钟·12:09到达」 is the waiting card's
+         * guidance; the card that says which stop comes next says how many stops away it is.
+         */
         private static String remaining(Trip t) {
             // 高德 fills the same field with the count of stops left in some phases ("2站"), which
             // is the ride's progress, not guidance: the line under the milestone says where the
             // ride is going. A count is drawn as the count instead.
-            if (!t.guideInfo.isEmpty() && !isCount(t.guideInfo)) return t.guideInfo;
+            if (!t.guideInfo.isEmpty() && !isCount(t.guideInfo) && !midRide(t.status)) {
+                return t.guideInfo;
+            }
             int n = t.leg.remain > 0 ? t.leg.remain : count(t.guideInfo);
             if (n <= 0) return "";
             // 「N站 XX换乘」 when the ride changes lines there, 「N站 XX下车」 when it does not, and
             // ColorOS's own 「N站后下车」 when it has no stop to name (its R0 / T0 / S0).
             if (t.leg.off.name.isEmpty()) return n + "站后下车";
             return n + "站 " + t.leg.off.name + (t.nextLine.isEmpty() ? "下车" : "换乘");
+        }
+
+        /** SceneService's `ya.b.l0`: the milestones whose second line is the 「N站 …」 sentence. */
+        private static boolean midRide(String status) {
+            return "3".equals(status) || "4".equals(status) || "5".equals(status);
         }
 
         /** 高德's guideInfo when it is words, and nothing when it is only a count of stops. */
