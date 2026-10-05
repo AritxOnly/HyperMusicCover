@@ -8,6 +8,7 @@
 /captures
 .externalNativeBuild
 .cxx
+.kotlin/
 local.properties
 
 # Release signing - the key and its passwords never go to the repo.

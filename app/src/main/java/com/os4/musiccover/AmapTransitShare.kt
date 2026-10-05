@@ -183,6 +183,24 @@ internal object AmapTransitShare {
      */
     @Volatile private var walked = false
     @Volatile private var riding = false
+
+    /**
+     * Whether this navigation opens with a walk to the first stop, as 高德's own plan's first
+     * capsule says. Read off the card 高德 sends when the navigation starts, which is the capsules
+     * and nothing else.
+     */
+    @Volatile private var opening = false
+
+    /**
+     * Whether 高德's ride channel (103) is open, which is what a navigation being under way looks
+     * like from here. The script begins it when the trip's navigation starts - the 「开始导航」 -
+     * and ends it when that navigation is left, so its two edges are the navigation's own
+     * beginning and end. That is the one thing the cards cannot say: a second navigation of the
+     * same trip sends the same cards as the first, in the same order, so nothing in them marks a
+     * new one. Measured on 2026-10-05: the route page opens 113 alone, and 103 arrives only on
+     * 「开始导航」; leaving fires `bizEnd(103)`, entering again fires `bizBegin(103)`.
+     */
+    @Volatile private var live103 = false
     /** How many sendMessages each bizType has taken since this process started. */
     private val sends = java.util.concurrent.ConcurrentHashMap<Int, AtomicInteger>()
     /** The OPPO intelligent card's channel, the one 高德's Java opens for any phone that asks. */
@@ -580,6 +598,10 @@ internal object AmapTransitShare {
                             val biz = a.firstOrNull { it is Int } as Int?
                             val text = a.firstOrNull { it is String } as String?
                             if (text != null && (biz == RIDE_BIZ || biz == LIVE_BIZ)) ride(biz, text)
+                        }
+                        if (name == "bizBegin" || name == "bizBeginWithData" || name == "bizEnd") {
+                            val biz = chain.args.firstOrNull { it is Int } as Int?
+                            if (biz == RIDE_BIZ) channel(name == "bizEnd")
                         }
                         if (name != "sendMessage" && name != "sendNotify") {
                             Xp.log(TAG + "script: " + describeCall(name, chain.args))
@@ -1059,7 +1081,16 @@ internal object AmapTransitShare {
                     })
                 }
                 val title = data.optString("title").trim()
-                if (title.isEmpty()) return
+                if (title.isEmpty()) {
+                    // 高德's first card of a navigation names nothing at all: it is the trip's
+                    // capsules and no more - no stop, no milestone, no progress. What it does say
+                    // is whether the trip opens with a walk, which is the walk [walkToFirstStop]
+                    // is here to start. The card is not held: a card with no words would put
+                    // nothing on the island anyway.
+                    opening = opensWithWalk(data.optJSONArray("planData"))
+                    walkToFirstStop()
+                    return
+                }
                 planCard = data
                 if (title.contains("步行")) {
                     // A walking card is 高德's own phase, and before the ride there is nothing of
@@ -1095,7 +1126,13 @@ internal object AmapTransitShare {
                 // type, and the plan is kept for the stations it names.
                 val data = array(root.opt("datas")) ?: return
                 val plan = dataOf(data, PLAN_TYPE)
-                if (plan != null) route = plan
+                if (plan != null) {
+                    route = plan
+                    // The trip's own plan, which names the stop the opening walk goes to and the
+                    // way into it. It is here about 30 ms after the navigation starts, tens of
+                    // seconds before 高德's card for that walk is.
+                    walkToFirstStop()
+                }
                 val inner = dataOf(data, RIDE_TYPE)
                 if (inner != null) {
                     live = inner
@@ -1166,6 +1203,95 @@ internal object AmapTransitShare {
                 .put("lat", c?.optString("lat")?.toDoubleOrNull() ?: 0.0)
                 .put("lng", c?.optString("lon")?.toDoubleOrNull() ?: 0.0)))
         return out
+    }
+
+    /**
+     * 高德's ride channel opening or closing: a trip's navigation starting, or being left.
+     *
+     * Only the opening re-arms - a close is not a reason to take anything down, because 高德 closes
+     * the channel the moment the trip is over, in the same breath as the arrival card that is meant
+     * to stay up for its own [ARRIVED_MS] (measured: `bizEnd(103)` one millisecond behind the
+     * 「已到达」 card). [clear] there would take that card down and cancel its timer.
+     *
+     * A channel that is already open is left alone: the script begins its channels again when it
+     * rebuilds them, and a rebuild is not a navigation starting.
+     */
+    private fun channel(closed: Boolean) {
+        if (closed) {
+            live103 = false
+            return
+        }
+        if (live103) return
+        live103 = true
+        newNavi()
+    }
+
+    /**
+     * A navigation has just started, and the trip is walked to its station again from the top: the
+     * cards of a second navigation are the cards of the first over again, the walk at the front
+     * among them.
+     *
+     * `walked` is let go so that walk is handed over again - it is what says the walk has already
+     * been started, and it was only ever let go by [clear], which a navigation that is left before
+     * the trip's last walk never reaches. `riding` is let go with it, and it is the one that
+     * mattered most: it is set by the first card that says a ride is under way and no leave of the
+     * navigation clears it, so the second navigation's walk card arrived with `riding` still true
+     * and matched neither branch of [ride] - the trip's first leg is not its last, so the
+     * end-of-trip test declined it, and only `!riding` would have started the walk.
+     *
+     * The alighting stop and the exit are NOT let go here. They are the last card to name one's,
+     * and a card of the new navigation names them again before anything reads them; letting them
+     * go would only lose them for a rebuild of the channel mid-ride, which arrives here too.
+     */
+    private fun newNavi() {
+        walked = false
+        riding = false
+        opening = false
+        Xp.log(TAG + "navigation started: the walk to the station is armed again")
+        walkToFirstStop()
+    }
+
+    /** Whether a trip's capsules open with a walking leg - the walk the trip begins with. */
+    private fun opensWithWalk(capsules: JSONArray?): Boolean {
+        val first = capsules?.optJSONObject(0) ?: return false
+        return first.optString("icon").startsWith("bus_foot") ||
+            first.optString("capsuleType").trim() == "0"
+    }
+
+    /**
+     * Hands the trip's opening walk to 高德's own walking navigation, out of the plan itself.
+     *
+     * The card 高德 sends for that walk is no use for this: the first thing on the ride's channel
+     * when the navigation starts is a card holding nothing but `planData`, and the card that names
+     * the stop (「步行至 大学城南地铁站」) only arrives once 高德's own walking phase gets going -
+     * measured at 26 and 59 seconds after the tap, over two runs. Starting from it means the
+     * navigation is entered, and the walk starts, half a minute later.
+     *
+     * Everything that card adds is in the plan, about 30 ms after the tap: the trip's first ride
+     * segment names the stop the walk goes to (`on_station.name`, 「大学城南」) and carries the way
+     * into it with its coordinate (`inport`, 「E口」 at 113.399217, 23.044146). So the walk is
+     * started from that, and starts when the tap is made.
+     *
+     * Whether there is a walk at all is [opening]'s - a trip that begins at the station has none.
+     */
+    private fun walkToFirstStop() {
+        if (!opening || walked) return
+        val seg = route?.optJSONArray("segmentlist")?.optJSONObject(0) ?: return
+        val to = seg.optJSONObject("on_station")?.optString("name")?.trim().orEmpty()
+        val c = seg.optJSONObject("inport")?.optJSONObject("coord")
+        val lat = c?.optString("lat")?.toDoubleOrNull()
+        val lng = c?.optString("lon")?.toDoubleOrNull()
+        val cl = AmapImmerse.loader()
+        if (to.isEmpty() || lat == null || lng == null) {
+            Xp.log(TAG + "walk: the plan names no stop yet")
+            return
+        }
+        if (cl == null) {
+            Xp.log(TAG + "walk to " + to + ": no loader")
+            return
+        }
+        walked = true
+        Xp.log(TAG + "walk to " + to + " -> " + AmapFootNavi.start(cl, lat, lng, to))
     }
 
     /**
@@ -1375,7 +1501,16 @@ internal object AmapTransitShare {
         // A bus says how many stops are left; a subway only says the next train, so the trip
         // card's own count stands in for it. 高德's `location.remainStations` is the count for the
         // ride it drew, and a bus's own stop count is finer, so a bus keeps its own.
-        val cardCount = card?.optJSONObject("location")?.optInt("remainStations", -1) ?: -1
+        // 高德's `location` on a walking card describes the WALK, not the leg the card is named
+        // after: `persent` is how far along the street it has got (「步行至 大学城南地铁站」 walks
+        // at 0.5, halfway there) and `remainStations` is the one stop it ends at, the station.
+        // Read as the ride's they put a half-filled bar and 「剩 1 站」 on a 4号线 that had not been
+        // boarded - and the card is the walking one for the whole walk, so it is the walk's numbers
+        // the island would show until the ride began. ColorOS draws no station overview before the
+        // ride starts either; see AmapTransitIsland.PROGRESS_AT for its own rule.
+        val cardLocation = if (card?.optString("title").orEmpty().contains("步行")) null
+            else card?.optJSONObject("location")
+        val cardCount = cardLocation?.optInt("remainStations", -1) ?: -1
         val remain = when {
             kind == "1" && where?.has("remainStopNum") == true ->
                 where.optInt("remainStopNum", 0)
@@ -1537,7 +1672,12 @@ internal object AmapTransitShare {
         }
         val realtime = when {
             kind == "1" && arriveText.isNotEmpty() -> if (arriveText == "已进站") "车辆已进站" else arriveText
-            kind == "2" && countdown.isNotEmpty() -> countdown + "进站"
+            // 高德's subway countdown is sometimes a time (「3分钟」) and sometimes the train's own
+            // state (「即将进站」). 「进站」 is only the word 高德 leaves off, so a countdown that
+            // already ends in it keeps its own words - appending unconditionally made
+            // 「即将进站进站」.
+            kind == "2" && countdown.isNotEmpty() ->
+                if (countdown.endsWith("进站")) countdown else countdown + "进站"
             else -> ""
         }
         if (realtime.isNotEmpty()) {
@@ -1581,7 +1721,7 @@ internal object AmapTransitShare {
             // How far down this leg the ride is, as 高德's own card has it (`location.persent`,
             // 0..1). Carried so the progress bar shows where the ride has got to rather than how
             // many stops are left.
-            .put("legPercent", card?.optJSONObject("location")?.optDouble("persent", -1.0) ?: -1.0)
+            .put("legPercent", cardLocation?.optDouble("persent", -1.0) ?: -1.0)
             .put("totalDistance", metres(where?.optInt("remainLength", 0) ?: 0))
             .put("totalDuration", (where?.optInt("remainTime", 0) ?: 0).toDouble())
             .put("deepLink", card?.optString("scheme").orEmpty())
@@ -1770,6 +1910,7 @@ internal object AmapTransitShare {
         exitStop = ""
         exitLine = ""
         walked = false
+        opening = false
         live = null
         liveAt = 0L
         planCard = null

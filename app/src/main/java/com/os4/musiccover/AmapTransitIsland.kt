@@ -62,6 +62,21 @@ internal object AmapTransitIsland {
 
     private const val PIC = "miui.focus.pic_mc_transit"
     private const val PIC_BG = "miui.focus.pic_mc_transit_bg"
+    /**
+     * The three pictures the progress bar is drawn with ([template]'s `progressInfo`): the vehicle
+     * where the ride has got to, the stop ahead of it, and the destination. Their own keys, not
+     * [PIC]: that one is the line's number and the island's left half wears it.
+     */
+    private const val PIC_VEHICLE = "miui.focus.pic_mc_vehicle"
+    private const val PIC_PIN = "miui.focus.pic_mc_pin"
+    private const val PIC_FLAG = "miui.focus.pic_mc_flag"
+
+    /** The car the progress bar's thumb is drawn with: a lit shell, a dark rim, dark glass. */
+    private const val BODY = 0xffeef1f6.toInt()
+    private const val RIM = 0xff9aa3b2.toInt()
+    private const val GLASS = 0xff2b3444.toInt()
+    /** The destination pin, grey - it is where the ride ends, not a line. */
+    private const val DEST = 0xff8b929e.toInt()
 
     /** The card's height, as the layout has it. */
     private const val CARD_DP = 176f
@@ -92,12 +107,6 @@ internal object AmapTransitIsland {
      */
     private const val LANDMARK_DOWN = 0f
     /**
-     * The bar's nodes. Fixed, not the stops left: the card's track is three stops - the one
-     * before, this one and the next - and a bar that loses a node at every station reads as a
-     * different card each time the ride moves on, rather than the same ride further along.
-     */
-    private const val PROGRESS_POINTS = 3
-    /**
      * The narrowest fill the bar draws as a piece of itself rather than as a standing mark.
      *
      * The fill's ends are capped at half its height, so once it is narrower than it is tall the
@@ -107,6 +116,22 @@ internal object AmapTransitIsland {
      * which as a whole percent is 5.
      */
     private const val PROGRESS_MIN = 5
+
+    /**
+     * The milestones the leg's own progress belongs to: 下一站 (3), 下一站即终点 (4), 到达普通站
+     * (5) and 到达换乘站 (6) - the ones where the ride is between stations.
+     *
+     * ColorOS draws a station overview for exactly these and no others: its card builder puts
+     * `cardStationOverview` in `K()` (3/4), `a()` (5) and `d()` (6) only. At 到达起始站附近 (1) and
+     * 候车 (2) it puts `cardWaitingInformation` - the list of trains coming, line, direction and
+     * arrival - in that place instead, and at 到站 (7) it puts the landmark; neither has a bar.
+     *
+     * Which is also why the bar has to be held back here: before the ride starts the only card 高德
+     * has sent is the walk to the station, and its `location.persent` is how far along the WALK is
+     * (0.5, halfway there), so a bar drawn from it said the 4号线 was half ridden while the walker
+     * was still on the street.
+     */
+    private val PROGRESS_AT = setOf("3", "4", "5", "6")
 
     enum class Style { CARD, TEMPLATE, FLAT, SCENE }
 
@@ -280,6 +305,10 @@ internal object AmapTransitIsland {
         val pics = Bundle().apply {
             putParcelable(PIC, badge)
             putParcelable("miui.focus.pic_large", badge)
+            // The progress bar's own three pictures, by the names its `progressInfo` asks for.
+            putParcelable(PIC_VEHICLE, Icon.createWithBitmap(vehicle(f.subway, f.lineBg)))
+            putParcelable(PIC_PIN, Icon.createWithBitmap(pin(f.lineBg)))
+            putParcelable(PIC_FLAG, Icon.createWithBitmap(flag()))
         }
         val extras = Bundle()
         when (style) {
@@ -410,7 +439,7 @@ internal object AmapTransitIsland {
         // never opened and the card never had a bar at all.
         val leg = trip.leg
         val total = if (leg.via.size > 0) leg.via.size + 1 else leg.remain + 1
-        if (f.nodes != null && total > 1) {
+        if (f.nodes != null && total > 1 && f.status in PROGRESS_AT) {
             // 高德's own reading of where the ride has got to when the card carried one -
             // `location.persent`, a real ride's 0.02 / 0.44 / 0.71 down its leg - and only the
             // shape of the stops left when it did not. Counting stops instead is not the same
@@ -423,11 +452,26 @@ internal object AmapTransitIsland {
             // just begun looks like - 高德's own `persent` for boarding is 0.02. A ride that is
             // genuinely nowhere along its leg still shows nothing.
             val percent = if (said in 1 until PROGRESS_MIN) PROGRESS_MIN else said
-            o.put("multiProgressInfo", JSONObject()
-                .put("title", f.secondary)
+            // `progressInfo`, not `multiProgressInfo`. The plugin takes the two for the same slot
+            // of the card and asks about this one FIRST (`TemplateFactoryV3`: multiProgressInfo
+            // before progressInfo), and they are not the same bar: `multiProgressInfo` is a row of
+            // segments and dots, while `progressInfo` is the one drawn like the design - a single
+            // bar filled to the ride's own place in the line's colour, a picture riding that edge,
+            // a pin where it is going and a flag at the end. Its own three pictures are what
+            // `picForward` / `picMiddle` / `picEnd` name, and they are sent in `miui.focus.pics`
+            // with the rest.
+            //
+            // No title either way. The words are already on `baseInfo.subContent` above the bar,
+            // and ColorOS's own station overview carries none at all - its `cardStationOverview`
+            // is a list of stops, `isCurStation`, `isTwoStation` and `curIndex`, with not one
+            // string in it. Sending the same sentence twice made the card read it twice over.
+            o.put("progressInfo", JSONObject()
                 .put("progress", percent.coerceIn(0, 100))
-                .put("color", hex(f.lineBg))
-                .put("points", PROGRESS_POINTS))
+                .put("colorProgress", hex(f.lineBg))
+                .put("colorProgressEnd", hex(AmapTransitScene.blend(f.lineBg, 0xffffffff.toInt(), 0.22f)))
+                .put("picForward", PIC_VEHICLE)
+                .put("picMiddle", PIC_PIN)
+                .put("picEnd", PIC_FLAG))
         }
         return o
     }
@@ -584,6 +628,135 @@ internal object AmapTransitIsland {
     private fun hex(c: Int) = String.format("#%06X", c and 0xffffff)
 
     /** The line as a disc in its colour, its number on it: 「地铁1号线」 is 1, 「机场线」 机场. */
+    /**
+     * The vehicle the leg is ridden on, side on: a metro car for a subway, a bus for anything else.
+     *
+     * Side on because of where it is drawn - the progress bar's thumb, which the plugin keeps at
+     * the fill's own edge (`ModuleProgressViewHolder.setProgressThumb` puts it at
+     * `progress * width / 100`, centred on the point), so the picture is a car seen from the
+     * platform and the bar is the track it is running along. Its wheels are the line's colour, the
+     * stripe along its flank too, so it reads as this line's train and not an illustration.
+     */
+    private fun vehicle(subway: Boolean, bg: Int): Bitmap {
+        val w = 84
+        val h = 36
+        val b = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val c = Canvas(b)
+        val p = Paint(Paint.ANTI_ALIAS_FLAG)
+        val box = RectF()
+
+        // The body: a lit shell with a dark rim, so it stands off the bar it rides on.
+        p.style = Paint.Style.FILL
+        p.color = BODY
+        box.set(2f, 3f, w - 2f, 26f)
+        c.drawRoundRect(box, 8f, 8f, p)
+        p.style = Paint.Style.STROKE
+        p.strokeWidth = 1.8f
+        p.color = RIM
+        c.drawRoundRect(box, 8f, 8f, p)
+
+        // Its windows, and the stripe in the line's colour under them.
+        p.style = Paint.Style.FILL
+        p.color = GLASS
+        if (subway) {
+            box.set(8f, 7f, 38f, 17f)
+            c.drawRoundRect(box, 2.6f, 2.6f, p)
+            box.set(44f, 7f, w - 8f, 17f)
+            c.drawRoundRect(box, 2.6f, 2.6f, p)
+        } else {
+            box.set(7f, 6f, w - 7f, 16f)
+            c.drawRoundRect(box, 2.6f, 2.6f, p)
+        }
+        p.color = bg
+        box.set(5f, 19f, w - 5f, 24f)
+        c.drawRoundRect(box, 2f, 2f, p)
+
+        // The wheels, the line's colour too, and the rail they run on.
+        c.drawCircle(19f, 29f, 4.2f, p)
+        c.drawCircle(w - 19f, 29f, 4.2f, p)
+        p.color = RIM
+        c.drawCircle(19f, 29f, 1.7f, p)
+        c.drawCircle(w - 19f, 29f, 1.7f, p)
+        return b
+    }
+
+    /**
+     * A stop on the bar: a pin in the line's colour with a metro car's front on it.
+     *
+     * The bar's middle pin, which the plugin keeps between the ride and its destination
+     * (`progress_point1`), so it is drawn as a map pin rather than another dot on the line.
+     */
+    private fun pin(bg: Int): Bitmap {
+        val s = 34
+        val b = Bitmap.createBitmap(s, s + 12, Bitmap.Config.ARGB_8888)
+        val c = Canvas(b)
+        val p = Paint(Paint.ANTI_ALIAS_FLAG)
+        val path = Path()
+        // A teardrop: a circle with its lower quarter drawn out to a point.
+        val r = s / 2f - 2f
+        path.addCircle(r + 2f, r + 2f, r, Path.Direction.CW)
+        path.moveTo(r + 2f - r * 0.62f, r + 2f + r * 0.62f)
+        path.lineTo(r + 2f + r * 0.62f, r + 2f + r * 0.62f)
+        path.lineTo(r + 2f, s + 10f)
+        path.close()
+        p.color = bg
+        c.drawPath(path, p)
+        // The car's front, white, in the pin's head.
+        p.color = Color.WHITE
+        p.strokeWidth = 1.9f
+        p.strokeCap = Paint.Cap.ROUND
+        p.strokeJoin = Paint.Join.ROUND
+        p.style = Paint.Style.STROKE
+        carGlyph(c, p, r + 2f, r + 2f)
+        return b
+    }
+
+    /**
+     * Where the leg ends: the same pin, grey, with a flag on it. The bar's `progress_point2`.
+     */
+    private fun flag(): Bitmap {
+        val s = 34
+        val b = Bitmap.createBitmap(s, s + 12, Bitmap.Config.ARGB_8888)
+        val c = Canvas(b)
+        val p = Paint(Paint.ANTI_ALIAS_FLAG)
+        val path = Path()
+        val r = s / 2f - 2f
+        path.addCircle(r + 2f, r + 2f, r, Path.Direction.CW)
+        path.moveTo(r + 2f - r * 0.62f, r + 2f + r * 0.62f)
+        path.lineTo(r + 2f + r * 0.62f, r + 2f + r * 0.62f)
+        path.lineTo(r + 2f, s + 10f)
+        path.close()
+        p.color = DEST
+        c.drawPath(path, p)
+        // The flag: a pole with a pennant off it.
+        p.color = Color.WHITE
+        p.strokeWidth = 2f
+        p.strokeCap = Paint.Cap.ROUND
+        p.style = Paint.Style.STROKE
+        c.drawLine(r + 2f - 3.5f, r + 2f - 8f, r + 2f - 3.5f, r + 2f + 8f, p)
+        p.style = Paint.Style.FILL
+        val pennant = Path()
+        pennant.moveTo(r + 2f - 3.5f, r + 2f - 8f)
+        pennant.lineTo(r + 2f + 9f, r + 2f - 3f)
+        pennant.lineTo(r + 2f - 3.5f, r + 2f + 2f)
+        pennant.close()
+        c.drawPath(pennant, p)
+        return b
+    }
+
+    /** The metro car's front, drawn small, centred on (cx, cy): the stop pin's own glyph. */
+    private fun carGlyph(c: Canvas, p: Paint, cx: Float, cy: Float) {
+        val box = RectF(cx - 6f, cy - 7.5f, cx + 6f, cy + 6f)
+        c.drawRoundRect(box, 4f, 4f, p)
+        c.drawLine(cx - 6f, cy - 2f, cx + 6f, cy - 2f, p)
+        p.style = Paint.Style.FILL
+        c.drawCircle(cx - 2.4f, cy + 1.8f, 1.4f, p)
+        c.drawCircle(cx + 2.4f, cy + 1.8f, 1.4f, p)
+        p.style = Paint.Style.STROKE
+        c.drawLine(cx - 2.6f, cy + 9f, cx - 2.6f, cy + 11f, p)
+        c.drawLine(cx + 2.6f, cy + 9f, cx + 2.6f, cy + 11f, p)
+    }
+
     private fun badge(line: String, bg: Int, fg: Int): Bitmap {
         val size = 96
         val b = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)

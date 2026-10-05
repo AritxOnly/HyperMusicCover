@@ -673,11 +673,17 @@ final class AmapTransitScene implements ImmersiveScene {
             switch (t.status) {                case "1":
                 case "2":
                     // Waiting: which way, on which line, from which station, and when it comes.
+                    // No track - ColorOS's card builder gives this milestone
+                    // `cardWaitingInformation`, the list of trains coming, and no
+                    // `cardStationOverview` at all (its `c()` sets neither a station list nor a
+                    // progress bar); a station track belongs to the milestones where the ride is
+                    // between stations, which is what `nodes` is for. Which numbers the ride
+                    // carries here is AmapTransitShare's to say, and it withholds the walking
+                    // card's own for the same reason.
                     f.primary = l.on.name;
                     f.secondary = !l.realtime.isEmpty() ? l.realtime : f.direction;
                     f.islandLeft = f.direction;
                     f.islandRight = f.line;
-                    f.nodes = nodes(t, index, 1);
                     break;
                 case "3":
                 case "4":
