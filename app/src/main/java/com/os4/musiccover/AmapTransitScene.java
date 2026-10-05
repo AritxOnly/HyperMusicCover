@@ -710,11 +710,14 @@ final class AmapTransitScene implements ImmersiveScene {
                     f.nodes = nodes(t, index, 0);
                     break;
                 case "7":
-                    // Arrived: the card names the stop and says 已到站; the island's near half is
-                    // the exit to take, as ColorOS's is.
+                    // Arrived: the card names the stop, and the exit to take where 高德 has named
+                    // one. ColorOS's arrival card puts the exit on its second line in the line's
+                    // colour - but only for a subway that has one (`ya.b.b` branches on exactly
+                    // that) - and the near half of its capsule carries the same exit. 已到站 is
+                    // what is left when there is no exit to name.
                     f.primary = shown.isEmpty() ? "到站" : shown;
-                    f.secondary = "已到站";
-                    f.islandLeft = t.exitName.isEmpty() ? "到站" : t.exitName;
+                    f.secondary = f.subway && !t.exitName.isEmpty() ? t.exitName : "已到站";
+                    f.islandLeft = f.subway && !t.exitName.isEmpty() ? t.exitName : "到站";
                     f.islandRight = shown;
                     break;
                 default:
@@ -991,7 +994,14 @@ final class AmapTransitScene implements ImmersiveScene {
                 return null;
             }
 
-            /** The exit 高德 sends you to, else the station (ya.b.N). */
+            /**
+             * The exit 高德 sends you to, else the station (ya.b.N).
+             *
+             * ColorOS takes its last port when the exit it was given matches none of them, and
+             * when it was given none at all: the list is the stop's own places, so one of them is
+             * a better answer than the station's centre. Only a port with a real coordinate is
+             * worth that, and the station is the last resort.
+             */
             private static Station exit(Trip t) {
                 Leg l = t.leg;
                 if (!t.exitName.isEmpty()) {
@@ -1003,6 +1013,10 @@ final class AmapTransitScene implements ImmersiveScene {
                         }
                         if (s.located() && p.shield.equalsIgnoreCase(t.exitName)) return s;
                     }
+                }
+                if (!l.ports.isEmpty()) {
+                    Station s = l.ports.get(l.ports.size() - 1).station;
+                    if (s.located()) return s;
                 }
                 if (l.off.located()) return l.off;
                 return null;

@@ -167,6 +167,15 @@ internal object AmapTransitShare {
      */
     @Volatile private var alightStop: String = ""
     @Volatile private var alightLine: String = ""
+
+    /**
+     * The exit 高德 sends you out of at that stop (「B口」), as the last card to name one named it,
+     * and the line that card was for. An arrival card names the stop and the exit on ColorOS
+     * (`entity.exitName` comes down with every payload); 高德's own arrival card names neither, so
+     * both are remembered from the cards that do.
+     */
+    @Volatile private var exitStop: String = ""
+    @Volatile private var exitLine: String = ""
     @Volatile private var riding = false
     /** How many sendMessages each bizType has taken since this process started. */
     private val sends = java.util.concurrent.ConcurrentHashMap<Int, AtomicInteger>()
@@ -1108,8 +1117,8 @@ internal object AmapTransitShare {
      * live payload only the stop the ride is at, so this is the one place the stop being
      * approached can be read from.
      */
-    private fun sequence(line: String, alight: String): List<String> =
-        segment(line, alight)?.let { stations(it) } ?: emptyList()
+    private fun sequence(seg: JSONObject?): List<String> =
+        seg?.let { stations(it) } ?: emptyList()
 
     /** One segment's stations in order: on_station, its `via_st_list`, off_station. */
     private fun stations(seg: JSONObject): List<String> {
@@ -1120,6 +1129,29 @@ internal object AmapTransitShare {
             name(via!!.optJSONObject(i))?.let { out.add(it) }
         }
         name(seg.optJSONObject("off_station"))?.let { out.add(it) }
+        return out
+    }
+
+    /**
+     * The exits of the stop a leg ends at, shaped the way the page reads them (GaoDePtPort):
+     * the plan's own `outport` for that leg, with its name, shield, status and coordinate. A plan
+     * that names no exit answers an empty list and the page falls back to the stop itself.
+     */
+    private fun ports(seg: JSONObject?): JSONArray {
+        val out = JSONArray()
+        val p = seg?.optJSONObject("outport") ?: return out
+        val name = p.optString("name").trim()
+        if (name.isEmpty()) return out
+        // 高德 writes the plan's coordinate as {lon, lat} strings; the page reads {lat, lng}.
+        val c = p.optJSONObject("coord")
+        out.put(JSONObject()
+            .put("name", name)
+            .put("shield", p.optString("shield").trim())
+            .put("status", p.optInt("status", -1))
+            .put("status_desc", p.optString("status_desc").trim())
+            .put("coord", JSONObject()
+                .put("lat", c?.optString("lat")?.toDoubleOrNull() ?: 0.0)
+                .put("lng", c?.optString("lon")?.toDoubleOrNull() ?: 0.0)))
         return out
     }
 
@@ -1329,7 +1361,8 @@ internal object AmapTransitShare {
         // The stop the ride is coming to. 高德 names it in `nextStopName`, which a real ride left
         // empty for its whole length; the route plan's own station list has it, so that is read
         // first - the stop after the one the ride is at, in the leg's own order.
-        val seq = sequence(line, alight)
+        val seg = segment(line, alight)
+        val seq = sequence(seg)
         val after = seq.indexOf(curStop)
         val routeNext = if (after >= 0 && after + 1 < seq.size) seq[after + 1] else ""
         val nextStop = routeNext.ifEmpty {
@@ -1391,16 +1424,28 @@ internal object AmapTransitShare {
             .put("off_station", JSONObject()
                 .put("stationName", dest)
                 .put("coord", coord)
-                .put("port_list", JSONArray()))
-        // The exit 高德 names for the stop the ride ends at (GaoDePtPort.port_list): its own piece
-        // of the card's sentence (「(B口)」), which the card's title does not carry.
-        val exit = parts.firstOrNull { isExit(it) }?.let { exitOf(it) }.orEmpty()
+                // The exits of the stop this leg ends at, as 高德's plan has them. SceneService
+                // takes one of these - the one `exitName` names, and its last one when it names
+                // none - and uses its own coordinate to look the arrival's landmark up
+                // (`ya.b.N`), which is the only reason the plan's exit coordinates are here at
+                // all; they used to be sent as an empty list, so the page had none to take. The
+                // page reads it as GaoDePtPort: name, shield, status, status_desc and a coord.
+                .put("port_list", ports(seg)))
+        // The exit 高德 names for the stop this leg ends at: its own piece of the card's sentence
+        // (「(B口)」), which the card's title does not carry and which the arrival's own card stops
+        // carrying - so the last one this leg named stands in, the way its stop does
+        // ([alightStop]). The exits themselves stay the plan's, with their own coordinates
+        // ([ports]): a name on its own is not a place, and hanging one on the leg's own coordinate
+        // would send the arrival's landmark lookup to the vehicle rather than to the way out.
+        // SceneService keeps the same two apart - `exitName` for the words, `port_list` for the
+        // points (`ya.b.N`).
+        val named = parts.firstOrNull { isExit(it) }?.let { exitOf(it) }.orEmpty()
             .ifEmpty { exitOf(title) }
-        if (exit.isNotEmpty()) {
-            leg.getJSONObject("off_station").put("port_list",
-                JSONArray().put(JSONObject().put("name", exit)
-                    .put("coord", coord).put("status_desc", "")))
+        if (named.isNotEmpty()) {
+            exitStop = named
+            exitLine = line
         }
+        val exit = named.ifEmpty { if (exitLine == line) exitStop else "" }
         // Every arrival 高德 mentioned, in order (GaoDePtWaitInfo.realTime).
         val times = live?.optJSONArray("subway")
         val arrivals = JSONArray()
@@ -1451,6 +1496,7 @@ internal object AmapTransitShare {
         Xp.log(TAG + "ride #" + count + ": leg " + at + "/" + ((plan?.length() ?: 1) - 1) +
             " " + kind + " " + line + " remain=" + remain + " status=" + status +
             (if (stationName.isNotEmpty()) " at=" + stationName else "") +
+            (if (exit.isNotEmpty()) " exit=" + exit + "/" + exitLine else " exit=-") +
             (if (realtime.isNotEmpty()) " rt=" + realtime else ""))
         // Every field 高德's GaoDePtIntentEntity carries, so what the page reads is the same
         // shape ColorOS's wrapper reads (its status/total*/entity*/arrived/offRoute/gpsSignalStatus).
@@ -1661,6 +1707,8 @@ internal object AmapTransitShare {
         route = null
         alightStop = ""
         alightLine = ""
+        exitStop = ""
+        exitLine = ""
         live = null
         liveAt = 0L
         planCard = null
