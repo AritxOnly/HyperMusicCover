@@ -319,6 +319,21 @@ object ModuleBridge {
     /** Whether the module that last answered acknowledges ops. Learned from [query]. */
     @Volatile private var moduleAcks = false
 
+    /** The last answer [query] gave, good or bad, and null until someone asks in this process. */
+    @Volatile private var lastQuery: State? = null
+
+    /**
+     * The last answer any page got, or null while nobody has asked yet.
+     *
+     * A page the pager throws away and builds again (MainActivity's beyondViewportPageCount keeps
+     * one page either side, so the home page dies whenever the user is two tabs away) has nothing
+     * of its own to draw until a fresh answer lands - and the state it would otherwise start from
+     * says the module is dead, which is a red card for as long as the broadcast takes. KernelSU
+     * holds the same answer in a ViewModel its home page cannot take down with it (HomeViewModel);
+     * this is that idea without a ViewModel, in the one object every page already asks.
+     */
+    fun lastAnswer(): State? = lastQuery
+
     /** When SystemUI was last restarted from here, or seen to go; see [queryAlive]. */
     @Volatile private var restartingSince = 0L
 
@@ -468,14 +483,17 @@ object ModuleBridge {
      */
     suspend fun query(context: Context): State {
         val b = ask(context, "query")
-        val state = fromBundle(b)
-        if (!state.alive) return state
+        var state = fromBundle(b)
+        // Kept whether or not the module answered. A dead answer is an answer: it is what the
+        // next page to be built should draw instead of its own default, which is dead too.
+        if (!state.alive) return state.also { lastQuery = it }
         moduleAcks = b?.getBoolean("acks", false) == true
         // Whatever was set while it was away goes first, and the answer is asked for again so
         // the page shows those settings rather than the values they replaced.
         if (pending.isNotEmpty() && flush(context.applicationContext)) {
-            return fromBundle(ask(context, "query"))
+            state = fromBundle(ask(context, "query"))
         }
+        lastQuery = state
         return state
     }
 

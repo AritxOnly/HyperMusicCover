@@ -85,13 +85,17 @@ class MainActivity : ComponentActivity() {
     private var uiReady = false
 
     /**
-     * Bumped every time this activity comes back to the front, and read as a `remember` key in
-     * `setContent` below.
+     * Bumped every time this activity comes back to the front, read as a `remember` key in
+     * `setContent` below, and handed to the home page as its resume signal.
      *
      * The theme screen is an activity of its own - the house pattern for a sub-screen - so it
      * saves what it changes while this one is stopped, and the settings this page holds were read
      * in `onCreate`. Coming home from a theme change without re-reading them would leave the app
      * drawn in the theme it had on the way out, until the next cold start.
+     *
+     * The home page reads it for the other half of the same moment: the module can be enabled,
+     * disabled or restarted while the app is away, and a page that is up when the app comes back
+     * re-asks rather than keeping the answer it had (HomePageView).
      */
     private var settingsEpoch by mutableStateOf(0)
 
@@ -184,6 +188,7 @@ class MainActivity : ComponentActivity() {
                     isFloatingNavbar = isFloatingNavbar,
                     isLiquidGlass = isLiquidGlass,
                     isBlurEnabled = isBlurEnabled,
+                    resumeKey = settingsEpoch,
                     onThemeModeChange = { themeMode = it; persistState() },
                     onFloatingNavbarChange = { isFloatingNavbar = it; persistState() },
                     onLiquidGlassChange = { isLiquidGlass = it; persistState() },
@@ -237,6 +242,7 @@ private fun MainScreen(
     isFloatingNavbar: Boolean,
     isLiquidGlass: Boolean,
     isBlurEnabled: Boolean,
+    resumeKey: Int,
     onThemeModeChange: (ColorSchemeMode) -> Unit,
     onFloatingNavbarChange: (Boolean) -> Unit,
     onLiquidGlassChange: (Boolean) -> Unit,
@@ -364,6 +370,7 @@ private fun MainScreen(
                     0 -> HomePageView(
                         isBlurEnabled = isBlurEnabled,
                         isCurrent = isHomeCurrent,
+                        resumeKey = resumeKey,
                         extraBottomPadding = navBarHeight,
                     )
 

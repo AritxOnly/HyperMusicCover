@@ -102,7 +102,6 @@
     <string name="home_device_model">设备型号</string>
     <string name="home_hyperos_version">HyperOS 版本</string>
     <string name="home_android_version">Android 版本</string>
-    <string name="home_module_version">模块版本</string>
     <string name="home_unknown">未知</string>
     <string name="home_loading">加载中…</string>
     <string name="donate_title">捐赠支持</string>
@@ -193,4 +192,23 @@
     <string name="shade_mode">生效范围</string>
     <string name="shade_mode_restore">系统默认</string>
     <string name="shade_mode_keep">保持音乐封面</string>
+
+    <!-- The islands' page, which the features page opens. The two rows here are the only settings
+         it has left; everything else about the pill is fixed. -->
+    <string name="mini_page_title">锁屏超级岛</string>
+    <string name="mini_enabled">启用锁屏超级岛</string>
+    <string name="mini_enabled_waiting">等待 SystemUI 模块响应</string>
+    <string name="mini_widen">快捷方式关闭时加宽</string>
+    <string name="mini_widen_summary">手电筒或相机在系统设置里关掉后，超级岛占用空出的位置</string>
+
+    <!-- What the two demonstrations are called, page by page. Only the title: the page under it
+         plays what the module does, and the sentence that used to sit below the title said the
+         same thing in words (user, 2026-10-05). A page that is renamed must still describe the
+         behaviour its motion in CoverDemo or IslandDemo shows. -->
+    <string name="demo_cover_takeover_title">封面接管锁屏</string>
+    <string name="demo_cover_lyrics_title">锁屏歌词</string>
+    <string name="demo_cover_aod_title">息屏保持</string>
+    <string name="demo_island_switch_title">切换与打断</string>
+    <string name="demo_island_immersive_title">沉浸页面</string>
+    <string name="demo_island_stack_title">聚合岛</string>
 </resources>

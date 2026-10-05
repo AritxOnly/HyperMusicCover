@@ -19,6 +19,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.os4.musiccover.ui.screen.features.IslandDemo
 import com.os4.musiccover.ui.theme.AppTheme
@@ -73,7 +74,8 @@ private fun MiniPlayerPage(blur: Boolean, refreshKey: Int, onBack: () -> Unit) {
         ModuleBridge.setMiniConfig(context, configText)
     }
 
-    PageScaffold(title = "锁屏超级岛", isBlurEnabled = blur, onBack = onBack) {
+    PageScaffold(title = stringResource(R.string.mini_page_title), isBlurEnabled = blur,
+        onBack = onBack) {
         item {
             // What the islands do, played on a drawn phone, before the switches that turn them on.
             Card(Modifier.padding(horizontal = 12.dp).padding(top = 12.dp)) {
@@ -87,12 +89,16 @@ private fun MiniPlayerPage(blur: Boolean, refreshKey: Int, onBack: () -> Unit) {
             // into a switched-off shortcut's place.
             Card(Modifier.padding(horizontal = 12.dp, vertical = 12.dp)) {
                 Column {
-                    SwitchPreference(title = "启用锁屏超级岛",
-                        summary = if (alive) "普通锁屏的底部快捷按钮之间显示" else "等待 SystemUI 模块响应",
+                    // The one line the switch still carries, and only while the module is away:
+                    // a switch that cannot be moved and does not say why reads as the switch
+                    // being broken. Nothing here describes the feature itself any more.
+                    SwitchPreference(title = stringResource(R.string.mini_enabled),
+                        summary = if (alive) null
+                                  else stringResource(R.string.mini_enabled_waiting),
                         checked = config.optBoolean(MiniPlayerConfig.ENABLED), enabled = alive,
                         onCheckedChange = { push(MiniPlayerConfig.ENABLED, it) })
-                    SwitchPreference(title = "快捷方式关闭时加宽",
-                        summary = "手电筒或相机在系统设置里关掉后，超级岛占用空出的位置",
+                    SwitchPreference(title = stringResource(R.string.mini_widen),
+                        summary = stringResource(R.string.mini_widen_summary),
                         checked = config.optBoolean(MiniPlayerConfig.ADAPTIVE_WIDTH),
                         enabled = alive && config.optBoolean(MiniPlayerConfig.ENABLED),
                         onCheckedChange = { push(MiniPlayerConfig.ADAPTIVE_WIDTH, it) })

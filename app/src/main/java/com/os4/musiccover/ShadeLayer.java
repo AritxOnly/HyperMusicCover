@@ -197,8 +197,13 @@ final class ShadeLayer {
 
     // ------------------------------------------------------------------ settings
 
-    /** The master switch. Ships on; off hands the shade back to SystemUI completely. */
-    private static volatile boolean sEnabled = true;
+    /**
+     * The master switch. Ships off; off hands the shade back to SystemUI completely.
+     *
+     * Only an install that has never written a state file reads this: a phone's own answer comes
+     * back in through shade_enabled (Main.loadState), and that is what wins over the default.
+     */
+    private static volatile boolean sEnabled = false;
     /**
      * What a pull-down does once cover mode has ended: 0 is SystemUI's own shade, 1 keeps the last
      * cover. Ships as 0, because keeping it means the background outlives the music.

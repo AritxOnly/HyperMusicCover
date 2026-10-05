@@ -74,6 +74,7 @@ import top.yukonga.miuix.kmp.basic.Text as MiuixText
 fun HomePageView(
     isBlurEnabled: Boolean,
     isCurrent: () -> Boolean,
+    resumeKey: Int = 0,
     extraBottomPadding: Dp = 0.dp,
 ) {
     val context = LocalContext.current
@@ -103,21 +104,45 @@ fun HomePageView(
     // build and it costs nothing, where the package manager had to be asked every time.
     val moduleVersion = "v" + BuildConfig.VERSION_NAME
 
-    var state by remember { mutableStateOf(ModuleBridge.State()) }
-    var checked by remember { mutableStateOf(false) }
+    // Where the card starts. This page is thrown away and built again whenever the pager takes it
+    // more than one page from where the user is standing (MainActivity's beyondViewportPageCount),
+    // so nothing here survives a trip to About - and the state a rebuilt page would otherwise
+    // begin from says the module is dead, which is the red card that used to flash before the
+    // answer landed. It starts from the last answer instead, in the same frame the query is sent,
+    // and the query's own answer replaces it a broadcast later.
+    val last = remember { ModuleBridge.lastAnswer() }
+    var state by remember { mutableStateOf(last ?: ModuleBridge.State()) }
+    var checked by remember { mutableStateOf(last != null) }
 
+    // Not cleared while a query is in flight: there is an answer on screen either way, and
+    // blanking the second line to say so would be the flicker this page already refuses to show.
     suspend fun refresh() {
-        checked = false
         state = ModuleBridge.query(context)
         checked = true
     }
 
-    // The module can be enabled, disabled or restarted behind the app's back, so ask again every
-    // time this page comes to the front rather than caching the answer from launch. Keyed on the
-    // answer rather than on the pager: while this page is not the one on screen the effect is
-    // simply not running, so swiping past it does not cost a query into SystemUI.
+    // Asked when this page first comes to the front, and again when the app is resumed with it
+    // up - KernelSU's home page does the same (HomeViewModel + HomeScreen: hasActivated, then a
+    // refresh on resume). Not on every visit: the answer already held is the one the module would
+    // give, the card's own tap re-asks, and a module restarted behind the app's back is what the
+    // resume is for. Keyed on the answer rather than on the pager: while this page is not the one
+    // on screen the effect is not running, so swiping past it does not cost a query into SystemUI.
     val current = isCurrent()
-    LaunchedEffect(current) { if (current) refresh() }
+    var activated by remember { mutableStateOf(last != null) }
+    LaunchedEffect(current) {
+        if (current && !activated) {
+            activated = true
+            refresh()
+        }
+    }
+    // The first run of this effect is the composition, not a resume - it is there to arm the one
+    // after it, which is what KernelSU's own flag of the same name does (initialResumeHandled).
+    // Without it the page would ask twice on the way in, once from each effect.
+    var resumed by remember { mutableStateOf(false) }
+    LaunchedEffect(resumeKey) {
+        if (resumed && activated && current) refresh()
+        resumed = true
+    }
 
     PageScaffold(
         title = title,
@@ -263,9 +288,11 @@ fun HomePageView(
             }
         }
 
-        // No heading over this one. The five rows say what they are - a heading reading
+        // No heading over this one. The four rows say what they are - a heading reading
         // "device information" over a list of device facts only repeated them - and the gap it
         // used to hold is now the card's own, so the card sits exactly where it always did.
+        // The module's own version was a fifth row and is gone: the status card above already
+        // carries it, and the same number twice on one page is one of them to read.
         item {
             Card(
                 modifier = Modifier
@@ -289,10 +316,6 @@ fun HomePageView(
                     BasicComponent(
                         title = stringResource(R.string.home_android_version),
                         summary = systemVersion,
-                    )
-                    BasicComponent(
-                        title = stringResource(R.string.home_module_version),
-                        summary = moduleVersion,
                     )
                 }
             }
