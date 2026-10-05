@@ -35,14 +35,16 @@ import org.json.JSONObject
  * uses id 1237, so the ride is posted as [ID] and 高德's own 1237 is held back while it is up
  * ([handle]) - two islands for one ride is one too many.
  *
- * HyperOS's flat template (protocol 1: title, content, ticker) is a one-line card, too small for
- * any of this. By default the ride is the system's large template ([Style.TEMPLATE], param_v2:
- * baseInfo, multiProgressInfo, bgInfo) - the milestone over the line and where it is heading, the
- * stops left again over the leg's progress in the line's colour, the line's badge, and the ground.
- * [Style.CARD] is this module's own layout instead (miui.focus.rv, R.layout.mc_transit_card, which
- * SystemUI inflates from this package - 高德 holds QUERY_ALL_PACKAGES, so it may name it), with its
- * ticker, AOD line and super island in miui.focus.param.custom; [Style.FLAT] is the old small one.
- * The probe switches between them (`AMAPPROBE --es island card|template|flat`).
+ * A ride is posted in the plugin's own v2 template ([Style.SCENE], scene `template_v2`): the
+ * `param_v2` envelope, the words in baseInfo, the line's colour and the stop's landmark behind
+ * them in bgInfo, the leg's progress in multiProgressInfo, the line's badge in picInfo, and the
+ * island's own row, ticker and AOD line in param_island - see [official]. Everything a surface
+ * draws from - the island's expanded card, the notification centre's row, the lock screen's -
+ * comes out of that one param, so they all say and look the same thing.
+ *
+ * [Style.CARD] (this module's own layout, miui.focus.rv), [Style.TEMPLATE] (the same fields under
+ * param_v2 with no scene) and [Style.FLAT] (the old protocol 1 one-liner) are kept for the probe
+ * only (`AMAPPROBE --es island card|template|flat`): none of them is posted by default.
  *
  * Tapping it on the lock screen opens the page (AmapTransitScene.servesKey); tapping it elsewhere
  * opens 高德 at the navigation. Only while the current leg is a bus or a subway: a walking leg is
@@ -73,10 +75,61 @@ internal object AmapTransitIsland {
     /** The ground is soft; two thirds of the card's pixels are plenty and a third the memory. */
     private const val GROUND_SCALE = 0.67f
     private const val BOTTOM = 0xff07080b.toInt()
+    /** Where the landmark's own centre sits across the card: right of centre, clear of the words. */
+    private const val LANDMARK_AT = 0.72f
+    /**
+     * How much the picture is grown past a bare cover. Covering the card and standing right of
+     * centre at once costs size - the picture is 807x378 with the landmark in the middle, so the
+     * further right it is put the wider it must be - and this is how much of that is spent.
+     */
+    private const val LANDMARK_ZOOM = 1.25f
+    /**
+     * Where the picture sits vertically, as a share of the height the growth bought: 0 spends all
+     * of it lifting the landmark, 1 spends none. The landmark pictures are taken with the subject
+     * low in the frame, so with the picture only just grown it comes out under the words' last
+     * line - and lifting it is exactly what the growth is for, which is why [LANDMARK_ZOOM] buys
+     * more than a bare cover.
+     */
+    private const val LANDMARK_DOWN = 0f
+    /**
+     * The bar's nodes. Fixed, not the stops left: the card's track is three stops - the one
+     * before, this one and the next - and a bar that loses a node at every station reads as a
+     * different card each time the ride moves on, rather than the same ride further along.
+     */
+    private const val PROGRESS_POINTS = 3
+    /**
+     * The narrowest fill the bar draws as a piece of itself rather than as a standing mark.
+     *
+     * The fill's ends are capped at half its height, so once it is narrower than it is tall the
+     * two caps meet and what is left is a square head, not a rounded one - 高德's own 2% for a
+     * ride just begun does exactly that. The bar is about 880x42 px on this phone, so the fill is
+     * as wide as it is tall - the width at which the cap is exactly a half-circle - at 4.8% of it,
+     * which as a whole percent is 5.
+     */
+    private const val PROGRESS_MIN = 5
 
-    enum class Style { CARD, TEMPLATE, FLAT }
+    enum class Style { CARD, TEMPLATE, FLAT, SCENE }
 
-    @Volatile var style = Style.TEMPLATE
+    /**
+     * The official scenes the focus plugin knows (its own strings), for trying a ride in each:
+     * `AMAPPROBE --es island templateBaseScene` and the rest of [SCENES]. [Style.TEMPLATE] sends
+     * the same fields with no scene at all, which is what a build that will not take one falls
+     * back to.
+     */
+    /**
+     * The one scene a ride is posted in: `template_v2`, which is what the plugin's own sample
+     * carries ({"param_v2": {..., "scene": "template_v2"}}). The plugin's other scene names -
+     * templateBaseScene, templateBaseProgressScene, templateRevertScene,
+     * templateRevertProgressScene, templateRevertOversizeScene - belong to its V3 factory
+     * (param_v3), which a param_v2 never reaches: posting them one by one changed nothing, which
+     * is how they were tried.
+     */
+    val SCENES = listOf("template_v2")
+
+    @Volatile var style = Style.SCENE
+        private set
+    /** The scene [Style.SCENE] posts under; the only one a param_v2 reads. */
+    @Volatile var scene: String? = "template_v2"
         private set
 
     @Volatile private var posted = false
@@ -139,12 +192,22 @@ internal object AmapTransitIsland {
         Xp.log(TAG + "taken down")
     }
 
-    /** `AMAPPROBE --es island card|template|flat`: the style, and the ride again in it. */
+    /**
+     * `AMAPPROBE --es island card|template|flat`, or one of the plugin's own scenes by name:
+     * the style, and the ride again in it.
+     */
     fun setStyle(ctx: Context?, name: String): String {
         val s = Style.values().firstOrNull { it.name.equals(name, ignoreCase = true) }
-            ?: return "unknown style $name (card, template, flat)"
-        style = s
-        Xp.log(TAG + "style $s")
+        if (s != null) {
+            style = s
+            scene = null
+        } else if (SCENES.any { it.equals(name, ignoreCase = true) }) {
+            style = Style.SCENE
+            scene = SCENES.first { it.equals(name, ignoreCase = true) }
+        } else {
+            return "unknown style $name (card, template, flat, ${SCENES.joinToString(", ")})"
+        }
+        Xp.log(TAG + "style " + style.name.lowercase() + (scene?.let { " $it" } ?: ""))
         val e = lastEntity
         if (ctx != null && e != null) {
             // A different layout under the same id: take the old one down so it is drawn anew.
@@ -155,8 +218,34 @@ internal object AmapTransitIsland {
         return describe()
     }
 
+    /**
+     * The ride in one of the plugin's own scenes ([SCENES]): the fields a template scene is read
+     * for - the words, the line's own progress, its badge and the ground - carried at the top of
+     * `miui.focus.param` under the `scene` name the plugin acts on, rather than [Style.TEMPLATE]'s
+     * `param_v2` with no scene at all. Which of the scenes takes which fields is what posting
+     * them one by one answers.
+     */
+    private fun official(trip: AmapTransitScene.Trip, f: AmapTransitScene.Frame, title: String,
+                         milestone: Boolean, float: Boolean): JSONObject {
+        return template(trip, f, title, milestone, float)
+            .put("scene", scene.orEmpty())
+            .put("title", title)
+            .put("content", listOf(f.line, f.direction).filter { it.isNotEmpty() }.joinToString(" "))
+            .put("subContent", f.secondary)
+            .put("colorTitle", "#FFFFFF")
+            .put("colorContent", "#FFFFFF")
+            .put("colorBg", "#000000")
+            .put("showSmallIcon", false)
+            .put("padding", true)
+        // The progress is [template]'s `multiProgressInfo`, which the plugin's own strings
+        // describe the rules of ("progress > 100, reduced to 100", "points > 4, limited to 4").
+        // A hand-made `progressInfo` beside it is not that node: the plugin logs "progressInfo
+        // param error" for it, and a param it cannot read is a param it falls back from.
+    }
+
     fun describe(): String {
-        val sb = StringBuilder("island: style=").append(style.name.lowercase())
+        val sb = StringBuilder("island: style=")
+            .append(if (style == Style.SCENE) "scene " + scene else style.name.lowercase())
             .append(" posted=").append(posted)
             .append(" art=").append(if (art != null) "yes" else artPick?.toString() ?: "-")
         if (held > 0) sb.append(" held1237=").append(held).append(" (").append(lastHeld).append(')')
@@ -200,6 +289,16 @@ internal object AmapTransitIsland {
                 pics.putParcelable(PIC_BG, Icon.createWithBitmap(bg))
                 extras.putString("miui.focus.param",
                     JSONObject().put("param_v2", template(trip, f, title, milestone, float)).toString())
+            }
+            Style.SCENE -> {
+                val bg = ground(ctx, f, 0.5f)
+                pics.putParcelable(PIC_BG, Icon.createWithBitmap(bg))
+                // `param_v2` is the envelope and `scene` inside it picks the template, which is
+                // how the plugin's own sample carries it: {"param_v2": {..., "scene": "template_v2"}}.
+                // Without the envelope the param is not read at all and the plugin falls back.
+                extras.putString("miui.focus.param",
+                    JSONObject().put("param_v2",
+                        official(trip, f, title, milestone, float)).toString())
             }
             Style.FLAT -> extras.putString("miui.focus.param",
                 shared(JSONObject(), title, f, milestone, float)
@@ -258,11 +357,15 @@ internal object AmapTransitIsland {
                 .put("imageTextInfoLeft", JSONObject()
                     .put("type", 1)
                     .put("picInfo", JSONObject().put("type", 1).put("pic", PIC))
-                    .put("textInfo", JSONObject().put("title", title)))
+                    .put("textInfo", JSONObject().put("title",
+                        f.islandLeft.ifEmpty { title })))
                 .apply {
-                    if (f.secondary.isNotEmpty()) put("imageTextInfoRight", JSONObject()
+                    // The island's other half is the milestone's own word's opposite number: the
+                    // station, or the line a transfer changes to - not the card's guide line.
+                    val right = f.islandRight.ifEmpty { f.secondary }
+                    if (right.isNotEmpty()) put("imageTextInfoRight", JSONObject()
                         .put("type", 2)
-                        .put("textInfo", JSONObject().put("title", f.secondary)))
+                        .put("textInfo", JSONObject().put("title", right)))
                 })
             .put("smallIslandArea", JSONObject()
                 .put("picInfo", JSONObject().put("type", 1).put("pic", PIC)))
@@ -297,15 +400,30 @@ internal object AmapTransitIsland {
             .put("picInfo", JSONObject().put("type", 1).put("pic", PIC))
             .put("bgInfo", JSONObject().put("type", 1).put("picBg", PIC_BG)
                 .put("colorBg", hex(AmapTransitScene.blend(f.lineBg, BOTTOM, 0.55f))))
+        // How long the leg is: its station list when 高德 gave one, and otherwise the stops still
+        // to come, which is all a ride built out of 高德's cards knows. A ride always has an empty
+        // `via` - the module's own entity cannot fill it - so without the second the guard below
+        // never opened and the card never had a bar at all.
         val leg = trip.leg
-        val total = leg.via.size + 1
+        val total = if (leg.via.size > 0) leg.via.size + 1 else leg.remain + 1
         if (f.nodes != null && total > 1) {
+            // 高德's own reading of where the ride has got to when the card carried one -
+            // `location.persent`, a real ride's 0.02 / 0.44 / 0.71 down its leg - and only the
+            // shape of the stops left when it did not. Counting stops instead is not the same
+            // thing: a leg with three of four stops left is not a quarter of the way along it.
             val done = (total - leg.remain).coerceIn(0, total)
+            val said = if (trip.legPercent in 0.0..1.0) (trip.legPercent * 100).toInt()
+                else done * 100 / total
+            // The fill has a floor: narrower than the bar is tall it stops being a piece of the
+            // bar and draws as a mark standing up at the left end, which is what a ride that has
+            // just begun looks like - 高德's own `persent` for boarding is 0.02. A ride that is
+            // genuinely nowhere along its leg still shows nothing.
+            val percent = if (said in 1 until PROGRESS_MIN) PROGRESS_MIN else said
             o.put("multiProgressInfo", JSONObject()
                 .put("title", f.secondary)
-                .put("progress", done * 100 / total)
+                .put("progress", percent.coerceIn(0, 100))
                 .put("color", hex(f.lineBg))
-                .put("points", leg.remain.coerceIn(0, 4)))
+                .put("points", PROGRESS_POINTS))
         }
         return o
     }
@@ -371,15 +489,30 @@ internal object AmapTransitIsland {
         val set = art
         val still = set?.still
         if (still != null && set.pick == artPick) {
-            val lw = h * still.width / still.height.toFloat()
-            val r = RectF(w - lw, 0f, w.toFloat(), h.toFloat())
+            // Placed by the landmark inside the picture rather than by the picture's own edge.
+            // Pinned to its right edge, a picture of a building of this aspect lands centred,
+            // roof through the milestone and the stations; grown just past a cover, so no edge
+            // of it shows, what it is a picture *of* can be put where there is room instead -
+            // right of centre, and lifted by the height the growth bought.
+            val cover = maxOf(w / still.width.toFloat(), h / still.height.toFloat()) * LANDMARK_ZOOM
+            val lw = still.width * cover
+            val lh = still.height * cover
+            val left = w * LANDMARK_AT - lw / 2f
+            val topY = h - lh + (lh - h) * LANDMARK_DOWN
+            val r = RectF(left, topY, left + lw, topY + lh)
             val ip = Paint(Paint.FILTER_BITMAP_FLAG or Paint.DITHER_FLAG)
             ip.alpha = if (set.pick.fallback) 110 else 235
             c.drawBitmap(still, null, r, ip)
-            // Into the colour on the left, under the words.
+            // Into the colour on the left, under the words - held at full strength until the
+            // picture's own left edge and fading out from there, so that edge is not a seam
+            // across the card. The picture no longer reaches the card's left side (it is placed
+            // by the landmark in it, not by its own edge), which is what leaves the seam to hide.
             val fade = Paint(Paint.DITHER_FLAG)
-            fade.shader = LinearGradient(maxOf(0f, r.left), 0f, maxOf(0f, r.left) + w * 0.45f, 0f,
-                top, top and 0x00ffffff, Shader.TileMode.CLAMP)
+            val seam = maxOf(0f, r.left)
+            val fadeEnd = seam + w * 0.45f
+            fade.shader = LinearGradient(0f, 0f, fadeEnd, 0f,
+                intArrayOf(top, top, top and 0x00ffffff),
+                floatArrayOf(0f, (seam / fadeEnd).coerceIn(0f, 1f), 1f), Shader.TileMode.CLAMP)
             c.drawRect(0f, 0f, w.toFloat(), h.toFloat(), fade)
             // And darker at the foot, under the station names.
             fade.shader = LinearGradient(0f, h * 0.45f, 0f, h.toFloat(),

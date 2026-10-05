@@ -65,10 +65,32 @@ final class AmapTransitLandmarks {
         }
     }
 
-    /** The landmark a point in [cityCode] stands near, or null. */
+    /**
+     * The landmark a point stands near, or null.
+     *
+     * [cityCode] only narrows the search. The entity this module hands its page and its island is
+     * built out of a real ride's own card, which says nothing about a city - 高德's card carries
+     * no `destCitycode` - so with no code at all the whole catalogue is searched instead. A
+     * landmark within 0.8km is its own answer; without this the ride always fell back to the
+     * national picture and no city's landmarks could ever be reached.
+     */
     static Match near(String cityCode, double lat, double lng) {
-        City c = city(cityCode);
-        if (c == null || !valid(lat, lng)) return null;
+        if (!valid(lat, lng)) return null;
+        City named = city(cityCode);
+        if (named != null) {
+            Match m = near(named, lat, lng);
+            if (m != null) return m;
+        }
+        for (City c : cities()) {
+            if (c == named) continue;
+            Match m = near(c, lat, lng);
+            if (m != null) return m;
+        }
+        return null;
+    }
+
+    /** The landmark that city's own table has within reach of the point, or null. */
+    private static Match near(City c, double lat, double lng) {
         for (Landmark l : c.landmarks) {
             for (int i = 0; i + 1 < l.points.length; i += 2) {
                 if (distanceM(lat, lng, l.points[i], l.points[i + 1]) <= RADIUS_M) {

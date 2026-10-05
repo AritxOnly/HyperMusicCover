@@ -482,6 +482,12 @@ final class AmapTransitScene implements ImmersiveScene {
         boolean offRoute;
         boolean isPublic;
         int gpsSignalStatus;
+        /**
+         * How far along this leg the ride is, 0..1, which is 高德's own `location.persent` on the
+         * card it sends (a real ride: 0.02 at the first stop, 0.44 at the second, 0.71 at the
+         * third). -1 when the ride does not carry it, which is what a progress bar falls back on.
+         */
+        double legPercent = -1;
         Leg leg = new Leg();
         /** The ride you change to next, for the transfer badge; empty when this is the last. */
         String nextLine = "";
@@ -509,6 +515,7 @@ final class AmapTransitScene implements ImmersiveScene {
             t.offRoute = o.optBoolean("offRoute", false);
             t.isPublic = o.optBoolean("isPublic", false);
             t.gpsSignalStatus = o.optInt("gpsSignalStatus", 0);
+            t.legPercent = o.optDouble("legPercent", -1);
             JSONArray navi = o.optJSONArray("naviInfo");
             int curIndex = -1;
             for (int i = 0; navi != null && i < navi.length(); i++) {
@@ -601,6 +608,14 @@ final class AmapTransitScene implements ImmersiveScene {
         String primary = "";
         String secondary = "";
         /**
+         * The island's own two halves, which ColorOS fills differently from the card: its capsule
+         * carries the milestone's word in one half and, in the other, the station (or the line it
+         * changes to), while the words the card shows are 「下一站 XX」 and a guide line. Ours are
+         * the same split, so the island reads the way ColorOS's capsule does.
+         */
+        String islandLeft = "";
+        String islandRight = "";
+        /**
          * The milestone's own words and the one station it names, apart: OPPO's card sets 「当前站」
          * small and the station large on the same line, and its second line is the transport icon
          * and 「可换乘5号线」, not the milestone again.
@@ -648,37 +663,54 @@ final class AmapTransitScene implements ImmersiveScene {
             // the line's end (or the entity says the ride is on its last leg of two) the card
             // draws two.
             f.two = "4".equals(t.status) || t.destOnly();
+            // The island's two halves are ColorOS's capsule, word for word: what the milestone is,
+            // and the station or line it is about. The card keeps the longer sentences.
             switch (t.status) {                case "1":
                 case "2":
-                    // The waiting card: the boarding station, and when the train comes.
+                    // Waiting: which way, on which line, from which station, and when it comes.
                     f.primary = l.on.name;
                     f.secondary = !l.realtime.isEmpty() ? l.realtime : f.direction;
+                    f.islandLeft = f.direction;
+                    f.islandRight = f.line;
                     f.nodes = nodes(t, index, 1);
                     break;
                 case "3":
                 case "4":
                     f.primary = "下一站 " + shown;
                     f.secondary = remaining(t);
+                    f.islandLeft = "下一站";
+                    f.islandRight = shown;
                     f.nodes = nodes(t, index, 1);
                     break;
                 case "5":
                     f.primary = "当前站 " + shown;
                     f.secondary = remaining(t);
+                    f.islandLeft = "当前站";
+                    f.islandRight = shown;
                     f.nodes = nodes(t, index, 0);
                     break;
                 case "6":
+                    // The island says 换乘 and names the line it changes to; the card says 准备换乘
+                    // and how many stops away the change is.
                     f.primary = "准备换乘";
-                    f.secondary = t.nextLine.isEmpty() ? (shown.isEmpty() ? "" : "已到达 " + shown)
-                            : "可换乘" + t.nextLine;
+                    f.secondary = remaining(t);
+                    f.islandLeft = "换乘";
+                    f.islandRight = (f.line + " " + f.direction).trim();
                     f.nodes = nodes(t, index, 0);
                     break;
                 case "7":
-                    f.primary = shown.isEmpty() ? "已到达" : "已到达 " + shown;
-                    f.secondary = t.exitName.isEmpty() ? guide(t) : t.exitName + " 出站";
+                    // Arrived: the card names the stop and says 已到站; the island's near half is
+                    // the exit to take, as ColorOS's is.
+                    f.primary = shown.isEmpty() ? "到站" : shown;
+                    f.secondary = "已到站";
+                    f.islandLeft = t.exitName.isEmpty() ? "到站" : t.exitName;
+                    f.islandRight = shown;
                     break;
                 default:
                     f.primary = l.lineName;
                     f.secondary = guide(t);
+                    f.islandLeft = f.mark;
+                    f.islandRight = f.line;
                     break;
             }
             f.art = Art.Pick.of(t, shown, index);
@@ -701,7 +733,10 @@ final class AmapTransitScene implements ImmersiveScene {
             if (!t.guideInfo.isEmpty() && !isCount(t.guideInfo)) return t.guideInfo;
             int n = t.leg.remain > 0 ? t.leg.remain : count(t.guideInfo);
             if (n <= 0) return "";
-            return t.leg.off.name.isEmpty() ? n + "站后下车" : n + "站 " + t.leg.off.name + "下车";
+            // 「N站 XX换乘」 when the ride changes lines there, 「N站 XX下车」 when it does not, and
+            // ColorOS's own 「N站后下车」 when it has no stop to name (its R0 / T0 / S0).
+            if (t.leg.off.name.isEmpty()) return n + "站后下车";
+            return n + "站 " + t.leg.off.name + (t.nextLine.isEmpty() ? "下车" : "换乘");
         }
 
         /** 高德's guideInfo when it is words, and nothing when it is only a count of stops. */
@@ -755,7 +790,7 @@ final class AmapTransitScene implements ImmersiveScene {
                 case "6":
                     return new String[] {"换乘", ""};
                 case "7":
-                    return new String[] {"到达", ""};
+                    return new String[] {"到站", ""};
                 default:
                     return new String[] {"", ""};
             }

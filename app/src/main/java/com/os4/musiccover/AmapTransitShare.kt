@@ -878,7 +878,11 @@ internal object AmapTransitShare {
             if (biz == RIDE_BIZ) {
                 val data = root.optJSONObject("cardData") ?: return
                 val fresh = rides(data.optJSONArray("planData"))
-                if (plan == null || fresh.length() != plan!!.length()) {
+                // A new ride, not just the next card of the same one: the plan is taken again
+                // whenever its lines are not the ones already held, not only when it has a
+                // different number of them. Two rides of one leg each both come as a plan of one
+                // line, and by length alone the second kept the first one's name and colour.
+                if (plan == null || !samePlan(fresh, plan!!)) {
                     plan = fresh
                     simPlan = null
                     Xp.log(TAG + "plan: " + (0 until fresh.length()).joinToString(" -> ") {
@@ -896,7 +900,11 @@ internal object AmapTransitShare {
                 }
                 riding = true
             } else {
-                val data = root.optJSONArray("datas") ?: return
+                // 高德's `datas` is a string holding JSON, which is what `sendMessage` hands over
+                // ({"datas":"[{\"type\":25,\"data\":{...}}]"}); reading it with optJSONArray
+                // returns null, and the whole live channel - the stop the ride is at, the stops
+                // left, the countdown - never arrives.
+                val data = array(root.opt("datas")) ?: return
                 val inner = data.optJSONObject(0)?.optJSONObject("data") ?: return
                 live = inner
                 liveAt = SystemClock.uptimeMillis()
@@ -933,6 +941,17 @@ internal object AmapTransitShare {
                 .put("color", bg))
         }
         return out
+    }
+
+    /** Whether two plans name the same lines, in the same order. */
+    private fun samePlan(a: JSONArray, b: JSONArray): Boolean {
+        if (a.length() != b.length()) return false
+        for (i in 0 until a.length()) {
+            val x = a.optJSONObject(i)?.optString("name")
+            val y = b.optJSONObject(i)?.optString("name")
+            if (x != y) return false
+        }
+        return true
     }
 
     /** The plan's line [at], or the first when there is no such index. */
@@ -998,52 +1017,57 @@ internal object AmapTransitShare {
         // `titleItems` is one sentence cut into pieces, not fixed slots: a real ride sent
         // 「1站」「后」「 · 」「邮轮中心」「出站」, which is 「1站后 · 邮轮中心出站」 - the count
         // first and the stop fourth. Reading a piece by its place therefore reads a count as a
-        // stop's name, which is how 「下一站 2站」 reached the lock screen. The sentence is put
-        // back together and the count, the stop and the action are taken out of its words.
+        // stop's name, which is how 「下一站 2站」 reached the lock screen. The pieces are read
+        // apart instead, and the count, the stop and the action taken out of them.
         val sentence = titleItems(items)
+        val parts = pieces(items)
         val first = text(items, 0)
         val stopsLeft = Regex("(\\d+)\\s*站").find(sentence)
             ?.groupValues?.get(1)?.toIntOrNull() ?: 0
-        val destInSentence = Regex("·\\s*([^·\\s]+?)\\s*(出站|下车|换乘|进站)?\\s*$")
-            .find(sentence)?.groupValues?.get(1)?.trim().orEmpty()
-        val stationName = destInSentence.ifEmpty { if (isCount(first)) "" else first }
-        val action = Regex("(进站|出站|下车|换乘|上车)").find(sentence)
-            ?.groupValues?.get(1).orEmpty()
+        val stationName = stopIn(parts).ifEmpty { if (isCount(first)) "" else first }
+        val action = ACTION.find(sentence)?.groupValues?.get(1).orEmpty()
         val arriveText = bus?.optString("sub_status").orEmpty()
         val stationAction = action
-        // The two stops 高德 names outright for the ride in progress (`arriveRemind`), which are
-        // not the same as where the card's sentence is taking you: on a bus with six stops to go
-        // the sentence's stop is the line's end, and 「下一站」 must not be that.
+        // Where the ride is. 高德's `curStopName` is the station the vehicle is at or has just
+        // left - a real ride at 大学城南 read `curStopName` 大学城南 with 3 stops to go, 板桥 at
+        // 2, 员岗 at 1 - and `nextStopName` is the one it is coming to. A ride may leave the
+        // second empty the whole way (2026-10-05, 7号线: 346 payloads, never filled), so the stop
+        // after the current one can only be worked out at the end: with one stop left, the next
+        // stop is the destination the card itself names.
         val curStop = where?.optString("curStopName").orEmpty().replace(" ", "").trim()
         val nextStop = where?.optString("nextStopName").orEmpty().replace(" ", "").trim()
-        val dest = destName(title)
+        val dest = destName(title).ifEmpty { stationName }
         // 高德's own status codes, as its card sends them: 1 near the origin, 2 waiting, 3 the next
         // stop, 5 arrived at a stop, 6 a transfer, 7 the line's end. (The 4/5 in ColorOS's
         // GaoDePublicTransportNavMilestone are that enum's own ordinals, not these.)
         val arrived = card?.optBoolean("arrived", false) == true || title.contains("已到达") ||
             (kind == "1" && bus?.optString("status") == "0" && remain <= 0)
+        val nextIsDest = remain == 1 && dest.isNotEmpty()
+        // The stop the milestone names: the one the ride is coming to when 高德 has named it, or
+        // when the only stop left is the destination - and nothing at all when it has not, which
+        // is what keeps 「下一站」 off a stop the ride has already left.
+        val atStop = when {
+            nextStop.isNotEmpty() -> nextStop
+            nextIsDest -> dest
+            else -> ""
+        }
         val status = when {
             arrived -> "7"
             stationAction.contains("换乘") -> "6"
             stationAction.contains("进站") || title.contains("候车") -> "2"
-            remain == 1 || cardCount == 0 -> "5"
+            cardCount == 0 -> "5"
+            atStop.isNotEmpty() -> "3"
+            curStop.isNotEmpty() -> "5"
             else -> "3"
         }
         // A count in the name's slot is the count of stops left, and when 高德 has said nothing
         // else about the distance that count is the ride's progress.
         val left = if (stopsLeft > 0) stopsLeft else remain
-        // The stops the card draws (its stationList), left to right: where the ride boards, the
-        // stop it is at or coming to, and where the line ends. 高德 names them in pieces, and the
-        // two it names outright for the ride in progress (`curStopName` / `nextStopName`) beat
-        // what the card's sentence can be read for - that sentence names the line's end, which a
-        // 「下一站」 is not while stops are left. A stop repeated in two slots is one stop, and the
-        // page drops the repeat, so nothing here should invent one.
-        val atStop = when {
-            !nextStop.isEmpty() && status == "3" -> nextStop
-            !curStop.isEmpty() -> curStop
-            else -> ""
-        }
-        val here = atStop.ifEmpty { stationName }.ifEmpty { station(whereStation(card)) }
+        // The stop the card names for this milestone: the next one when it is known, else the one
+        // the ride is at, else what the card's own words name. A stop repeated in two slots is one
+        // stop, and the page drops the repeat, so nothing here should invent one.
+        val here = atStop.ifEmpty { curStop }.ifEmpty { stationName }
+            .ifEmpty { station(whereStation(card)) }
         val board = here.ifEmpty { stationName }
         val stops = ArrayList<String>(3)
         for (name in listOf(board, here, dest)) {
@@ -1065,8 +1089,10 @@ internal object AmapTransitShare {
                 .put("stationName", dest)
                 .put("coord", coord)
                 .put("port_list", JSONArray()))
-        // The exits 高德 names for the stop the ride ends at (GaoDePtPort.port_list).
-        val exit = exit(title)
+        // The exit 高德 names for the stop the ride ends at (GaoDePtPort.port_list): its own piece
+        // of the card's sentence (「(B口)」), which the card's title does not carry.
+        val exit = parts.firstOrNull { isExit(it) }?.let { exitOf(it) }.orEmpty()
+            .ifEmpty { exitOf(title) }
         if (exit.isNotEmpty()) {
             leg.getJSONObject("off_station").put("port_list",
                 JSONArray().put(JSONObject().put("name", exit)
@@ -1143,6 +1169,10 @@ internal object AmapTransitShare {
             .put("offRoute", false)
             .put("isPublic", true)
             .put("gpsSignalStatus", if (gps > 0 || gpsText.contains("弱")) 1 else 0)
+            // How far down this leg the ride is, as 高德's own card has it (`location.persent`,
+            // 0..1). Carried so the progress bar shows where the ride has got to rather than how
+            // many stops are left.
+            .put("legPercent", card?.optJSONObject("location")?.optDouble("persent", -1.0) ?: -1.0)
             .put("totalDistance", metres(where?.optInt("remainLength", 0) ?: 0))
             .put("totalDuration", (where?.optInt("remainTime", 0) ?: 0).toDouble())
             .put("deepLink", card?.optString("scheme").orEmpty())
@@ -1161,12 +1191,23 @@ internal object AmapTransitShare {
         else -> m.toString() + "米"
     }
 
-    /** The bus's own point, as the leg's coordinates; 0 when 高德 has not given one. */
+    /**
+     * The ride's own point, as the leg's coordinates. A bus carries it on its track; a subway has
+     * no bus at all - its `realtime` is empty - and says where it is in `locationData` instead.
+     * Without a point the page cannot look a landmark up and the ride falls back to the national
+     * picture, so both are read, and 0 is only the answer when 高德 has given neither.
+     */
     private fun coords(trip: JSONObject?): JSONObject {
         val track = trip?.optJSONObject("track")
-        val lat = track?.optString("ys")?.toDoubleOrNull() ?: 0.0
-        val lng = track?.optString("xs")?.toDoubleOrNull() ?: 0.0
-        return JSONObject().put("lat", lat).put("lng", lng)
+        val lat = track?.optString("ys")?.toDoubleOrNull()
+        val lng = track?.optString("xs")?.toDoubleOrNull()
+        if (lat != null && lng != null && lat != 0.0 && lng != 0.0) {
+            return JSONObject().put("lat", lat).put("lng", lng)
+        }
+        val at = live?.optJSONObject("locationData")
+        return JSONObject()
+            .put("lat", at?.optDouble("latitude", 0.0) ?: 0.0)
+            .put("lng", at?.optDouble("longitude", 0.0) ?: 0.0)
     }
 
     private fun coord(lat: Double?, lng: Double?): JSONObject =
@@ -1228,8 +1269,55 @@ internal object AmapTransitShare {
     private fun station(text: String): String =
         text.replace(Regex("[\\(（][^)\\)）]*[\\)）]"), "").trim()
 
+    /**
+     * The card's sentence as its pieces, trimmed, the empties dropped: a real ride's
+     * 「3站」「后」「 · 」「南村万博」「(B口)」「出站」.
+     */
+    private fun pieces(items: JSONArray?): List<String> {
+        val out = ArrayList<String>()
+        for (i in 0 until (items?.length() ?: 0)) {
+            val t = items!!.optJSONObject(i)?.optString("text").orEmpty().trim()
+            if (t.isNotEmpty()) out.add(t)
+        }
+        return out
+    }
+
+    /**
+     * The stop the card's words name: the piece after the 「·」 separator, and on a card without
+     * one - the walk to the station, 「大学城南」「(E口)」「进站」 - the first piece that is not a
+     * count, an exit, an action or the 「后」 between them.
+     *
+     * Read off the assembled sentence instead, 「3站 后· 南村万博 (B口) 出站」 does not fit: the
+     * exit between the stop and the action keeps a pattern over the whole line from matching, and
+     * the milestone was left with no station at all.
+     */
+    private fun stopIn(parts: List<String>): String {
+        val sep = parts.indexOfFirst { it.contains('·') }
+        if (sep >= 0 && sep + 1 < parts.size) return station(parts[sep + 1])
+        for (p in parts) {
+            if (isCount(p) || isExit(p) || ACTION.containsMatchIn(p) || p == "后") continue
+            return station(p)
+        }
+        return ""
+    }
+
+    /** 「(E口)」 / 「(B口)」: the exit's own piece, which is not a stop's name. */
+    private fun isExit(text: String): Boolean =
+        text.length > 2 && (text.startsWith("(") || text.startsWith("（")) &&
+            (text.endsWith(")") || text.endsWith("）"))
+
+    /** The word 高德 ends the card's sentence with: what happens at the stop it names. */
+    private val ACTION = Regex("(进站|出站|下车|换乘|上车)")
+
+    /** What a payload's field is, whether 高德 sent it as the string it is or as a ready array. */
+    private fun array(v: Any?): JSONArray? = when (v) {
+        is JSONArray -> v
+        is String -> runCatching { JSONArray(v) }.getOrNull()
+        else -> null
+    }
+
     /** 「大学城南(E口)」 -> 「E口」. */
-    private fun exit(title: String): String {
+    private fun exitOf(title: String): String {
         val m = Regex("[\\(（]([^)\\)）]+)[\\)）]").find(title) ?: return ""
         return m.groupValues[1].trim()
     }
