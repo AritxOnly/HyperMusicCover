@@ -64,12 +64,22 @@ internal object AmapImmerse {
     /** A page has called init and not destroy: the map can be drawn. */
     @Volatile private var armed = false
     @Volatile private var appCtx: Context? = null
+    /**
+     * 高德's own class loader, the one `handle` is given. The module's own loader cannot see 高德's
+     * classes (`Class.forName("com.autonavi.common.model.GeoPoint", false, <module's>)` answers
+     * "no class"), so anything reaching for one of them uses this.
+     */
+    @Volatile private var appLoader: ClassLoader? = null
 
     /** 高德's application, once it has one: what AmapTransitShare tells SystemUI through. */
     fun context(): Context? = appCtx
 
+    /** 高德's class loader, for the few places that reach for one of its own classes. */
+    fun loader(): ClassLoader? = appLoader
+
     @JvmStatic
     fun handle(cl: ClassLoader) {
+        appLoader = cl
         try {
             val instr = Xp.findClass("android.app.Instrumentation", cl)
             Xp.hookAll(instr, "callApplicationOnCreate") { chain ->
@@ -190,6 +200,17 @@ internal object AmapImmerse {
                 i.getStringExtra("oppo")?.let {
                     AmapTransitShare.spoof(it.toBoolean())
                     resultData = AmapTransitShare.describe()
+                    return
+                }
+                // `--es footnavi '<name>,<lat>,<lng>'`: 高德's own walking navigation, asked for
+                // from outside, so the one call it takes can be proved before anything is wired
+                // to it. See AmapFootNavi.
+                i.getStringExtra("footnavi")?.let {
+                    val p = it.split(',')
+                    val cl = appLoader
+                    resultData = if (p.size != 3) "expected name,lat,lng"
+                    else if (cl == null) "no 高德 class loader yet"
+                    else AmapFootNavi.start(cl, p[1].toDouble(), p[2].toDouble(), p[0])
                     return
                 }
                 i.getStringExtra("island")?.let {

@@ -176,6 +176,12 @@ internal object AmapTransitShare {
      */
     @Volatile private var exitStop: String = ""
     @Volatile private var exitLine: String = ""
+
+    /**
+     * Whether the trip's opening walk has already been handed to 高德's walking navigation, so a
+     * second card for the same walk does not start it over. Let go with the rest of the ride.
+     */
+    @Volatile private var walked = false
     @Volatile private var riding = false
     /** How many sendMessages each bizType has taken since this process started. */
     private val sends = java.util.concurrent.ConcurrentHashMap<Int, AtomicInteger>()
@@ -1066,7 +1072,14 @@ internal object AmapTransitShare {
                     // that index belongs to is the card's own, not this one.
                     val index = data.optJSONObject("location")?.optInt("index", -1) ?: -1
                     val legs = data.optJSONArray("planData")?.length() ?: 0
-                    if (riding && (index < 0 || legs == 0 || index >= legs - 1)) clear()
+                    if (riding && (index < 0 || legs == 0 || index >= legs - 1)) {
+                        clear()
+                    } else if (!riding) {
+                        // The walk at the front of the trip, which is the one 高德 sends when the
+                        // trip's navigation starts - the 「开始导航」 this is here for. See
+                        // [walkTo]: 高德 opens its own walking navigation, it is not drawn here.
+                        walkTo(data)
+                    }
                     return
                 }
                 riding = true
@@ -1153,6 +1166,53 @@ internal object AmapTransitShare {
                 .put("lat", c?.optString("lat")?.toDoubleOrNull() ?: 0.0)
                 .put("lng", c?.optString("lon")?.toDoubleOrNull() ?: 0.0)))
         return out
+    }
+
+    /**
+     * Hands the trip's opening walk to 高德's own walking navigation.
+     *
+     * A bus or subway trip begins with a walk to the first stop, and 高德 gives that walk its own
+     * navigation - the 「步行导航 ▸」 beside it in the trip's page, which otherwise takes a second
+     * tap somewhere else to reach. ColorOS starts it for you when the trip's card is pressed, out
+     * of the walk's entity, which its build of 高德 hands over; this phone's 高德 hands over no
+     * such entity, so the walk's own end is read off the plan instead: the stop the card says you
+     * are walking to (「步行至 大学城南地铁站」), and the entrance the plan gives for that line
+     * (「E口」, 113.399217, 23.044146 - `inport`). 高德 fills the start of the walk in from the
+     * current fix by itself, and does the drawing; AmapFootNavi does the call.
+     *
+     * Only the walk at the front gets this. A walk in the middle of a trip is a change of line,
+     * and ColorOS waits to be asked for that one too - its walking card carries a button.
+     */
+    private fun walkTo(card: JSONObject) {
+        if (walked) return
+        val to = station(whereStation(card))
+        if (to.isEmpty()) return
+        val inport = segmentPort(card.optString("mainText").trim())
+        val c = inport?.optJSONObject("coord")
+        val lat = c?.optString("lat")?.toDoubleOrNull()
+        val lng = c?.optString("lon")?.toDoubleOrNull()
+        val cl = AmapImmerse.loader()
+        if (lat == null || lng == null || cl == null) {
+            Xp.log(TAG + "walk to " + to + ": no " + (if (cl == null) "loader" else "entrance"))
+            return
+        }
+        walked = true
+        Xp.log(TAG + "walk to " + to + " -> " + AmapFootNavi.start(cl, lat, lng, to))
+    }
+
+    /**
+     * The plan's entrance for the line a walk is going to: a segment names its line in
+     * `bus_key_name`, and its `inport` is the way in at the end of the walk to it.
+     */
+    private fun segmentPort(line: String): JSONObject? {
+        val list = route?.optJSONArray("segmentlist") ?: return null
+        for (i in 0 until list.length()) {
+            val s = list.optJSONObject(i) ?: continue
+            if (line.isEmpty() || s.optString("bus_key_name").trim() == line) {
+                return s.optJSONObject("inport")
+            }
+        }
+        return null
     }
 
     /**
@@ -1709,6 +1769,7 @@ internal object AmapTransitShare {
         alightLine = ""
         exitStop = ""
         exitLine = ""
+        walked = false
         live = null
         liveAt = 0L
         planCard = null
