@@ -794,6 +794,7 @@ final class ImmersiveHost {
             if (parent != null) parent.removeView(sSlot);
             Xp.log(TAG + "slot removed");
         }
+        holdScreen(false);
         sSlot = null;
         sEdge = null;
         sVeil = null;
@@ -961,7 +962,87 @@ final class ImmersiveHost {
             Xp.log(TAG + (shown ? "shown " + page.id() + (dozing ? " (doze)" : "") : "hidden"));
             changed = true;
         }
+        holdScreen(shown && !dozing && page != sLeaving && page.isNavigation() && litNow());
         return changed;
+    }
+
+    // ---------------------------------------------------------------- 屏幕常亮
+
+    /**
+     * Keeps the lit lock screen on while a navigation page is up, the way the lyrics' 屏幕常亮
+     * does (LockLyrics.holdScreen): keepScreenOn on the slot, which is in the shade window, so
+     * the window manager holds a screen wake lock over the keyguard's 10s timeout. Never in a
+     * doze - asked for there it pulls the phone out of the AOD at full brightness - and not with
+     * the phone in a pocket or face down, where the lock screen's own timeout takes it again.
+     */
+    private static void holdScreen(boolean asked) {
+        if (asked) {
+            try {
+                asked = Main.sAppCtx != null && MiniPlayerRuntime.navKeepOn(Main.sAppCtx);
+            } catch (Throwable t) {
+                asked = false;
+            }
+        }
+        sScreenAsked = asked;
+        watchProximity(asked);
+        applyScreenHold();
+    }
+
+    private static void applyScreenHold() {
+        FrameLayout slot = sSlot;
+        boolean want = sScreenAsked && !sCovered && slot != null;
+        if (want == sScreenHeld) return;
+        sScreenHeld = want;
+        if (slot != null) slot.setKeepScreenOn(want);
+        Xp.log(TAG + (want ? "holding the screen on for the navigation" : "screen may sleep again"));
+    }
+
+    /** The setting changed: weighed again on the next frame the shade window draws. */
+    static void navKeepOnChanged() {
+        sMain.post(new Runnable() {
+            @Override
+            public void run() {
+                if (sSlot != null) sSlot.invalidate();
+                if (!sShown) holdScreen(false);
+            }
+        });
+    }
+
+    private static boolean sScreenAsked;
+    private static boolean sScreenHeld;
+    /** The proximity sensor reads near: the phone is in a pocket or face down. */
+    private static boolean sCovered;
+    private static android.hardware.SensorEventListener sProximity;
+
+    /** Listens only while the screen is being held, so a sleeping phone keeps no sensor on. */
+    private static void watchProximity(boolean on) {
+        if (on == (sProximity != null)) return;
+        android.hardware.SensorManager sm = Main.sAppCtx == null ? null
+                : Main.sAppCtx.getSystemService(android.hardware.SensorManager.class);
+        if (sm == null) return;
+        if (!on) {
+            sm.unregisterListener(sProximity);
+            sProximity = null;
+            sCovered = false;
+            return;
+        }
+        android.hardware.Sensor s = sm.getDefaultSensor(android.hardware.Sensor.TYPE_PROXIMITY);
+        if (s == null) return;
+        final float far = s.getMaximumRange();
+        sProximity = new android.hardware.SensorEventListener() {
+            @Override
+            public void onSensorChanged(android.hardware.SensorEvent e) {
+                boolean covered = e.values.length > 0 && e.values[0] < far;
+                if (covered == sCovered) return;
+                sCovered = covered;
+                applyScreenHold();
+            }
+
+            @Override
+            public void onAccuracyChanged(android.hardware.Sensor sensor, int accuracy) {
+            }
+        };
+        sm.registerListener(sProximity, s, android.hardware.SensorManager.SENSOR_DELAY_NORMAL, sMain);
     }
 
     private static boolean litNow() {

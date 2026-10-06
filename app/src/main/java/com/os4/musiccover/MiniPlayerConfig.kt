@@ -15,18 +15,22 @@ object MiniPlayerConfig {
     /** The row takes the room a switched-off torch or camera leaves (MiniPlayerRuntime.pillRest). */
     const val ADAPTIVE_WIDTH = "adaptiveWidth"
 
+    /** 屏幕常亮 while a navigation page is up behind the lock screen (ImmersiveHost.holdScreen, #63). */
+    const val NAV_KEEP_ON = "navKeepOn"
+
     private val defaults = linkedMapOf<String, Any>(
         ENABLED to false,
         WIDTH to 221f,
         HEIGHT_RADIUS to 27f,
         ART_RADIUS to 12f,
         ADAPTIVE_WIDTH to false,
+        NAV_KEEP_ON to false,
     )
 
     @JvmStatic fun defaultJson(): String = normalizedJson(null)
 
     /**
-     * The config as the module will use it: [ENABLED] and [ADAPTIVE_WIDTH] from the input, the
+     * The config as the module will use it: [ENABLED], [ADAPTIVE_WIDTH] and [NAV_KEEP_ON] from the input, the
      * three size keys always at the values above.
      *
      * The sizes were sliders and are not settings any more - the app has no rows for them - so a
@@ -47,7 +51,7 @@ object MiniPlayerConfig {
         val input = runCatching { JSONObject(raw.orEmpty()) }.getOrDefault(JSONObject())
         val out = JSONObject()
         defaults.forEach { (key, fallback) ->
-            out.put(key, if (key == ENABLED || key == ADAPTIVE_WIDTH) {
+            out.put(key, if (key == ENABLED || key == ADAPTIVE_WIDTH || key == NAV_KEEP_ON) {
                 runCatching { input.getBoolean(key) }.getOrDefault(fallback)
             } else {
                 fallback

@@ -102,6 +102,11 @@ private fun MiniPlayerPage(blur: Boolean, refreshKey: Int, onBack: () -> Unit) {
                         checked = config.optBoolean(MiniPlayerConfig.ADAPTIVE_WIDTH),
                         enabled = alive && config.optBoolean(MiniPlayerConfig.ENABLED),
                         onCheckedChange = { push(MiniPlayerConfig.ADAPTIVE_WIDTH, it) })
+                    SwitchPreference(title = stringResource(R.string.mini_nav_keep_on),
+                        summary = stringResource(R.string.mini_nav_keep_on_summary),
+                        checked = config.optBoolean(MiniPlayerConfig.NAV_KEEP_ON),
+                        enabled = alive && config.optBoolean(MiniPlayerConfig.ENABLED),
+                        onCheckedChange = { push(MiniPlayerConfig.NAV_KEEP_ON, it) })
                 }
             }
         }

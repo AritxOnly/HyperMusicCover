@@ -30,6 +30,11 @@ final class AmapNavScene extends LiveAlertScene {
 
     static final AmapNavScene INSTANCE = new AmapNavScene();
 
+    @Override
+    public boolean isNavigation() {
+        return true;
+    }
+
     private AmapNavScene() {
         super(ID, PKG, "com.autonavi.minimap.immersenavi.AMapImmerseNaviService", "536879184");
     }

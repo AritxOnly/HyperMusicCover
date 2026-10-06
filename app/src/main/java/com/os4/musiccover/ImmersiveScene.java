@@ -109,6 +109,15 @@ interface ImmersiveScene {
     default void onPageTap() {
     }
 
+    /**
+     * A navigation page: the lit lock screen is kept on while it is up, when the islands'
+     * 屏幕常亮 setting asks for it (MiniPlayerConfig.NAV_KEEP_ON, #63). The countdown has a
+     * switch of its own on its page.
+     */
+    default boolean isNavigation() {
+        return false;
+    }
+
     /** One line for the probe. */
     String describe();
 }

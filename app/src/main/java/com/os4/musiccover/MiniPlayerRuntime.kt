@@ -57,8 +57,21 @@ object MiniPlayerRuntime {
 
     @JvmStatic fun configJson(context: Context): String = MiniPlayerConfig.fromPreferences(prefs(context))
 
+    /** MiniPlayerConfig.NAV_KEEP_ON as saved: read once, then kept by applyConfig. */
+    @Volatile private var navKeepOnSaved: Boolean? = null
+
+    /** Whether a navigation page keeps the lock screen lit (ImmersiveHost.holdScreen, #63). */
+    @JvmStatic fun navKeepOn(context: Context): Boolean = navKeepOnSaved
+        ?: JSONObject(configJson(context)).optBoolean(MiniPlayerConfig.NAV_KEEP_ON)
+            .also { navKeepOnSaved = it }
+
     @JvmStatic fun applyConfig(context: Context, raw: String?) {
-        MiniPlayerConfig.apply(prefs(context), raw)
+        val saved = MiniPlayerConfig.apply(prefs(context), raw)
+        val keep = JSONObject(saved).optBoolean(MiniPlayerConfig.NAV_KEEP_ON)
+        if (keep != navKeepOnSaved) {
+            navKeepOnSaved = keep
+            ImmersiveHost.navKeepOnChanged()
+        }
         lastRoot?.get()?.let { root -> root.post { attach(root, lastShortcutController?.get()) } }
         refresh()
     }

@@ -60,6 +60,11 @@ import java.util.concurrent.Executors;
 final class AmapTransitScene implements ImmersiveScene {
 
     static final String ID = "amap-transit";
+
+    @Override
+    public boolean isNavigation() {
+        return true;
+    }
     static final String PKG = AmapNavScene.PKG;
     static final AmapTransitScene INSTANCE = new AmapTransitScene();
 
