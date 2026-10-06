@@ -224,16 +224,27 @@ internal object AmapTransitIsland {
         }
         val pick = AmapTransitScene.Art.Pick.of(trip, c)
         fetchArt(ctx, pick)
-        val title = c.primary.ifEmpty { c.lockTitle }
-        val content = listOf(c.secondaryLine, c.secondary).map { it.trim() }
-            .filter { it.isNotEmpty() }.joinToString(" ")
-        val lineRow = listOf(c.line, c.direction).filter { it.isNotEmpty() }.joinToString(" ")
+        val walk = c.kind == AmapTransitCard.Card.KIND_WALK
+        // ColorOS's walking card puts where the walk starts and where it goes side by side, a
+        // route with an arrow between (cardPrimaryInfo / cardSecondaryInfo); in the template's
+        // title and lines that read as 「我的位置」 for a heading. The walk is said the way its
+        // lock-screen row says it instead - 「步行至大学城南」, its length and time - and the two
+        // ends go under it.
+        val title = if (walk) c.lockTitle else c.primary.ifEmpty { c.lockTitle }
+        val content = if (walk) c.lockSubtitle else listOf(c.secondaryLine, c.secondary)
+            .map { it.trim() }.filter { it.isNotEmpty() }.joinToString(" ")
+        val lineRow = if (walk) listOf(c.primary, c.secondary).filter { it.isNotEmpty() }.joinToString(" → ")
+            else listOf(c.line, c.direction).filter { it.isNotEmpty() }.joinToString(" ")
         // A new milestone floats once and may alert; the same one reposted stays quiet.
         val milestone = c.status + "|" + c.kind != lastStatus
         lastStatus = c.status + "|" + c.kind
         val float = milestone && c.status in FLOAT_AT
         val dp = Resources.getSystem().displayMetrics.density
-        val icon = if (c.line.isNotEmpty()) badge(c.line, c.lineBg, c.lineText) else appIcon(ctx)
+        val icon = when {
+            c.line.isNotEmpty() -> badge(c.line, c.lineBg, c.lineText)
+            walk -> walker()
+            else -> appIcon(ctx)
+        }
         val pics = Bundle().apply {
             putParcelable(PIC, Icon.createWithBitmap(icon))
             putParcelable("miui.focus.pic_large", Icon.createWithBitmap(icon))
@@ -460,7 +471,32 @@ internal object AmapTransitIsland {
         return b
     }
 
-    /** 高德's own icon, for the cards that are not about a line (the end, off the route, a walk). */
+    /**
+     * A walker in a disc, ColorOS's walkInCycle for the walking card's capsule: 高德's blue, a
+     * white figure mid-stride.
+     */
+    private fun walker(): Bitmap {
+        val size = 96
+        val b = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val c = Canvas(b)
+        val p = Paint(Paint.ANTI_ALIAS_FLAG)
+        p.color = 0xff4a86ff.toInt()
+        c.drawCircle(48f, 48f, 48f, p)
+        p.color = Color.WHITE
+        c.drawCircle(52f, 21f, 7.5f, p)
+        p.style = Paint.Style.STROKE
+        p.strokeWidth = 8f
+        p.strokeCap = Paint.Cap.ROUND
+        p.strokeJoin = Paint.Join.ROUND
+        // Body leaning into the stride, the arms and legs either side of it.
+        c.drawLine(49f, 34f, 44f, 56f, p)
+        c.drawPath(Path().apply { moveTo(31f, 50f); lineTo(39f, 39f); lineTo(49f, 35f); lineTo(58f, 46f); lineTo(66f, 48f) }, p)
+        c.drawPath(Path().apply { moveTo(44f, 56f); lineTo(53f, 66f); lineTo(55f, 80f) }, p)
+        c.drawPath(Path().apply { moveTo(44f, 56f); lineTo(38f, 69f); lineTo(29f, 78f) }, p)
+        return b
+    }
+
+    /** 高德's own icon, for the cards that are not about a line (the end, off the route). */
     private fun appIcon(ctx: Context): Bitmap {
         val size = 96
         val b = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
