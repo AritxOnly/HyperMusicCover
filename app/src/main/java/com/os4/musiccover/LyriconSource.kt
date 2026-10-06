@@ -275,10 +275,16 @@ object LyriconSource {
         return out
     }
 
-    /** Whether the bridge's song is this track: a title that agrees, and an artist that does not disagree. */
+    /**
+     * Whether the bridge's song is this track: a title that agrees, and an artist that does not
+     * disagree - or, on the players that sing into TITLE, the song and singer ARTIST spells
+     * (TrackName.splits). Held against the title alone, 汽水's song was refused from its first
+     * sung line on, and the lookup went to the catalogues with the line as the song's name (#56).
+     */
     private fun isTrack(song: Song, title: String?, artist: String?): Boolean {
-        if (song.name.isNullOrBlank() || title.isNullOrBlank()) return false
-        return names(song.name, title) && names(song.artist, artist)
+        if (song.name.isNullOrBlank()) return false
+        if (!title.isNullOrBlank() && names(song.name, title) && names(song.artist, artist)) return true
+        return TrackName.pairIn(song.name, song.artist, artist)
     }
 
     /** Whether two names agree, or say nothing. A blank on either side is not a contradiction. */

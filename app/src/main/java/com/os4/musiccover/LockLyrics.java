@@ -782,9 +782,12 @@ final class LockLyrics {
             rereadIfNewPayload(key, c);
             return;
         }
+        String lastKey = sKey;
         sKey = key;
+        long lastChange = sTrackAt;
         sTrackChangedAt = SystemClock.uptimeMillis();
         sTrackAt = sTrackChangedAt;
+        Main.main().removeCallbacks(SETTLED_LOOKUP);
         unpark();
         sBlurVideoReloaded = false;
         if (sEnabled && !key.isEmpty()) scheduleBlurKick(BLUR_ENTER_DELAY_MS + 16L);
@@ -815,8 +818,62 @@ final class LockLyrics {
         // What the lookup about to start will read the session as, so a payload that turns up
         // after it - the provider module's real one - can be told apart from this one.
         sInfoSeen = LyricSource.infoFor(c);
+        // The wait is for the network's sake. A lyric the session already carries for this song
+        // costs nothing to read and is the best answer there is, so it is read at once: waited
+        // for, QQ's own lyric came up SETTLE_MS late on every track (2026-10-06, 1.2s a track).
+        if (sInfoSeen == null
+                && ((lastChange > 0L && sTrackAt - lastChange < BURST_MS) || staleDuration(lastKey, key))) {
+            Main.main().postDelayed(SETTLED_LOOKUP, SETTLE_MS);
+            return;
+        }
         lookup(key, c, false);
     }
+
+    /**
+     * A track change hard on the heels of another waits for the session to stop moving.
+     *
+     * QQ 音乐 publishes a new track several times over in its first second - measured
+     * 2026-10-06, the durations 60000, 168000 and 237720 for one song, the artist going back and
+     * forth between "Simyee陈芯怡" and "爱意侵占计划 (粤语版)-Simyee陈芯怡" - and every one was a
+     * key of its own. Each started a lookup, each answer was thrown away as "arrived after the
+     * track changed", and the one that counted started last, against the network the others
+     * were still holding. A change on its own still looks up at once; one inside a burst waits
+     * until nothing has moved for SETTLE_MS, and looks the settled key up once.
+     */
+    private static final long BURST_MS = 1500L;
+    private static final long SETTLE_MS = 500L;
+
+    /**
+     * A new song carrying the old one's duration: QQ 音乐 publishes the next track's name a
+     * half second before its duration (measured 2026-10-06: 反着爱一场 came in as 237226ms, the
+     * song before it, then 173225ms). Looked up at once, the right song scored 60 against the
+     * stale duration and was turned down. Waited for instead, like a burst; a song that really
+     * is as long as the last one loses SETTLE_MS.
+     */
+    private static boolean staleDuration(String lastKey, String key) {
+        if (lastKey == null || lastKey.isEmpty() || !pkgOf(lastKey).equals(pkgOf(key))) return false;
+        String a = lastKey.substring(lastKey.lastIndexOf('|') + 1);
+        String b = key.substring(key.lastIndexOf('|') + 1);
+        return !a.isEmpty() && !"0".equals(a) && a.equals(b) && a.matches("[0-9]+");
+    }
+
+    private static final Runnable SETTLED_LOOKUP = new Runnable() {
+        @Override
+        public void run() {
+            String key = sKey;
+            MediaController c = sController;
+            if (!sEnabled || sDemo || key.isEmpty()) return;
+            Cached hit = CACHE.get(key);
+            if (hit != null) {
+                sLoading = false;
+                sSource = hit.source;
+                setLines(hit.lines, "cached");
+                return;
+            }
+            sInfoSeen = LyricSource.infoFor(c);
+            lookup(key, c, false);
+        }
+    };
 
     /**
      * Re-reads `key` when the session carries a payload it has not been read against. See the
@@ -1033,6 +1090,10 @@ final class LockLyrics {
      * was a new track: the lines were thrown away and parsed again a line at a time, which on
      * screen was the lyrics blinking out and back (state log 2026-09-16 02:42). Artist, album
      * and duration hold still across a song under either convention.
+     *
+     * Except on 汽水 and QQ, which spell the artist two ways in one song - the singer, then
+     * "歌名 — 歌手" or "歌名-歌手" while a line is in the title - so the artist is its singer here
+     * (TrackName.singer). Read as published, that switch emptied the lyrics mid-song (#56).
      */
     private static String lyricKey(String cardKey, MediaController c) {
         String fallback = cardKey == null ? "" : cardKey;
@@ -1040,8 +1101,9 @@ final class LockLyrics {
         try {
             android.media.MediaMetadata md = c.getMetadata();
             if (md == null) return fallback;
-            String artist = md.getString(android.media.MediaMetadata.METADATA_KEY_ARTIST);
             String album = md.getString(android.media.MediaMetadata.METADATA_KEY_ALBUM);
+            String artist = TrackName.singer(c.getPackageName(),
+                    md.getString(android.media.MediaMetadata.METADATA_KEY_ARTIST), album);
             long dur = md.getLong(android.media.MediaMetadata.METADATA_KEY_DURATION);
             if (artist == null && album == null && dur <= 0) return fallback;
             return c.getPackageName() + "|" + artist + "|" + album + "|" + dur;

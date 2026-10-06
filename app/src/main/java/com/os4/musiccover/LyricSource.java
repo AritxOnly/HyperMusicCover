@@ -154,6 +154,9 @@ final class LyricSource {
      * there when the provider module was quick and gone for the whole song when it was not.
      * So ARTIST's tail and the album are asked too, and agreement with any of the three is
      * agreement - a rejection now needs every field the session published to disagree.
+     * ARTIST is read every way a player spells a song into it (TrackName.splits): Salt's
+     * "歌手 - 歌名", 汽水's "歌名 — 歌手" and QQ's "歌名-歌手", which is how QQ's payload came to be
+     * refused on every sung line (#47).
      */
     static String infoFor(MediaController c) {
         String info = lyricInfoOf(c);
@@ -170,7 +173,8 @@ final class LyricSource {
         if (a.isEmpty() || b.isEmpty() || a.contains(b) || b.contains(a)) {
             return info;
         }
-        if (agrees(a, artistTailOf(c)) || agrees(a, metaOf(c, MediaMetadata.METADATA_KEY_ALBUM))) {
+        if (TrackName.songIn(a, metaOf(c, MediaMetadata.METADATA_KEY_ARTIST))
+                || agrees(a, metaOf(c, MediaMetadata.METADATA_KEY_ALBUM))) {
             return info;
         }
         Xp.log("[MCLyric] the session's lyricInfo is still \"" + theirs
@@ -190,26 +194,6 @@ final class LyricSource {
         }
         String s = other.trim().toLowerCase();
         return !s.isEmpty() && (name.contains(s) || s.contains(name));
-    }
-
-    /**
-     * The song's name out of ARTIST, for the players that put it there.
-     *
-     * Split on the first " - ", the same way NcmLyrics.build() does and for the same reason: a
-     * dash inside the song's own name comes after the one that separates it from the artist.
-     * Null when ARTIST is an ordinary artist name, which is every other player.
-     */
-    private static String artistTailOf(MediaController c) {
-        String artist = metaOf(c, MediaMetadata.METADATA_KEY_ARTIST);
-        if (artist == null) {
-            return null;
-        }
-        int dash = artist.indexOf(" - ");
-        if (dash <= 0) {
-            return null;
-        }
-        String tail = artist.substring(dash + 3).trim();
-        return tail.isEmpty() ? null : tail;
     }
 
     /** Which song the payload says it is for, or null when it does not say. */

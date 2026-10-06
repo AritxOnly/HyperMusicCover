@@ -8839,6 +8839,8 @@ public class Main extends XposedModule {
                 sCardToken = null;
             }
             sCardKey = cardKey(mediaData);
+            // The card's title may be one the session callback has not shown us yet.
+            TrackName.note(sWatched);
         } else {
             sCardToken = null;
             sCardKey = "";
@@ -9186,9 +9188,11 @@ public class Main extends XposedModule {
                 sMediaCb = new MediaController.Callback() {
                     @Override
                     public void onMetadataChanged(MediaMetadata md) {
+                        MediaController w = sWatched;
+                        // Before anything compares a track key against this title.
+                        if (w != null) TrackName.note(w.getPackageName(), md);
                         // Every track change re-reads the state rather than trusting that the
                         // last callback of a skip was the one that says where it ended up.
-                        MediaController w = sWatched;
                         if (w != null) updateCoverCardPlayback(w.getPlaybackState());
                         if (sCoverWanted) attachCover();
                         onMediaUpdate();
@@ -9275,12 +9279,17 @@ public class Main extends XposedModule {
      *
      * A key too short to carry a title answers no, which leaves the plain comparison the callers
      * have already made in charge.
+     *
+     * Two titles can still be one track: Salt, 汽水 and QQ sing into TITLE, so their title moves
+     * with every line. Those are the same track when TrackName saw both titles published on the
+     * same song - and then the artist is not asked either, since 汽水 respells it as it goes.
      */
     static boolean sameTrack(String a, String b) {
         String pa = keyField(a, 0), pb = keyField(b, 0);
         String ta = keyField(a, 1), tb = keyField(b, 1);
         if (pa.isEmpty() || !pa.equals(pb)) return false;
-        if (ta.isEmpty() || !ta.equals(tb)) return false;
+        if (ta.isEmpty() || tb.isEmpty()) return false;
+        if (!ta.equals(tb)) return TrackName.sameSong(pa, ta, tb);
         String aa = keyField(a, 2), ab = keyField(b, 2);
         return aa.equals(ab) || aa.startsWith(ab) || ab.startsWith(aa);
     }

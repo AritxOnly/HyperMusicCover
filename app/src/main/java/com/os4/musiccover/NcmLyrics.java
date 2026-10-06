@@ -100,6 +100,15 @@ final class NcmLyrics {
             dur = md.getLong(MediaMetadata.METADATA_KEY_DURATION);
         } catch (Throwable ignored) {
         }
+        // A player singing into TITLE: the song and singer as ARTIST spells them (TrackName).
+        try {
+            String[] sung = TrackName.searchName(c.getPackageName(), md);
+            if (sung != null) {
+                title = sung[0];
+                artist = sung[1];
+            }
+        } catch (Throwable ignored) {
+        }
         return build(title, artist, album, dur);
     }
 
@@ -114,6 +123,13 @@ final class NcmLyrics {
         title = title == null ? "" : title.trim();
         artist = artist == null ? "" : artist.trim();
         album = album == null ? "" : album.trim();
+        // 汽水 sings into TITLE as well, with "歌名 — 歌手" in ARTIST - the song first, an em dash
+        // between. Searched as published, it asked for a song called "作曲：AKA时空恋人" (#56).
+        java.util.List<TrackName.Split> em = TrackName.splits(artist);
+        if (!em.isEmpty() && artist.contains(TrackName.EM)) {
+            title = em.get(0).song;
+            artist = em.get(0).singer;
+        }
         // Salt Player publishes "Artist - Song" in ARTIST, so the song name is in there as well
         // as - or instead of - TITLE. The first " - " splits it: a dash inside the song name
         // ("i'm so tired... (Stripped - Live in LA)") comes after the one that matters, and

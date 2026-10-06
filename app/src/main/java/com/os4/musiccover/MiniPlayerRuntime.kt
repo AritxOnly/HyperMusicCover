@@ -9003,8 +9003,11 @@ private class MiniPlayerController(
             lastTrack = ""
         }
         val metadata = metadataOf(current)
-        val track = current.packageName + "|" +
-            metadata?.getString(MediaMetadata.METADATA_KEY_TITLE).orEmpty()
+        // The song, not the title: Salt, 汽水 and QQ sing into TITLE, and every line threw the
+        // artwork away as a track change (#47, #56).
+        val track = TrackName.songKey(current.packageName, metadata).ifEmpty {
+            current.packageName + "|" + metadata?.getString(MediaMetadata.METADATA_KEY_TITLE).orEmpty()
+        }
         if (track != lastTrack) {
             if (lastTrack.isNotEmpty()) {
                 Xp.log("MCMini: track changed; preserving dynamic choice=" +

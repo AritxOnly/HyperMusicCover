@@ -145,7 +145,46 @@ final class QqLyrics {
         return text == null ? null : new org.json.JSONObject(text);
     }
 
+    /**
+     * What a search answered lately, by its words, for a couple of minutes.
+     *
+     * The duration is not in the words but it is in the score, and QQ 音乐 publishes a new
+     * track with the previous one's duration for its first half second: the right song came
+     * back scored 60 against the stale duration, and the lookup for the real one (measured
+     * 2026-10-06, 反着爱一场) asked the same question again - and that second request hung until
+     * its read timeout, six seconds before the slow route found the lyric on KuGou. The same
+     * words re-scored against the new duration need no second request.
+     */
+    private static final long SEARCH_TTL_MS = 120_000L;
+    private static final Map<String, Object[]> SEARCHES =
+            new LinkedHashMap<String, Object[]>(9, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<String, Object[]> eldest) {
+                    return size() > 8;
+                }
+            };
+
+    @SuppressWarnings("unchecked")
     static List<LyricMatch.Candidate> search(String keyword, boolean[] answered) throws Exception {
+        long now = android.os.SystemClock.uptimeMillis();
+        synchronized (SEARCHES) {
+            Object[] hit = SEARCHES.get(keyword);
+            if (hit != null && now - (Long) hit[0] < SEARCH_TTL_MS) {
+                answered[0] = true;
+                return (List<LyricMatch.Candidate>) hit[1];
+            }
+        }
+        List<LyricMatch.Candidate> out = searchOnline(keyword, answered);
+        if (answered[0] && !out.isEmpty()) {
+            synchronized (SEARCHES) {
+                SEARCHES.put(keyword, new Object[]{now, out});
+            }
+        }
+        return out;
+    }
+
+    private static List<LyricMatch.Candidate> searchOnline(String keyword, boolean[] answered)
+            throws Exception {
         List<LyricMatch.Candidate> out = new ArrayList<>();
         org.json.JSONObject param = new org.json.JSONObject();
         param.put("search_id", String.valueOf(10000000000000000L
