@@ -794,7 +794,13 @@ final class LyricSource {
                 }
                 Xp.log("[MCLyric] " + pkg + " -> " + r.why);
                 onMain(cb, r.lines, r.why, r.source);
-                borrowTranslations(gen, pkg, ctx, id, dir, q, r, cb);
+                // Extra to the answer already sent, so nothing in it is worth a thread - and an
+                // uncaught throw on this one takes SystemUI with it.
+                try {
+                    borrowTranslations(gen, pkg, ctx, id, dir, q, r, cb);
+                } catch (Throwable t) {
+                    Xp.log("[MCLyric] borrowing a translation failed: " + t);
+                }
             }
         }, "MCLyricSource").start();
     }

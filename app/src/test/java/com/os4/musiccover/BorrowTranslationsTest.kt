@@ -86,4 +86,12 @@ class BorrowTranslationsTest {
         assertEquals("Say Yes", TrackName.undecorated("Say Yes"))
         assertEquals("(feat. nobody)", TrackName.undecorated("(feat. nobody)"))
     }
+
+    @Test
+    fun aLyricTheParserCannotReadIsNoLyricNotACrash() {
+        // NetEase 2057709543 (邓紫棋 Pasión): lyrics-core's EnhancedLrcParser trips a require()
+        // on it, and uncaught on the borrowing thread that took SystemUI down (2026-10-06).
+        val body = javaClass.classLoader!!.getResource("ncm-2057709543.lrc")!!.readText()
+        LyricParse.parse(body, null, null)
+    }
 }

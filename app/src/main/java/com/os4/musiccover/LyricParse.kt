@@ -254,7 +254,18 @@ object LyricParse {
 
     @JvmStatic
     fun parse(body: String): List<LyricLine> {
-        val lyrics = AutoParser().parse(body)
+        // lyrics-core throws on lyrics it cannot make sense of - EnhancedLrcParser's
+        // rearrangeUncheckedLineTime trips SyncedLine's require() on NetEase 2057709543 (邓紫棋
+        // Pasión). Uncaught on a worker thread that is the whole of SystemUI going down, once per
+        // play of the song (2026-10-06, twice in fifteen seconds). A lyric that cannot be read is
+        // no lyric.
+        val lyrics = try {
+            AutoParser().parse(body)
+        } catch (t: Throwable) {
+            // The log is SystemUI's; on the JVM the tests run on it is not there to write to.
+            runCatching { Xp.log("[MCLyric] the parser gave up on a lyric (" + body.length + " chars): " + t) }
+            return emptyList()
+        }
         val src = lyrics.lines
         val out = ArrayList<LyricLine>(src.size)
         // Where the tail of a line may run to when the file left it without an end of its own:
