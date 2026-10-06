@@ -188,12 +188,39 @@ final class LockLyrics {
         if (v != null) v.kick();
     }
 
+    /**
+     * The wallpaper process has started the still cover's frosting that the blur turning on
+     * asked for (WallpaperProbe.tellBlurShown); [seq] is the decision it answers.
+     */
+    static void onBlurShown(long seq) {
+        if (seq < sBlurOnSeq) return;
+        sBlurShown = true;
+        LyricView v = sView;
+        if (v != null) v.kick();
+    }
+
+    /** The decision that last turned the blur on, and whether the wallpaper has shown it. */
+    private static volatile long sBlurOnSeq;
+    private static volatile boolean sBlurShown = true;
+
+    /**
+     * The longest the lyrics wait for a still cover's frosting: frosting it (~150ms, measured
+     * 2026-10-06), then the cover's own fade still running (up to 370ms entering), then a frame
+     * or two. Past it they come in without, as before.
+     */
+    private static final long STILL_BLUR_WAIT_MS = 1200L;
+
     static boolean blurSettled() {
-        // Only the video wallpaper's window has a reload to wait out. A still wallpaper frosts
-        // its own texture in the same fade as the cover, and holding the band back there only
-        // made it blink out for 280ms on every track change.
-        if (!Main.sVideoWallpaper || !blurWanted()) return true;
+        if (!blurWanted()) return true;
         long now = SystemClock.uptimeMillis();
+        if (!Main.sVideoWallpaper) {
+            // A still cover frosts on the composer and then waits out the fade in the air, so
+            // lyrics that arrived after the cover came in 0.3-0.9s ahead of their blur (#57).
+            // Held only when the blur is turning on: through a track change it stays on, and
+            // holding there made the band blink out on every song.
+            long e = now - sBlurStartedAt;
+            return sBlurShown || sBlurStartedAt <= 0L || e < 0 || e >= STILL_BLUR_WAIT_MS;
+        }
         long blurElapsed = now - sBlurStartedAt;
         if (sBlurStartedAt > 0L && blurElapsed >= 0 && blurElapsed < BLUR_ENTER_DELAY_MS) {
             return sBlurVideoReloaded && blurElapsed >= BLUR_ENTER_MIN_MS;
@@ -1381,7 +1408,7 @@ final class LockLyrics {
                 + " bandMiss=[" + bandMisses() + " ]"
                 + " clockBottom=" + ClockCollapse.contentBottomOnScreen()
                 + " ink=" + ClockCollapse.inkBottomOnScreen()
-                + " shown=" + wantsShown() + " blurSettled=" + blurSettled()
+                + " shown=" + wantsShown() + " blurSettled=" + blurSettled() + " blurShown=" + sBlurShown + "@" + sBlurOnSeq
                 + " blurElapsed=" + (sBlurStartedAt > 0 ? (SystemClock.uptimeMillis() - sBlurStartedAt) + "ms" : "none")
                 + " tick=" + sTicking
                 + " hooks=" + hooks()
@@ -1432,7 +1459,9 @@ final class LockLyrics {
         if (turningOn) {
             sBlurStartedAt = SystemClock.uptimeMillis();
             sBlurVideoReloaded = false;
-            scheduleBlurKick(BLUR_ENTER_DELAY_MS + 16L);
+            sBlurOnSeq = state >>> 1;
+            sBlurShown = false;
+            scheduleBlurKick((Main.sVideoWallpaper ? BLUR_ENTER_DELAY_MS : STILL_BLUR_WAIT_MS) + 16L);
         } else if (!want) {
             Main.main().removeCallbacks(BLUR_KICK);
             sBlurStartedAt = 0L;

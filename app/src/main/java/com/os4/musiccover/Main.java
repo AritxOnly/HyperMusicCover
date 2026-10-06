@@ -2611,6 +2611,10 @@ public class Main extends XposedModule {
                         Xp.log(TAG + "cover fade mode = " + CoverPush.fadeModeName()
                                 + " (0 off, 1 hold for the wallpaper window, 2 stretch by the"
                                 + " last measured gap " + CoverPush.sCoverFadeGapMs + "ms)");
+                    } else if ("blurshown".equals(op)) {
+                        // From WallpaperProbe: the still cover's frosting is on its way in, and
+                        // the lyrics held back for it can come in with it.
+                        LockLyrics.onBlurShown(i.getLongExtra("blurseq", 0L));
                     } else if ("videoreloading".equals(op)) {
                         CoverPush.noteVideoReloading();
                     } else if ("videoreload".equals(op)) {

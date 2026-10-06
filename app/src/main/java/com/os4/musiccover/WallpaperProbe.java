@@ -2191,13 +2191,23 @@ public class WallpaperProbe {
                         // so a newer switch reaches the main thread first and this one would
                         // otherwise land afterwards and undo it.
                         if (on != sLyricBlurWant) return;
-                        if (on == sLyricBlur) return;
+                        boolean video = videoPath();
+                        if (on == sLyricBlur) {
+                            // Already frosted - carried in on the cover itself.
+                            if (on && !video) tellBlurShown("already frosted");
+                            return;
+                        }
                         if ((sFade != null || sGpuFade != null)
                                 && SystemClock.uptimeMillis() - t0 < 1500L) {
                             h.postDelayed(this, 30L);
                             return;
                         }
-                        boolean video = videoPath();
+                        // The lyrics wait for this before they come in, so that the two come in
+                        // together (LockLyrics.blurSettled). Told as the fade starts, not as it
+                        // ends: the lyrics have a fade of their own.
+                        if (on && !video) {
+                            tellBlurShown(sArt == null ? "no cover to frost" : "frosting");
+                        }
                         // On the video path `from` is only the crossfade's other end, and
                         // without a crossfade it would be a frosting on the main thread for
                         // nothing.
@@ -4113,6 +4123,27 @@ public class WallpaperProbe {
             Xp.log(TAG + "told SystemUI: " + op + " (" + why + ")");
         } catch (Throwable t) {
             Xp.log(TAG + "tellSystemUi(" + op + ") failed: " + t);
+        }
+    }
+
+    /**
+     * The still cover's frosting for the lyrics is starting (or is there already), with the
+     * decision it answers - SystemUI holds the lyrics back for it. See LockLyrics.onBlurShown.
+     */
+    private static void tellBlurShown(String why) {
+        Context c = sCtx;
+        if (c == null) return;
+        try {
+            Intent out = new Intent("com.os4.musiccover.PROBE");
+            out.setPackage("com.android.systemui");
+            out.addFlags(Intent.FLAG_RECEIVER_FOREGROUND);
+            out.putExtra("op", "blurshown");
+            out.putExtra("why", why);
+            out.putExtra("blurseq", sBlurSeq);
+            ProbeGuard.send(c, out);
+            Xp.log(TAG + "told SystemUI: blurshown at " + sBlurSeq + " (" + why + ")");
+        } catch (Throwable t) {
+            Xp.log(TAG + "blurshown failed: " + t);
         }
     }
 
