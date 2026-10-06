@@ -1346,7 +1346,8 @@ public class Main extends XposedModule {
                 // draw(int resId) is the frame. Any other overload is not ours to touch, which
                 // the argument check below says without having to name the signature.
                 if (sHideFp && args.length == 1 && args[0] instanceof Integer
-                        && isFodRing((Integer) args[0])) {
+                        && isFodRing((Integer) args[0])
+                        && fodForKeyguard(fodViewOf(chain.getThisObject()))) {
                     // Substituting the drawable rather than skipping the draw: the animation
                     // keeps its own timing and its own lifecycle, it just paints nothing. A
                     // skipped draw would leave whatever the OEM expects to be on that surface.
@@ -1369,7 +1370,6 @@ public class Main extends XposedModule {
                     // this is the one chance to dim it before it is ever seen.
                     peekHideFp();
                     sFodIcons.put(v, Boolean.TRUE);
-                    v.setAlpha(sHideFp ? 0f : 1f);
                 } catch (Throwable ignored) {
                     // A view we cannot dim is a visible print, not a broken keyguard.
                 }
@@ -1383,7 +1383,7 @@ public class Main extends XposedModule {
                 try {
                     Xp.hookAll(iconCls, name, chain -> {
                         peekHideFp();
-                        if (sHideFp) return null;
+                        if (sHideFp && fodForKeyguard(chain.getThisObject())) return null;
                         return chain.proceed();
                     });
                     break;
@@ -1408,7 +1408,7 @@ public class Main extends XposedModule {
                         peekHideFp();
                         // Painting nothing, rather than dimming: the alpha on this view is the
                         // OEM's to animate, and a frame it never paints cannot be animated back.
-                        if (sHideFp) return null;
+                        if (sHideFp && fodForKeyguard(chain.getThisObject())) return null;
                         return chain.proceed();
                     });
                     hooked++;
@@ -7121,16 +7121,82 @@ public class Main extends XposedModule {
      */
     private static void applyHideFp() {
         adoptFodIcons();
-        float alpha = sHideFp ? 0f : 1f;
         java.util.List<View> views;
         synchronized (sFodIcons) {
             views = new java.util.ArrayList<>(sFodIcons.keySet());
         }
+        // Redrawn, not dimmed: whether a frame is painted is decided per draw and per surface
+        // (fodForKeyguard). An alpha on the view hid the print in an app's own prompt as well.
         for (View v : views) {
             try {
-                v.setAlpha(alpha);
+                v.invalidate();
             } catch (Throwable ignored) {
             }
+        }
+    }
+
+    /**
+     * Whether the under-screen print is showing for the lock screen or the always-on display, as
+     * opposed to an app's own fingerprint prompt - a payment, a password manager. The same views
+     * draw all three, so hiding them outright hid the print where an app asked for it too.
+     *
+     * Read the way HyperTweak reads it (TakeKazeX/HyperTweak, HideFingerprintIcon, GPL-3.0): the
+     * gxzw views keep mDozing and mKeyguardAuthen - MiuiGxzwIconView on itself, the animation view
+     * on its parent MiuiGxzwAnimViewInternal - and neither true is an app's prompt. A build
+     * without the fields falls back to whether the keyguard is up.
+     */
+    private static boolean fodForKeyguard(Object start) {
+        Boolean dozing = null, authen = null;
+        Object cur = start;
+        for (int depth = 0; cur != null && depth < 8; depth++) {
+            if (dozing == null) dozing = fodFlag(cur, "mDozing");
+            if (authen == null) authen = fodFlag(cur, "mKeyguardAuthen");
+            if (dozing != null && authen != null) break;
+            cur = cur instanceof View ? ((View) cur).getParent() : null;
+        }
+        if (dozing == null && authen == null) return keyguardShowing();
+        return Boolean.TRUE.equals(dozing) || Boolean.TRUE.equals(authen);
+    }
+
+    /** MiuiGxzwFrameAnimation's view, which carries the state its frames are drawn for. */
+    private static Object fodViewOf(Object frameAnimation) {
+        try {
+            return Xp.getObjectField(frameAnimation, "mMiuiGxzwAnimationView");
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /** Per class and name: the Field, or NO_FIELD - looked up once, since a miss throws. */
+    private static final java.util.Map<String, Object> sFodFields =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    private static final Object NO_FIELD = new Object();
+
+    /** A boolean field on the object or its superclasses, or null where there is none. */
+    private static Boolean fodFlag(Object o, String name) {
+        String key = o.getClass().getName() + "#" + name;
+        Object f = sFodFields.get(key);
+        if (f == null) {
+            f = NO_FIELD;
+            for (Class<?> c = o.getClass(); c != null && c != Object.class; c = c.getSuperclass()) {
+                try {
+                    java.lang.reflect.Field d = c.getDeclaredField(name);
+                    if (d.getType() == boolean.class) {
+                        d.setAccessible(true);
+                        f = d;
+                    }
+                    break;
+                } catch (NoSuchFieldException ignored) {
+                    // Further up.
+                }
+            }
+            sFodFields.put(key, f);
+        }
+        if (!(f instanceof java.lang.reflect.Field)) return null;
+        try {
+            return ((java.lang.reflect.Field) f).getBoolean(o);
+        } catch (Throwable t) {
+            return null;
         }
     }
 
