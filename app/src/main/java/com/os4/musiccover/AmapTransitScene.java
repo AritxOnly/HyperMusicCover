@@ -978,11 +978,15 @@ final class AmapTransitScene implements ImmersiveScene {
             // transfer, the exit at 到站), then the words; on the waiting card, the next train.
             mSecondary.setTextSize(15f * mDp);
             String words = c.secondary.trim();
-            if (c.waiting != null && !c.waiting.isEmpty()) {
-                AmapTransitCard.WaitLine wl = c.waiting.get(0);
-                words = wl.realtime1 + (wl.realtime2.isEmpty() ? "" : "  " + wl.realtime2);
-            }
             String chip = c.secondaryLine.trim();
+            int chipColor = c.secondaryLineColor;
+            if (c.waiting != null && !c.waiting.isEmpty()) {
+                // The vehicle row (ya.m.c): the line in its colour, where it goes, the next train.
+                AmapTransitCard.WaitLine wl = c.waiting.get(0);
+                chip = wl.name.trim();
+                chipColor = wl.color;
+                words = (wl.direction.isEmpty() ? "" : wl.direction + "  ") + wl.realtime1;
+            }
             Paint.FontMetrics fs = mSecondary.getFontMetrics();
             float chipW = chip.isEmpty() ? 0f : mSecondary.measureText(chip) + 14f * mDp;
             String sec = TextUtils.ellipsize(words, mSecondary,
@@ -994,7 +998,7 @@ final class AmapTransitScene implements ImmersiveScene {
             float base = y + rowH / 2f - (fs.ascent + fs.descent) / 2f;
             if (chipW > 0) {
                 mRect.set(x, y, x + chipW, y + rowH);
-                mFill.setColor(c.secondaryLineColor);
+                mFill.setColor(chipColor);
                 canvas.drawRoundRect(mRect, 6f * mDp, 6f * mDp, mFill);
                 mSecondary.setColor(Color.WHITE);
                 canvas.drawText(chip, x + 7f * mDp, base, mSecondary);

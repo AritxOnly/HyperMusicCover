@@ -131,6 +131,8 @@ internal object AmapTransitIsland {
      * meet and the fill is a square head (about 4.8% of the bar on this phone).
      */
     private const val PROGRESS_MIN = 5
+    /** The widest a capsule's line chip is drawn, as a multiple of its height. */
+    private const val MAX_CHIP = 2.4f
 
     /** A new milestone floats once: the stop before the end, a transfer, the arrivals. */
     private val FLOAT_AT = setOf(AmapTransitCard.NEXT_DESTINATION,
@@ -230,11 +232,24 @@ internal object AmapTransitIsland {
         // title and lines that read as 「我的位置」 for a heading. The walk is said the way its
         // lock-screen row says it instead - 「步行至大学城南」, its length and time - and the two
         // ends go under it.
+        // The waiting card's second row is its vehicle list (cardWaitingInformation, ya.m): the
+        // line in its colour, where it goes, the next train and the one after.
+        val wait = c.waiting?.firstOrNull()
         val title = if (walk) c.lockTitle else c.primary.ifEmpty { c.lockTitle }
-        val content = if (walk) c.lockSubtitle else listOf(c.secondaryLine, c.secondary)
-            .map { it.trim() }.filter { it.isNotEmpty() }.joinToString(" ")
-        val lineRow = if (walk) listOf(c.primary, c.secondary).filter { it.isNotEmpty() }.joinToString(" → ")
-            else listOf(c.line, c.direction).filter { it.isNotEmpty() }.joinToString(" ")
+        val content = when {
+            walk -> c.lockSubtitle
+            // One line is all a floating card has for this and the next (screenshot 10-06): the
+            // next train only, as the capsule's right half has it.
+            wait != null -> wait.realtime1
+            else -> listOf(c.secondaryLine, c.secondary).map { it.trim() }
+                .filter { it.isNotEmpty() }.joinToString(" ")
+        }
+        val lineRow = when {
+            walk -> listOf(c.primary, c.secondary).filter { it.isNotEmpty() }.joinToString(" → ")
+            // The line is the badge beside it already; only where it goes.
+            wait != null -> wait.direction.ifEmpty { wait.name }
+            else -> listOf(c.line, c.direction).filter { it.isNotEmpty() }.joinToString(" ")
+        }
         // A new milestone floats once and may alert; the same one reposted stays quiet.
         val milestone = c.status + "|" + c.kind != lastStatus
         lastStatus = c.status + "|" + c.kind
@@ -452,13 +467,22 @@ internal object AmapTransitIsland {
     /**
      * The line-coloured half of a capsule half (ColorOS's capsule*TextLine): the text in white on
      * a rounded chip of the colour - 「7」 on 7号线's green, 「B口」 on the line's colour.
+     *
+     * On ColorOS this is text and grows with its name; here it is a picture in the island's icon
+     * slot, so a long one is squeezed thin. ColorOS's short name (ya.b.B) leaves a name with no
+     * 号线 / 线 / 路 whole - 「城际(琶洲-深圳机场)」 - so the bracket goes, and a name still long is
+     * drawn smaller to keep the chip no wider than [MAX_CHIP] times its height.
      */
-    private fun chip(text: String, bg: Int, dp: Float): Bitmap {
+    private fun chip(raw: String, bg: Int, dp: Float): Bitmap {
+        val text = raw.replace(Regex("[(（][^)）]*[)）]"), "").trim().ifEmpty { raw.trim() }
         val p = Paint(Paint.ANTI_ALIAS_FLAG)
         p.typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
         p.textSize = 15f * dp
+        val h = (p.fontMetrics.bottom - p.fontMetrics.top) + 6f * dp
+        val room = h * MAX_CHIP - 14f * dp
+        val tw = p.measureText(text)
+        if (tw > room) p.textSize *= room / tw
         val fm = p.fontMetrics
-        val h = (fm.bottom - fm.top) + 6f * dp
         val w = maxOf(p.measureText(text) + 14f * dp, h)
         val b = Bitmap.createBitmap(w.toInt().coerceAtLeast(1), h.toInt().coerceAtLeast(1),
             Bitmap.Config.ARGB_8888)

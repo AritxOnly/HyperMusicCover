@@ -621,7 +621,7 @@ internal object AmapTransitShare {
                 if (exit.isNotEmpty() && !later) items.add("($exit)")
                 items.add(if (later) "换乘" else "出站")
                 at(if (remain == total) 3_000 else 5_000) {
-                    take(LIVE_BIZ, simLive(i, stop, remain))
+                    take(LIVE_BIZ, simLive(i, stop, remain, seg?.optString("busid")?.trim().orEmpty()))
                     take(RIDE_BIZ, simCard(caps, i, "乘坐 $line", items, remain,
                         (total - remain).toDouble() / total).put("mainText", line).toString())
                 }
@@ -655,12 +655,17 @@ internal object AmapTransitShare {
                 .put("remainStations", remain)))
     }
 
-    private fun simLive(i: Int, stop: String, remain: Int): String {
+    private fun simLive(i: Int, stop: String, remain: Int, line: String = ""): String {
+        // At the stop a ride boards at, the next two trains, as 高德 sends them for a subway.
+        val times = JSONArray()
+        if (line.isNotEmpty()) times.put(JSONObject().put("lineId", line).put("tripTime", JSONArray()
+            .put(JSONObject().put("mainTitle", "3分钟").put("orderTiptext", "第 1 辆"))
+            .put(JSONObject().put("mainTitle", "9分钟").put("orderTiptext", "第 2 辆"))))
         val data = JSONObject()
             .put("arriveRemind", JSONObject().put("curStopName", stop).put("remainStopNum", remain)
                 .put("tipType", 4))
             .put("locationData", JSONObject().put("groupIndex", i))
-            .put("subway", JSONArray())
+            .put("subway", times)
             .put("realtime", JSONObject())
         return JSONObject().put("datas", JSONArray().put(JSONObject().put("type", RIDE_TYPE)
             .put("data", data)).toString()).toString()
