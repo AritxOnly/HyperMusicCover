@@ -186,6 +186,52 @@ object MiniPlayerRuntime {
      */
     @Volatile internal var rowCentreShare = Float.NaN
 
+    /** `op fod`: a sensor rect to lay the row out against instead of the phone's; empty = none. */
+    @Volatile internal var fodProbe: android.graphics.Rect? = null
+    private var fodReadAt = 0L
+    private var fodRead: android.graphics.Rect? = null
+
+    /**
+     * The under-display fingerprint sensor, in screen pixels, on a phone that has one with a
+     * finger enrolled; null otherwise. Where it is low enough to meet the row of islands - an
+     * optical sensor sits about as low as the torch and camera - the row goes above it: a swipe
+     * across the islands began on the sensor, and the sensor took it (#66).
+     *
+     * SystemUI's own reading (MiuiGxzwUtils.getFodPosition: the vendor's
+     * persist.vendor.sys.fp.fod.location.X_Y and size scaled to the screen as set). That answers
+     * a default rect on a phone without the sensor, so ro.hardware.fp.fod is asked first.
+     * Read again every few seconds at most: it is asked on every layout of the row.
+     */
+    internal fun fingerprintArea(context: Context): android.graphics.Rect? {
+        fodProbe?.let { return it.takeUnless { r -> r.isEmpty } }
+        val now = android.os.SystemClock.uptimeMillis()
+        if (fodReadAt != 0L && now - fodReadAt < 5000L) return fodRead
+        fodReadAt = now
+        fodRead = runCatching { readFingerprintArea(context) }
+            .onFailure { Xp.log("MCMini: fingerprint area unreadable: $it") }
+            .getOrNull()
+        return fodRead
+    }
+
+    private fun readFingerprintArea(context: Context): android.graphics.Rect? {
+        val props = Class.forName(listOf("android", "os", "SystemProperties").joinToString("."))
+        val fod = props.getMethod("getBoolean", String::class.java, Boolean::class.javaPrimitiveType)
+            .invoke(null, "ro.hardware.fp.fod", false) as Boolean
+        if (!fod) return null
+        // No finger enrolled, no print on the lock screen and nothing there to touch.
+        // FingerprintManager by name: the SDK this builds against no longer has it.
+        val enrolled = runCatching {
+            context.getSystemService("fingerprint")
+                ?.let { Xp.callMethod(it, "hasEnrolledFingerprints") as Boolean }
+        }.getOrNull() ?: true
+        if (!enrolled) return null
+        val utils = Xp.findClass("com.miui.keyguard.biometrics.fod.MiuiGxzwUtils",
+            loader ?: context.classLoader)
+        val rect = utils.getMethod("getFodPosition", Context::class.java)
+            .invoke(null, context) as android.graphics.Rect
+        return android.graphics.Rect(rect).takeUnless { it.isEmpty }
+    }
+
     /**
      * Bumped whenever the card is dressed differently; part of the pill's appearance key. Not on
      * every dressing: the OEM dresses the card again on every rebind with the same calls, and
@@ -1331,6 +1377,31 @@ object MiniPlayerRuntime {
 
     /** The row spread out as the list is being pulled home (NumState's hands-up folds it). */
     @JvmStatic fun spreadFolding(): Boolean = live().any { it.spreadFolding() }
+
+    /**
+     * `op fod`: the fingerprint sensor the row of islands keeps clear of (#66), and where the row
+     * is. `--es rect l,t,r,b` (screen pixels) lays it out against that rect instead, to try the
+     * lift on a phone whose sensor sits clear of the row; `none` as if there were no sensor;
+     * `phone` back to the phone's own. Not saved.
+     */
+    @JvmStatic fun fingerprintProbe(rect: String?): String {
+        val note = when (rect?.trim()) {
+            null, "" -> ""
+            "phone" -> { fodProbe = null; "back to the phone's sensor; " }
+            "none" -> { fodProbe = android.graphics.Rect(); "as if there were no sensor; " }
+            else -> {
+                val n = rect.split(',').map { it.trim().toInt() }
+                require(n.size == 4) { "rect wants l,t,r,b" }
+                fodProbe = android.graphics.Rect(n[0], n[1], n[2], n[3])
+                "laid out against $fodProbe; "
+            }
+        }
+        fodReadAt = 0L
+        val rows = live()
+        rows.forEach { it.relayout() }
+        return note + "probe=${fodProbe ?: "off"} || " +
+            rows.joinToString(" || ") { it.describeFingerprint() }.ifEmpty { "no controller" }
+    }
 
     /** The keyguard's notification stack, for NumStateProbe. */
     @JvmStatic fun stackForProbe(): ViewGroup? = live().firstNotNullOfOrNull { it.stackForProbe() }
@@ -8737,8 +8808,11 @@ private class MiniPlayerController(
         // and across to the torch and camera, which keep their own touches.
         val lx = buttonEdge(left, inner = true) ?: (xy[0] - 8f * d)
         val rx = buttonEdge(right, inner = false) ?: (xy[0] + view.width + 8f * d)
+        // Down to the bottom of the screen, but not from on the fingerprint sensor, which the
+        // row is lifted off where it lies under it (#66): a finger put there is unlocking.
         val inside = x >= minOf(lx, xy[0].toFloat()) && x < maxOf(rx, xy[0] + view.width.toFloat())
             && y >= xy[1] - 36f * d && y < host.height
+            && fingerprintInHost()?.contains(x.toInt(), y.toInt()) != true
         // The small island first: the camera's button (its shortcut_view_right_layout above
         // all) reaches well past its disc, over the small island's right half. Asked second, a
         // tap there was the camera's - and opened it (filmed 2026-09-25). Taken here, the whole
@@ -10104,6 +10178,9 @@ private class MiniPlayerController(
         }
     }
 
+    /** The row laid out again on the next frame, for `op fod`. */
+    fun relayout() = schedulePosition()
+
     private fun schedulePosition() {
         if (positionPosted) return
         positionPosted = true
@@ -10132,7 +10209,7 @@ private class MiniPlayerController(
         val config = this.config
         val requestedWidth = dp(config.getDouble(MiniPlayerConfig.WIDTH).toFloat())
         val height = dp(MiniPlayerConfig.visibleHeightDp(config.toString()))
-        val centerY = rowCentreY(l, r, height)
+        val centerY = clearOfFingerprint(rowCentreY(l, r, height), height, l, r)
         if ((l == null || r == null) && config.optBoolean(MiniPlayerConfig.ADAPTIVE_WIDTH)) {
             widenedRest(l, r, small, height, centerY)?.let { return it }
         }
@@ -10194,6 +10271,45 @@ private class MiniPlayerController(
                 android.view.WindowInsets.Type.systemBars())?.bottom
         }.getOrNull() ?: 0
         return (host.height - inset - dp(12f) - height / 2f).coerceAtLeast(height / 2f)
+    }
+
+    /**
+     * The row's centre moved up off the fingerprint sensor where the two would meet
+     * (MiniPlayerRuntime.fingerprintArea, #66); the torch and camera stay where they are. Only
+     * the span between the buttons counts across: the row never reaches past them.
+     */
+    private fun clearOfFingerprint(centerY: Float, height: Int, l: FloatArray?, r: FloatArray?): Float {
+        val fod = fingerprintInHost() ?: return centerY
+        val from = l?.get(0) ?: 0f
+        val to = r?.get(0) ?: host.width.toFloat()
+        if (fod.right <= from || fod.left >= to) return centerY
+        val margin = dp(FOD_MARGIN_DP)
+        val top = centerY - height / 2f
+        val bottom = centerY + height / 2f
+        if (bottom + margin <= fod.top || top - margin >= fod.bottom) return centerY
+        val lifted = fod.top - margin - height / 2f
+        if (lifted != fodLiftedTo) {
+            fodLiftedTo = lifted
+            Xp.log("MCMini: row lifted off the fingerprint sensor $fod: centre $centerY -> $lifted")
+        }
+        return min(centerY, lifted)
+    }
+
+    private var fodLiftedTo = Float.NaN
+
+    /** The sensor in the host's coordinates, or null. */
+    private fun fingerprintInHost(): android.graphics.Rect? {
+        val fod = MiniPlayerRuntime.fingerprintArea(context) ?: return null
+        val at = IntArray(2).also(host::getLocationOnScreen)
+        return android.graphics.Rect(fod).apply { offset(-at[0], -at[1]) }
+    }
+
+    /** For `op fod`: the sensor as the row sees it, and where the row is. */
+    fun describeFingerprint(): String {
+        val fod = fingerprintInHost()
+        val rest = pillRest(smallKey != null)
+        return "sensor(host)=${fod ?: "none"} row centre=${rest?.centerY} height=${rest?.height}" +
+            " lifted=${if (fodLiftedTo.isNaN()) "never" else fodLiftedTo}"
     }
 
     /**
@@ -10296,6 +10412,9 @@ private class MiniPlayerController(
 /** The small island's nudge home: MiniPlayerView's OFFSET_RESPONSE, CoverMorphMotion's damping. */
 private const val SMALL_NUDGE_RESPONSE = 0.32f
 private const val SMALL_NUDGE_DAMPING = 0.8f
+
+/** Between the row of islands and the fingerprint sensor it is lifted above (#66). */
+private const val FOD_MARGIN_DP = 12f
 
 /** How long the pill waits, down, for a scene its morph has just landed into. */
 private const val SCENE_WAIT_MS = 1000L

@@ -2905,6 +2905,12 @@ public class Main extends XposedModule {
                         setResultData(MiniPlayerRuntime.rowTree(key == null ? "" : key));
                     } else if ("fold".equals(op)) {
                         setResultData(describeFold());
+                    } else if ("fod".equals(op)) {
+                        try {
+                            setResultData(MiniPlayerRuntime.fingerprintProbe(i.getStringExtra("rect")));
+                        } catch (Throwable t) {
+                            setResultData("fod failed: " + t);
+                        }
                     } else if ("numstate".equals(op)) {
                         setResultData(NumStateProbe.run(c, i));
                     } else if ("keepawake".equals(op)) {
