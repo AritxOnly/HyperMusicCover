@@ -134,23 +134,12 @@ internal object AmapOppoBridge {
 
     /** SceneService's QueryFeatureUtil.f, for the one intent this stands in for. */
     private fun query(feature: String?, extras: Bundle?): JSONObject {
-                val data = JSONObject()
+        val data = JSONObject()
         when (feature) {
-            "querySupportIntent" -> {
-                val name = extras?.getString("intentName").orEmpty()
-                data.put(feature, name == INTENT_NAME)
-                
-            }
-            "querySupportIntentByPackage" -> {
-                data.put(INTENT_NAME, true)
-                
-            }
-            "enableIntelligentIntent" -> {
-                data.put(feature, true)
-                
-            }
+            "querySupportIntent" -> data.put(feature, extras?.getString("intentName") == INTENT_NAME)
+            "querySupportIntentByPackage" -> data.put(INTENT_NAME, true)
+            "enableIntelligentIntent" -> data.put(feature, true)
             else -> {
-                
                 Xp.log(TAG + "unknown feature $feature")
                 return result(CODE_UNSUPPORTED, null)
             }
@@ -268,17 +257,6 @@ internal object AmapOppoBridge {
             }
         } catch (t: Throwable) {
             Xp.log(TAG + "card connect not hooked: $t")
-        }
-        // What the card is handed, which is what it forwards: a payload with no intentName in it
-        // is one no OPPO card could post, so this is where the script's shape is judged.
-        try {
-            Xp.hookAll(card, "send") { chain ->
-                val a = chain.args
-                
-                chain.proceed()
-            }
-        } catch (t: Throwable) {
-            Xp.log(TAG + "card send not hooked: $t")
         }
     }
 
