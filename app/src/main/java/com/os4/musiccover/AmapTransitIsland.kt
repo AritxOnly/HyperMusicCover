@@ -214,6 +214,9 @@ internal object AmapTransitIsland {
         return sb.toString()
     }
 
+    // Runs in 高德's process and posts as 高德, under 高德's own notification permission - this
+    // module's manifest, which lint holds the call against, has nothing to do with it.
+    @android.annotation.SuppressLint("NotificationPermission")
     private fun post(ctx: Context, trip: AmapTransitCard.Trip, c: AmapTransitCard.Card) {
         val nm = ctx.getSystemService(NotificationManager::class.java) ?: return
         if (nm.getNotificationChannel(CHANNEL) == null) {
