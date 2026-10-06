@@ -7398,6 +7398,13 @@ private class MiniPlayerController(
         if (expandedKey()?.let { it != key } == true) {
             player?.springNudgeBack(0f, 0f)
             springSmallNudgeBack(0f, 0f)
+            // The music left the cover for the island out now (a page opened from it): pulled
+            // back up it goes into the cover, as a tap does. Exchanged as a plain card it came
+            // up over the wallpaper with the cover still held off (#63).
+            if (key == MUSIC_ISLAND && MiniPlayerRuntime.takeRestoreScene()) {
+                openCover()
+                return true
+            }
             return startExchange(key)
         }
         if (prepareFlight(key) == null) return false

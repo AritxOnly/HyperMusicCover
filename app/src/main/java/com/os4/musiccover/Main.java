@@ -6653,6 +6653,11 @@ public class Main extends XposedModule {
     /** An island opened from the cover: the cover goes, its card coming down into the row. */
     static void miniPlayerLeaveCover() {
         if (!sCoverMode) return;
+        // Left the way a swipe down leaves it, and remembered the same way: the exit below holds
+        // the cover off (sTapSuppressed) so a track change does not put it back over the page,
+        // and without this the swipe up on the pill went to the plain card - the card up, the
+        // cover still held off, no picture behind it (#63).
+        MiniPlayerRuntime.rememberScene();
         LockLyrics.notePopTarget(MiniPlayerRuntime.musicIslandHomeOnScreen());
         exitFromTap("island opened from the cover");
     }
