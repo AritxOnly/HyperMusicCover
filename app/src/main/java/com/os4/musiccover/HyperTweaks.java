@@ -136,6 +136,55 @@ final class HyperTweaks {
         if (!sPluginHooked) watchForPlugin();
         clockColon(cl, "systemui", () -> sForceColon);
         mediaBarGlow(cl, () -> sBarGlow);
+        coverUnlockFade(cl, Main::coverModeOn);
+    }
+
+    /**
+     * The lock wallpaper faded out at an unlock while it holds the cover, rather than cut.
+     *
+     * The wallpaper process writes Settings.Secure miui_wallpaper_content_type: 0 when the lock
+     * and home wallpapers are the same picture, 1 when they differ. The lock screen's copy of the
+     * home wallpaper (CoverPush's repair) makes it 0, and on 0 MiuiKeyguardWallPaperManager hides
+     * the lock wallpaper with anim=false - alpha straight to 0, since the home behind it is the
+     * same picture. With the cover drawn on that wallpaper it is not: unlocking to the desktop,
+     * the dark frosted cover vanished in one frame and the undimmed home wallpaper showed for
+     * the frames before the launcher's own unlock dim took hold - a flash (2026-10-06, measured
+     * off a recording: lock ~100, three frames at ~148, then the launcher's ~110). An app opened
+     * from the lock screen covers the wallpaper, which is why only the desktop flashed.
+     *
+     * For differing wallpapers the OEM has the right animation already: animated, mode 1 is
+     * KeyguardUnlockIAnimationRenderer's alpha 1 -> 0 over 350ms (280 on the fast animation
+     * rate). So a hide asked for without animation becomes that one while cover mode is on.
+     *
+     * Mode 4 included: it is the fingerprint unlock from the always-on display, and the full-screen
+     * one is the cover - the first build left it out as "the screen was off", and every unlock
+     * from it still flashed, the mode 4 hide landing first and the exit's own hide finding the
+     * wallpaper already gone. That call comes from BiometricUnlockControllerInjector with no
+     * finished callback, so fading it holds nothing up.
+     */
+    private static void coverUnlockFade(ClassLoader cl, java.util.function.BooleanSupplier cover) {
+        String what = "cover-unlock-fade";
+        try {
+            Class<?> cls = Xp.findClass(
+                    "com.android.keyguard.wallpaper.MiuiKeyguardWallPaperManager", cl);
+            Method m = cls.getDeclaredMethod("updateKeyguardWallpaperStateAnim", boolean.class,
+                    boolean.class, int.class, boolean.class, boolean.class, Runnable.class);
+            Xp.hook(m, chain -> {
+                Object[] args = chain.getArgs().toArray();
+                boolean show = (Boolean) args[0];
+                boolean anim = (Boolean) args[1];
+                int mode = (Integer) args[2];
+                if (!show && !anim && cover.getAsBoolean()) {
+                    args[1] = Boolean.TRUE;
+                    args[2] = 1;
+                    Xp.log(TAG + "lock wallpaper hide faded for the cover (was mode " + mode + ")");
+                }
+                return chain.proceed(args);
+            });
+            ok(what);
+        } catch (Throwable t) {
+            failed(what, t);
+        }
     }
 
     // The lock screen media card's progress bar, miuix's HyperProgressSeekBar. The island's media
