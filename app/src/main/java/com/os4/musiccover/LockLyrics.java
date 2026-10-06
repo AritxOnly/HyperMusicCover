@@ -890,7 +890,12 @@ final class LockLyrics {
      */
     private static void rereadIfNewPayload(String key, MediaController c) {
         // Parked is loading only in name: nothing is running, it is waiting for exactly this.
-        if (!sEnabled || key.isEmpty() || (sLoading && sParked == null) || sDemo) return;
+        // A lookup still running with nothing on screen is no reason to wait either: it is on
+        // the network by now, and the session's own lyric outranks anything it can find. Turned
+        // away, Apple's lyric - on the session 0.55s after the track change - waited out ten
+        // seconds of catalogues that had nothing (2026-10-06, Here's to Never Growing Up).
+        if (!sEnabled || key.isEmpty() || sDemo) return;
+        if (sLoading && sParked == null && !sLines.isEmpty()) return;
         if (sParked != null && sParked.rereading) return;
         String info = LyricSource.infoFor(c);
         if (info == null || info.equals(sInfoSeen) || !LyricSource.usable(info)
@@ -905,8 +910,9 @@ final class LockLyrics {
         // The lines already up are NOT cleared. A re-read is looking for something
         // better than what is on screen, and the first version emptied the view before
         // it knew whether there was any: a re-read that came back with nothing left the
-        // song with no lyrics at all for the rest of its play. lookup() keeps them.
-        lookup(key, c, true);
+        // song with no lyrics at all for the rest of its play. lookup() keeps them. With
+        // none up it is the track's own lookup again, the running one superseded by it.
+        lookup(key, c, !sLines.isEmpty());
         if (sParked != null) sParked.rereading = true;
     }
 

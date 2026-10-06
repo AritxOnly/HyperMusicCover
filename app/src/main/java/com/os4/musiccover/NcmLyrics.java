@@ -123,6 +123,7 @@ final class NcmLyrics {
         title = title == null ? "" : title.trim();
         artist = artist == null ? "" : artist.trim();
         album = album == null ? "" : album.trim();
+        title = TrackName.undecorated(title);
         // 汽水 sings into TITLE as well, with "歌名 — 歌手" in ARTIST - the song first, an em dash
         // between. Searched as published, it asked for a song called "作曲：AKA时空恋人" (#56).
         java.util.List<TrackName.Split> em = TrackName.splits(artist);
@@ -513,6 +514,11 @@ final class NcmLyrics {
                     + "\", and its album)");
             return null;
         }
+        return lyricsOf(id, started);
+    }
+
+    /** One song's lyric by its id, with whatever translation and romanisation it carries. */
+    private static Found lyricsOf(String id, long started) throws Exception {
         String lyric = get(String.format(LYRIC, id));
         if (lyric == null) {
             return null;
@@ -533,6 +539,60 @@ final class NcmLyrics {
                 + (android.os.SystemClock.uptimeMillis() - started) + "ms");
         return new Found(id, use, tlyric, yrc != null, romalrc);
     }
+
+    private static final String LYRIC_SEARCH =
+            "https://music.163.com/api/search/get?s=%s&type=1006&limit=10";
+
+    /**
+     * The song that sings `line`, found by its words rather than its name - the one of them
+     * nearest `durationMs` long, and within LYRIC_SEARCH_SLACK_MS of it.
+     *
+     * For a song whose name cannot be matched across languages: Apple's Chinese storefront
+     * publishes サザンオールスターズ's 真夏の果実 as "Manatsu No Kajitsu" by 南天群星, which no name
+     * search finds, while one sung line of it finds the song and every cover of it (measured
+     * 2026-10-06). Asked only to borrow a translation for a lyric already in hand, whose own lines
+     * then decide whether the copy found is the same song (LyricParse.borrowTranslations).
+     */
+    static Found byLyric(String line, long durationMs) {
+        if (line == null || line.trim().isEmpty()) {
+            return null;
+        }
+        try {
+            long started = android.os.SystemClock.uptimeMillis();
+            String json = get(String.format(LYRIC_SEARCH, URLEncoder.encode(line.trim(), "UTF-8")));
+            if (json == null) {
+                return null;
+            }
+            org.json.JSONArray songs = new org.json.JSONObject(json).getJSONObject("result")
+                    .getJSONArray("songs");
+            String best = null;
+            long bestGap = Long.MAX_VALUE;
+            for (int i = 0; i < songs.length(); i++) {
+                org.json.JSONObject song = songs.optJSONObject(i);
+                if (song == null) {
+                    continue;
+                }
+                long dur = song.optLong("duration", song.optLong("dt", 0L));
+                long gap = durationMs > 0 && dur > 0 ? Math.abs(dur - durationMs) : Long.MAX_VALUE - 1;
+                if (gap < bestGap) {
+                    bestGap = gap;
+                    best = String.valueOf(song.optLong("id"));
+                }
+            }
+            if (best == null || (durationMs > 0 && bestGap > LYRIC_SEARCH_SLACK_MS)) {
+                Xp.log("[MCNcm] nothing sings \"" + line + "\" near " + durationMs + "ms");
+                return null;
+            }
+            Xp.log("[MCNcm] \"" + line + "\" is sung by " + best + ", " + bestGap + "ms off");
+            return lyricsOf(best, started);
+        } catch (Throwable t) {
+            Xp.log("[MCNcm] lyric search failed: " + t);
+            return null;
+        }
+    }
+
+    /** How far from our duration a song found by its words may be: a remaster, a longer fade. */
+    private static final long LYRIC_SEARCH_SLACK_MS = 15000L;
 
     /** One of the response's lyric slots, or null when it is absent or empty. */
     private static String body(org.json.JSONObject o, String field) {

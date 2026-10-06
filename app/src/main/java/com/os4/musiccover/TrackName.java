@@ -181,6 +181,25 @@ final class TrackName {
         return s == null ? null : new String[]{s.song, s.singer};
     }
 
+    /**
+     * A title without the credits a storefront hangs on its end - "(feat. ...)", "(with ...)",
+     * "[feat. ...]" - which no catalogue spells the same way and which drowned the name in the
+     * search: "セカイツナガレ (feat. Liko(CV:Minori Suzuki) & Roy(CV:Yuka Terasaki))" found nothing
+     * (2026-10-06). Cut at the first of them, nested brackets and all; a title that is nothing
+     * but one is left alone.
+     */
+    static String undecorated(String title) {
+        String low = title.toLowerCase();
+        int cut = -1;
+        for (String mark : new String[]{"(feat", "(ft.", "(with ", "[feat", "[with ", "（feat"}) {
+            int at = low.indexOf(mark);
+            if (at > 0 && (cut < 0 || at < cut)) cut = at;
+        }
+        if (cut <= 0) return title;
+        String head = title.substring(0, cut).trim();
+        return head.isEmpty() ? title : head;
+    }
+
     /** Whether the song a source claims is the one ARTIST spells, by one of the readings above. */
     static boolean songIn(String name, String artist) {
         for (Split s : splits(artist)) {

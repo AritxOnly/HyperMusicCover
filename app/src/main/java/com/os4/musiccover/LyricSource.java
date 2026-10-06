@@ -794,8 +794,93 @@ final class LyricSource {
                 }
                 Xp.log("[MCLyric] " + pkg + " -> " + r.why);
                 onMain(cb, r.lines, r.why, r.source);
+                borrowTranslations(gen, pkg, ctx, id, dir, q, r, cb);
             }
         }, "MCLyricSource").start();
+    }
+
+    /**
+     * The player's own lyric with no translation, translated out of another copy - delivered as
+     * a second answer to the same lookup, once the first is already on screen.
+     *
+     * Apple Music's lyric is fetched with a translation in the system's language and has none for
+     * most Japanese and English songs; the database and the catalogues often do, and before the
+     * lyric came from Apple itself that is where it came from (#62). So when the session or the
+     * bridge answered without one, the switch is on and the words are not Chinese, the online
+     * routes are asked for their copy and only its translations are kept (LyricParse
+     * .borrowTranslations): the player's words and timing stay. Nothing is sent when that finds
+     * nothing, and a newer lookup ends it like any other.
+     */
+    private static void borrowTranslations(int gen, String pkg, android.content.Context ctx,
+                                           String id, String dir, NcmLyrics.Query q, Rows r,
+                                           Callback cb) {
+        if (!LockLyrics.sTrans || r.lines.isEmpty()) return;
+        if (r.source != SRC_LYRIC_INFO && r.source != SRC_LYRICON) return;
+        if (id == null && q == null) return;
+        for (LyricLine l : r.lines) {
+            if (l.translation != null) return;
+        }
+        if (!LyricParse.foreign(r.lines) || superseded(gen)) return;
+        // Fastest first: the race (database, hub and the first two catalogues at once), then one
+        // search by a sung line, and only then the slow catalogues one after another. In the
+        // other order a song the line search finds at once waited out the slow route first -
+        // 11s for TIMELESS POWER (2026-10-06).
+        Rows other = new Rows();
+        race(gen, pkg, ctx, id, dir, q, other);
+        dropPlaceholder(other);
+        if (superseded(gen)) return;
+        List<LyricLine> merged = LyricParse.borrowTranslations(r.lines, other.lines);
+        if (merged == null) {
+            // By name the song was not there, or not this song: Apple renames Japanese songs
+            // into romaji and Chinese for its storefront here. Its own words are in hand, so they
+            // are asked instead (NcmLyrics.byLyric) - the line of ours most worth searching for.
+            String line = searchLine(r.lines);
+            NcmLyrics.Found f = line == null || superseded(gen) ? null
+                    : NcmLyrics.byLyric(line, q == null ? 0L : q.durationMs);
+            if (f != null && !superseded(gen)) {
+                List<LyricLine> sung = LyricParse.parse(f.body, f.translation, f.roma);
+                merged = LyricParse.borrowTranslations(r.lines, sung);
+                if (merged != null) other.why = sung.size() + " lines from NetEase " + f.id
+                        + " found by the line \"" + line + "\"";
+            }
+        }
+        if (merged == null && other.lines.isEmpty() && q != null && !superseded(gen)) {
+            web(pkg, q, other);
+            dropPlaceholder(other);
+            if (!superseded(gen)) merged = LyricParse.borrowTranslations(r.lines, other.lines);
+        }
+        if (superseded(gen)) return;
+        if (merged == null) {
+            Xp.log("[MCLyric] " + pkg + ": no translation to borrow from " + other.why + ": "
+                    + LyricParse.borrowWhy);
+            return;
+        }
+        String why = r.why + " + translation from " + other.why + " (" + LyricParse.borrowWhy + ")";
+        Xp.log("[MCLyric] " + pkg + " -> " + why);
+        onMain(cb, merged, why, r.source);
+    }
+
+    /**
+     * The line of a lyric most worth searching the words for: the longest of its first two
+     * thirds, where the verses are rather than the credits or the repeated chorus at the end,
+     * and at least eight letters long, or null.
+     */
+    private static String searchLine(List<LyricLine> lines) {
+        String best = null;
+        int bestLen = 7;
+        int end = Math.max(1, lines.size() * 2 / 3);
+        for (int i = 0; i < end && i < lines.size(); i++) {
+            String t = lines.get(i).text.trim();
+            int len = 0;
+            for (int k = 0; k < t.length(); k++) {
+                if (Character.isLetterOrDigit(t.charAt(k))) len++;
+            }
+            if (len > bestLen) {
+                bestLen = len;
+                best = t;
+            }
+        }
+        return best;
     }
 
     /** Lines and the one-line account of where they came from, filled in by one source. */

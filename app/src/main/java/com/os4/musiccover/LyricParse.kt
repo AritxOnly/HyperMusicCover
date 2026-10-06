@@ -94,6 +94,107 @@ object LyricParse {
     }
 
     /**
+     * Another copy's translations, hung on our own lines - or null when there is nothing to take.
+     *
+     * The player's own lyric is the best copy there is of the words and their timing, and on
+     * Apple Music it is often the only one with no translation: Apple asks for one in the
+     * system's language and has none for most Japanese and English songs, where the database
+     * and the catalogues do (#62 - the translations went when the lyric started coming from
+     * Apple itself). So the timing and the words stay ours, and only the translations move
+     * across, each to the one line nearest it (assign).
+     *
+     * Only from a copy of the same song: at least two lines in five of ours have to find the
+     * same words, give or take punctuation and case, near them in the other copy - which also
+     * says how far that copy is shifted against ours. A translation that only repeats its line
+     * is not one.
+     */
+    @JvmStatic
+    fun borrowTranslations(own: List<LyricLine>, other: List<LyricLine>): List<LyricLine>? {
+        if (own.isEmpty() || other.isEmpty() || own.any { it.translation != null }) {
+            borrowWhy = "nothing to borrow into or from"
+            return null
+        }
+        // Where the other copy's lines sit against ours. Two releases of a song are often
+        // offset by a fraction of a second or more (another master, a longer intro), and the
+        // two copies split lines their own way - Apple's TTML against NetEase's LRC for Glee's
+        // Just Give Me a Reason found too few lines of the same words in the same place and lent
+        // nothing (2026-10-06). So each of our lines looks for the same words, or one copy's
+        // line inside the other's, within OFFSET_SEARCH_MS, and the median of those gaps is how
+        // far the other copy is shifted.
+        val gaps = ArrayList<Int>()
+        for (line in own) {
+            val k = letters(line.text)
+            if (k.length < 2) continue
+            var best = Int.MAX_VALUE
+            for (o in other) {
+                val d = o.start - line.start
+                if (kotlin.math.abs(d) <= OFFSET_SEARCH_MS && kotlin.math.abs(d) < kotlin.math.abs(best)
+                    && sameWords(k, letters(o.text))) best = d
+            }
+            if (best != Int.MAX_VALUE) gaps.add(best)
+        }
+        if (gaps.size * 5 < own.size * 2) {
+            borrowWhy = "only ${gaps.size} of ${own.size} lines found in the other copy"
+            return null
+        }
+        gaps.sort()
+        val shift = gaps[gaps.size / 2]
+        val entries = other.mapNotNull { o -> o.translation?.let { (o.start - shift) to it } }
+        if (entries.isEmpty()) {
+            borrowWhy = "the other copy has no translation"
+            return null
+        }
+        val best = assign(own, entries)
+        var taken = 0
+        val out = own.mapIndexed { i, line ->
+            val t = best[i]
+            if (t == null || letters(t) == letters(line.text)) line
+            else { taken++; withTranslation(line, t) }
+        }
+        borrowWhy = "$taken of ${own.size} lines, the other copy ${shift}ms off"
+        return if (taken == 0) null else out
+    }
+
+    /** What the last borrowTranslations decided, for the log. */
+    @JvmField
+    var borrowWhy = ""
+
+    /** How far apart the two copies may be for a line to count towards their offset. */
+    private const val OFFSET_SEARCH_MS = 5000
+
+    /**
+     * The same line in two copies, after letters(): the same, or one inside the other where the
+     * shorter is at least half the longer - a copy that splits a line in two still matches it.
+     */
+    private fun sameWords(a: String, b: String): Boolean {
+        if (a == b) return true
+        val short = if (a.length <= b.length) a else b
+        val long = if (a.length <= b.length) b else a
+        return short.length >= 4 && short.length * 2 >= long.length && long.contains(short)
+    }
+
+    /**
+     * Whether a lyric is in a language worth translating here: more kana, hangul and Latin
+     * letters than Han characters. A Chinese song has no translation anywhere, and asking the
+     * catalogues for one on every Chinese track would be requests for nothing.
+     */
+    @JvmStatic
+    fun foreign(lines: List<LyricLine>): Boolean {
+        var han = 0
+        var other = 0
+        for (line in lines) {
+            for (ch in line.text) {
+                when {
+                    ch.code in 0x4E00..0x9FFF -> han++
+                    ch.code in 0x3040..0x30FF || ch.code in 0xAC00..0xD7AF -> other++
+                    ch in 'a'..'z' || ch in 'A'..'Z' -> other++
+                }
+            }
+        }
+        return other > han
+    }
+
+    /**
      * The romanisation over the translation, as the one text the renderer draws under a line.
      * Left out when it only repeats the line - a catalogue "romanises" an English song into
      * itself.
