@@ -341,6 +341,27 @@ final class ClockCollapse {
         return sAodFullScreen;
     }
 
+    /**
+     * The glyphs redrawn when the scale has moved far enough that their glass edge would show it.
+     *
+     * The edge's width reaches the shader from TimeView.onDraw, scaled there to what the glyph is
+     * drawn at (Main.armMiGlassGuard, #39) - but a scale set on the time_group is a RenderNode
+     * property and redraws nothing under it, so a clock that settled without one more draw kept
+     * the edge it last drew with. A few percent of scale is not visible in the edge; per frame it
+     * would be three glyph paths rebuilt for nothing.
+     */
+    private static void glassFollowsScale(View g, float scale) {
+        Float last = sGlassScale.get(g);
+        float was = last == null ? 1f : last;
+        if (Math.abs(scale - was) <= 0.03f * Math.max(scale, was)) return;
+        sGlassScale.put(g, scale);
+        Main.invalidateGlass(g);
+    }
+
+    /** The scale each time_group's glyphs last redrew their glass at. A tag key would be this
+     * module's resource id inside SystemUI's tree, where it could be one of SystemUI's own. */
+    private static final java.util.Map<View, Float> sGlassScale = new java.util.WeakHashMap<>();
+
     /** Anything of ours on the clock that belongs to the lock screen being up. */
     static boolean active() {
         return sPhase == Phase.ENTER || sPhase == Phase.ON || sPhase == Phase.EXIT;
@@ -2029,6 +2050,7 @@ final class ClockCollapse {
             if (g.getPivotY() != m.box.top) g.setPivotY(m.box.top);
             if (g.getScaleX() != scaleX) g.setScaleX(scaleX);
             if (g.getScaleY() != scale) g.setScaleY(scale);
+            glassFollowsScale(g, scale);
             float ty = top - (parentTop(g) + g.getTop() + m.box.top);
             if (Math.abs(g.getTranslationY() - ty) >= 0.25f) g.setTranslationY(ty);
         }

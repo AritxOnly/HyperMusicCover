@@ -10680,6 +10680,36 @@ public class Main extends XposedModule {
         return 0.2126f * r + 0.7152f * g + 0.0722f * b;
     }
 
+    /** Redraws the glass glyphs under `root`, so their next setMiGlass carries the scale now. */
+    static void invalidateGlass(View root) {
+        if (root == null) return;
+        if (declaresGlass(root)) {
+            root.invalidate();
+            return;
+        }
+        if (root instanceof ViewGroup) {
+            ViewGroup g = (ViewGroup) root;
+            for (int i = 0; i < g.getChildCount(); i++) invalidateGlass(g.getChildAt(i));
+        }
+    }
+
+    /** TimeView.GLASS_EDGE_PX_INDEX: the glass edge band's width, in pixels (default 30). */
+    private static final int GLASS_EDGE_PX = 19;
+
+    /**
+     * How big a view is drawn against its own size: every ancestor's scale multiplied in, the
+     * collapse's time_group and the keyguard's zoom among them. The mean of the two axes, since
+     * the collapse may scale the width a little differently from the height.
+     */
+    private static float drawnScale(View v) {
+        float sx = 1f, sy = 1f;
+        for (View p = v; p != null; p = p.getParent() instanceof View ? (View) p.getParent() : null) {
+            sx *= p.getScaleX();
+            sy *= p.getScaleY();
+        }
+        return (float) Math.sqrt(Math.abs(sx * sy));
+    }
+
     private static void armMiGlassGuard() {
         if (sMiGlassGuardArmed) return;
         sMiGlassGuardArmed = true;
@@ -10716,6 +10746,29 @@ public class Main extends XposedModule {
                         float[] neutral = a.clone();
                         neutral[11] = neutral[12] = neutral[13] = sAodGrey;
                         args[0] = neutral;
+                    }
+                }
+                // The glass edge as wide on screen as the glyph it is the edge of (#39). The
+                // collapsed clock is the OEM's full-size clock scaled down on its time_group, and
+                // TimeView strokes its glyph with glassData[GLASS_EDGE_PX_INDEX] in its own
+                // coordinates - scaled with it - while the same number reaches the glass shader as
+                // screen pixels, which are not. At the small clock's 10-30% the strokes are a few
+                // pixels thick against a 30px edge band, the whole glyph is edge, and it refracts
+                // like a chrome bevel: the background through it lands far from where it is
+                // ("柔光玻璃背景显示异常"). The shader's copy is scaled by what the glyph is drawn
+                // at; the field, which the stroke reads, is left as the OEM has it.
+                //
+                // What shows through the glass is not fixed by this: it is sampled where the glyph
+                // would be at full size, before the collapse's scale and lift, and nothing here
+                // moves the sampling. Filling the glyph solid to hide it was tried and was too
+                // bright (user, 2026-10-06).
+                if ((sCoverMode || ClockCollapse.active()) && args[0] instanceof float[]) {
+                    float[] a = (float[]) args[0];
+                    float k = drawnScale((View) self);
+                    if (a.length > GLASS_EDGE_PX && k > 0f && k < 0.995f) {
+                        float[] scaled = a.clone();
+                        scaled[GLASS_EDGE_PX] = a[GLASS_EDGE_PX] * k;
+                        args[0] = scaled;
                     }
                 }
                 int hits = ++sMiGlassGuardHits;
