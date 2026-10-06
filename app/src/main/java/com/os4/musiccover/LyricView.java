@@ -596,7 +596,11 @@ final class LyricView extends View {
         // of it, `show` only carries the card's progress and the clock's alpha, so it goes
         // straight there instead of easing.
         if (popMode != POP_OUT) {
-            float tauShow = showTo < show ? TAU_HIDE : popMode == POP_IN ? TAU_POP_SHOW : TAU_SHOW;
+            // Back from under the control centre: as quick as the way out, not the slow
+            // arrival a song's first lines get (#52, "淡入回来太慢了").
+            if (centreHeld && showTo <= show) centreHeld = showTo == 0f;
+            float tauShow = showTo < show ? TAU_HIDE : popMode == POP_IN ? TAU_POP_SHOW
+                    : centreHeld ? TAU_HIDE : TAU_SHOW;
             float s = approach(show, showTo, dtTo, tauShow);
             if (Math.abs(s - showTo) < 0.004f) s = showTo;
             if (s != show) {
@@ -885,11 +889,23 @@ final class LyricView extends View {
      */
     private float showTarget() {
         if (!LockLyrics.wantsShown() || !bandOk || lines.isEmpty()) return 0f;
+        // With the HDR highlight the lyrics are a window of their own above the shade window,
+        // and the control centre pulled over the lock screen is drawn in the shade window - so
+        // its blur, which takes what is under it, can never reach them: they stood sharp over
+        // it (#52). They make way for it instead, and come back as it goes. Without the
+        // highlight they are in the keyguard's tree and blurred with it, as before.
+        if (LyricWindow.owns(this) && Main.controlCenterShown()) {
+            centreHeld = true;
+            return 0f;
+        }
         float v = clamp01(Main.cardProgress());
         View c = Main.sContainer;
         if (c != null) v *= clamp01(c.getAlpha());
         return v;
     }
+
+    /** The lyrics went out for the control centre and have not come all the way back yet. */
+    private boolean centreHeld;
 
     /** keyguard_info_layer, the view the full AOD dims - the one the lyrics take their alpha from. */
     private View dimSource;

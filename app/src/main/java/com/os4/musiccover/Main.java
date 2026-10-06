@@ -6564,6 +6564,34 @@ public class Main extends XposedModule {
 
     static boolean miniPlayerControlCenterUp() { return miniControlCenterUp(); }
 
+    private static java.lang.ref.WeakReference<View> sCentreView;
+    private static long sCentreLookedAt;
+
+    /**
+     * Whether the control centre is up, read off its window view every time it is asked - the
+     * view held once found, so a frame costs one isShown(). For a fade that has to follow the
+     * centre closing: the 150ms answer miniControlCenterUp keeps for the mini player brought the
+     * lyrics back that much late (#52). The lookup itself is the whole-tree search, so a miss is
+     * not repeated for 500ms.
+     */
+    static boolean controlCenterShown() {
+        View v = sCentreView == null ? null : sCentreView.get();
+        if (v == null || !v.isAttachedToWindow()) {
+            long now = android.os.SystemClock.uptimeMillis();
+            if (now - sCentreLookedAt < 500L) return false;
+            sCentreLookedAt = now;
+            v = null;
+            View cc = findSysuiView("control_center_container");
+            View content = cc instanceof ViewGroup ? findByName(cc, "content_container") : null;
+            if (content instanceof ViewGroup && ((ViewGroup) content).getChildCount() > 0) {
+                v = ((ViewGroup) content).getChildAt(0);
+            }
+            sCentreView = v == null ? null : new java.lang.ref.WeakReference<>(v);
+            if (v == null) return false;
+        }
+        return v.isShown();
+    }
+
     private static long sMiniCentreCheckedAt;
     private static boolean sMiniCentreUp;
 
