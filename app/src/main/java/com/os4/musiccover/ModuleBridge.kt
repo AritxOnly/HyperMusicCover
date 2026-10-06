@@ -113,6 +113,8 @@ object ModuleBridge {
         val aodSmall: Boolean = true,
         /** Draw the big clock's colon on the styles that drop it. */
         val forceColon: Boolean = false,
+        /** Light the media card's progress bar the way the island's is lit (#49). On by default. */
+        val mediaBarGlow: Boolean = true,
         /**
          * Lock screen lyrics, between the collapsed clock and the card. On, and not a setting:
          * the two-finger tap on the lock screen is what asks for the cover instead.
@@ -429,6 +431,9 @@ object ModuleBridge {
 
     fun setForceColon(context: Context, on: Boolean) =
         send(context, "colon") { putExtra("on", on) }
+
+    fun setMediaBarGlow(context: Context, on: Boolean) =
+        send(context, "seekglow") { putExtra("on", on) }
 
     /** The lyrics are always on now; this is how they are turned off for a session. */
     fun setLyrics(context: Context, on: Boolean) =
@@ -758,6 +763,7 @@ object ModuleBridge {
             hideFingerprint = b.getBoolean("hidefp", false),
             aodSmall = b.getBoolean("aodsmall", true),
             forceColon = b.getBoolean("colon", false),
+            mediaBarGlow = b.getBoolean("seekglow", true),
             lyrics = b.getBoolean("lyrics", true),
             lyricsKeepOn = b.getBoolean("lyrickeep", false),
             lyricsHdr = b.getBoolean("lyrichdr", false),

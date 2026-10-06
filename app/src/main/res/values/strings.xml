@@ -117,6 +117,7 @@
     <string name="donate_save_failed">保存失败</string>
     <string name="card_section">媒体卡片</string>
     <string name="card_title_tap">点击歌名暂停播放</string>
+    <string name="media_bar_glow">进度条光效</string>
     <string name="lyrics_two_finger_tap">双指单击封面切换歌词</string>
     <!-- The provider module, in three states rather than two. "Installed" is not the question
          that matters - LyricInfo is an LSPosed module, and one that is installed but not enabled,

@@ -117,6 +117,7 @@
     <string name="donate_save_failed">Could not save</string>
     <string name="card_section">Media card</string>
     <string name="card_title_tap">Tap the title to pause</string>
+    <string name="media_bar_glow">Progress bar glow</string>
     <string name="lyrics_two_finger_tap">Two-finger tap the cover to switch to the lyrics</string>
     <!-- Three states rather than two; see the default strings for what they mean. -->
     <string name="lyrics_provider_title_missing">No lyric module installed</string>

@@ -541,6 +541,17 @@ private fun CardGroup(
                 ModuleBridge.setCardTitleTap(context, it)
             },
         )
+        // The progress bar's glow, the island's look on the card's own bar (#49). Not tied to
+        // cover mode either: it is the OEM's card in every mode.
+        SwitchPreference(
+            title = stringResource(R.string.media_bar_glow),
+            checked = module.mediaBarGlow,
+            enabled = enabled,
+            onCheckedChange = {
+                onChange(module.copy(mediaBarGlow = it))
+                ModuleBridge.setMediaBarGlow(context, it)
+            },
+        )
         // Sits here because that is where it was asked for, but it is not a card setting and does
         // not follow cover mode, unlike the switches above it - which the rows no longer say, so
         // it is only in the module and in this comment. No onCardRestyled(): the preview above

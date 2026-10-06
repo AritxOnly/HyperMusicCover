@@ -278,6 +278,10 @@ final class HyperTweaks {
      * hands it back, and "FAILED ..." there is the only way a final-field write that this platform
      * refuses would ever be seen.
      */
+    /** HyperProgressSeekBar's constructor values, in dp, before initShaderConfig converts them. */
+    private static final float[] TRACK_POS_DP = {12f, 19f};
+    private static final float[] TRACK_SIZE_DP = {220f, 6f};
+
     static String applyBarGlow(android.view.View bar) {
         try {
             // The island's copies arrive with the mode unset and already run the device's own
@@ -290,15 +294,61 @@ final class HyperTweaks {
             int id = res.getIdentifier(SHADER_ENTRY, "raw", "com.android.systemui");
             if (id == 0) return "no raw/" + SHADER_ENTRY + " in this build";
             String src = (String) Xp.callMethod(bar, "loadShader", id, res);
-            Xp.setObjectField(bar, "runtimeShader", new android.graphics.RuntimeShader(src));
+            android.graphics.RuntimeShader shader = new android.graphics.RuntimeShader(src);
+            Xp.setObjectField(bar, "runtimeShader", shader);
             Xp.setObjectField(bar, "mDeviceLevel", 2);
+            // initShaderConfig converts the track's place and thickness from dp to px in place,
+            // on arrays the constructor filled - so a second call on one bar converts pixels
+            // again, and a bar lit, cleared and lit again (#49) drew its track three times
+            // too low, off its own canvas: gone. Put back to the constructor's dp first.
+            float[] pos = (float[]) Xp.getObjectField(bar, "uTrackPosition");
+            float[] track = (float[]) Xp.getObjectField(bar, "uTrackSize");
+            pos[0] = TRACK_POS_DP[0];
+            pos[1] = TRACK_POS_DP[1];
+            track[0] = TRACK_SIZE_DP[0];
+            track[1] = TRACK_SIZE_DP[1];
             Xp.callMethod(bar, "initShaderConfig");
+            // What onSizeChanged and onLayout hand the shader at level 2, which a bar already on
+            // screen has long been through at level 0 and will not go through again.
+            if (bar.getWidth() > 0 && bar.getHeight() > 0) {
+                float[] canvas = (float[]) Xp.getObjectField(bar, "uTrackCanvasSize");
+                canvas[0] = bar.getWidth();
+                canvas[1] = bar.getHeight();
+                shader.setFloatUniform("uTrackCanvasSize", canvas);
+                shader.setFloatUniform("uResolution", canvas);
+                track[0] = bar.getWidth() - pos[0] * 2f;
+                shader.setFloatUniform("uTrackSize", track);
+                shader.setIntUniform("uIsRtl",
+                        bar.getLayoutDirection() == android.view.View.LAYOUT_DIRECTION_RTL ? 1 : 0);
+            }
             bar.requestLayout();
+            bar.invalidate();
             buildHeadAnimator(bar);
             // Only now is the bar something the touch guard has to cover: it draws as level 2
             // without having been built as it.
             sGlowBars.put(bar, Boolean.TRUE);
             return hasHeadAnimator(bar) ? "level 2 + head" : "level 2, drag as level 0";
+        } catch (Throwable t) {
+            return "FAILED " + t;
+        }
+    }
+
+    /**
+     * The glow taken off a bar this lit (applyBarGlow), so switching it off does not wait for the
+     * next card (#49).
+     *
+     * A bar built by the OEM at level 2 cannot go back - its shader is what it was built for - but
+     * none of ours is one: every bar lit here was built flat and set up in full for level 0, the
+     * draw and the drag alike, so putting the level back is all it takes. The shader and the head
+     * animator left in its fields are never read at level 0.
+     */
+    static String clearBarGlow(android.view.View bar) {
+        try {
+            if (sGlowBars.remove(bar) == null) return "not lit here";
+            Xp.setObjectField(bar, "mDeviceLevel", 0);
+            bar.requestLayout();
+            bar.invalidate();
+            return "level 0";
         } catch (Throwable t) {
             return "FAILED " + t;
         }

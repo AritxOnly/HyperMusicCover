@@ -2557,15 +2557,14 @@ public class Main extends XposedModule {
                         HyperTweaks.sBarGlow = i.getBooleanExtra("on", !HyperTweaks.sBarGlow);
                         saveState();
                         // The card on screen was built before this switch was read, so it is
-                        // upgraded in place - its constructor is long past and the mode it read
-                        // there is a final field. Turning the switch off cannot undo that on this
-                        // card: it applies to the next one the OEM builds.
+                        // changed in place - lit as applyBarGlow lights a new one, or put back to
+                        // the flat bar it was built as (HyperTweaks.clearBarGlow).
                         View bar = findLockScreenView("media_progress_bar");
-                        String r = bar == null ? "no card up" : HyperTweaks.applyBarGlow(bar);
+                        String r = bar == null ? "no card up" : HyperTweaks.sBarGlow
+                                ? HyperTweaks.applyBarGlow(bar) : HyperTweaks.clearBarGlow(bar);
                         Xp.log(TAG + "media bar glow " + (HyperTweaks.sBarGlow ? "on" : "off")
                                 + " - " + r);
-                        setResultData((HyperTweaks.sBarGlow ? "on " : "off ") + r
-                                + (HyperTweaks.sBarGlow ? "" : " (the card up keeps its glow)"));
+                        setResultData((HyperTweaks.sBarGlow ? "on " : "off ") + r);
                     } else if ("hidefp".equals(op)) {
                         sHideFp = i.getBooleanExtra("on", !sHideFp);
                         saveState();
