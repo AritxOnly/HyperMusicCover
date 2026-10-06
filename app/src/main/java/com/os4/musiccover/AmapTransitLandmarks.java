@@ -107,6 +107,32 @@ final class AmapTransitLandmarks {
         return c == null ? null : c.folder;
     }
 
+    /** How far from a city's landmarks a point is still taken to be in that city. */
+    private static final double CITY_M = 50_000.0;
+
+    /**
+     * The folder of the catalogue's city a point is in, for a trip that names no city code: the
+     * nearest city with a landmark within CITY_M. 高德's plan names the city by its adcode
+     * ("440100"), not by the city code the catalogue is keyed by, so the point is what tells.
+     */
+    static String folderNear(double lat, double lng) {
+        if (!valid(lat, lng)) return null;
+        String best = null;
+        double bestM = CITY_M;
+        for (City c : cities()) {
+            for (Landmark l : c.landmarks) {
+                for (int i = 0; i + 1 < l.points.length; i += 2) {
+                    double d = distanceM(lat, lng, l.points[i], l.points[i + 1]);
+                    if (d < bestM) {
+                        bestM = d;
+                        best = c.folder;
+                    }
+                }
+            }
+        }
+        return best;
+    }
+
     /** The city's own arrival picture, day or night. */
     static String cityDefaultUrl(String folder, boolean night) {
         return CDN + "busnav/" + folder + "/" + (night ? "DefaultNight" : "DefaultDay") + ".png";

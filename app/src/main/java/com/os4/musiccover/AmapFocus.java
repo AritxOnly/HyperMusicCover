@@ -6,8 +6,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /**
  * Lets 高德's ride card be a focus notification at all.
  *
- * The card is posted as 高德 (id 1239) with its own layout in `miui.focus.rv`, and the focus
- * plugin threw it away every time:
+ * The card is posted as 高德 (id 1239; a `param_v2` template now, a `miui.focus.rv` layout of its
+ * own when this was written), and the focus plugin threw it away every time:
  *
  *   FocusPlugin: onInflateSuccess 0|com.autonavi.minimap|1239|null|10385
  *   FocusPlugin: onAuthFailed     0|com.autonavi.minimap|1239|null|10385  com.autonavi.minimap
@@ -51,6 +51,9 @@ final class AmapFocus {
     private static final AtomicBoolean sHooked = new AtomicBoolean(false);
     /** Set once the watch itself is in, so a second SystemUI callback does not add another. */
     private static final AtomicBoolean sWatching = new AtomicBoolean(false);
+    /** The questions already answered once, for the log. */
+    private static final java.util.Set<String> sAnswered =
+            java.util.Collections.synchronizedSet(new java.util.HashSet<>());
 
     private AmapFocus() {
     }
@@ -103,7 +106,9 @@ final class AmapFocus {
                         final java.util.List<Object> a = chain.getArgs();
                         final Object arg = a != null && !a.isEmpty() ? a.get(0) : null;
                         if (AMAP.equals(arg)) {
-                            Xp.log(TAG + name + "(" + arg + ") -> true");
+                            // Asked on every post of every 高德 notification (its walking island
+                            // reposts each second), so said once rather than each time.
+                            if (sAnswered.add(name)) Xp.log(TAG + name + "(" + arg + ") -> true");
                             return Boolean.TRUE;
                         }
                         return chain.proceed();

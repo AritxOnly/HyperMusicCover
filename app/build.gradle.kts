@@ -162,4 +162,6 @@ dependencies {
     implementation(libs.material.icons.extended)
 
     testImplementation("junit:junit:4.13.2")
+    // The real org.json for the JVM tests: android.jar's is a stub (AmapTransitCardTest).
+    testImplementation("org.json:json:20231013")
 }

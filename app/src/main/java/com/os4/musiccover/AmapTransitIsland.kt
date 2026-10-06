@@ -20,55 +20,44 @@ import android.graphics.Typeface
 import android.graphics.drawable.Icon
 import android.net.Uri
 import android.os.Bundle
-import android.view.View
-import android.widget.RemoteViews
 import org.json.JSONObject
 
 /**
- * The focus notification for a bus or subway ride, posted as 高德 in 高德's process, made to
- * look like ColorOS 17's 公交/地铁 card: the line in its colour and where it is heading, the
- * milestone (下一站 / 当前站 / 准备换乘 / 已到达) large, the stations left under it, the three-stop
- * track with the transfer ⇄ and the next line's badge, and the landmark the shown station stands
- * near behind it all (AmapTransitScene's Frame, Track and Art - the lock-screen page's own).
+ * The bus and subway trip's focus notification, posted as 高德 in 高德's process: ColorOS 17's
+ * card for the trip (AmapTransitCard) in HyperOS's template.
  *
- * On HyperOS 高德 posts a focus notification only for walking and cycling (id 1236); a bus or
- * subway navigation has none of its own. 高德's other focus notification, XiaomiUAConnectedDevice
- * (bizType 20001, class jk7 in 17.00.0.2005), is the first protocol's small flat template and
- * uses id 1237, so the ride is posted as [ID] and 高德's own 1237 is held back while it is up
- * ([handle]) - two islands for one ride is one too many.
+ * HyperOS gives 高德 a focus island only for walking and cycling (id 1236); a bus or subway trip
+ * has none. 高德's other one, XiaomiUAConnectedDevice (1237, the protocol-1 one-liner), is held
+ * back while this is up ([handle]) - one trip, one island.
  *
- * A ride is posted in the plugin's own v2 template ([Style.SCENE], scene `template_v2`): the
- * `param_v2` envelope, the words in baseInfo, the line's colour and the stop's landmark behind
- * them in bgInfo, the leg's progress in multiProgressInfo, the line's badge in picInfo, and the
- * island's own row, ticker and AOD line in param_island - see [official]. Everything a surface
- * draws from - the island's expanded card, the notification centre's row, the lock screen's -
- * comes out of that one param, so they all say and look the same thing.
+ * Where ColorOS's card goes in the template (`param_v2`, scene `template_v2`):
+ *   capsule left / right   -> param_island's imageTextInfoLeft / Right: the line-coloured part of
+ *                             a half (the waiting card's line, the transfer's next line, the exit
+ *                             at a subway's 到站) is a chip picture, the white part its text
+ *   cardPrimaryInfo        -> baseInfo.title
+ *   cardSecondaryInfo      -> baseInfo.content (with cardSecondaryLineName before it)
+ *   titleInLock            -> ticker, aodTitle
+ *   cardStationOverview    -> progressInfo: the leg's progress, its car, the stop and the end
+ *   the landmark           -> bgInfo
+ * The silent walking card is posted only while 高德's own walking island is not up: when 高德's
+ * walking navigation runs, that is ColorOS's walking card too.
  *
- * [Style.CARD] (this module's own layout, miui.focus.rv), [Style.TEMPLATE] (the same fields under
- * param_v2 with no scene) and [Style.FLAT] (the old protocol 1 one-liner) are kept for the probe
- * only (`AMAPPROBE --es island card|template|flat`): none of them is posted by default.
- *
- * Tapping it on the lock screen opens the page (AmapTransitScene.servesKey); tapping it elsewhere
- * opens 高德 at the navigation. Only while the current leg is a bus or a subway: a walking leg is
- * 高德's own island again.
+ * AmapFocus (in SystemUI) is what lets the plugin take a focus notification of 高德's at all.
  */
 internal object AmapTransitIsland {
 
     private const val TAG = "MCAmap: transit island: "
     /** Beside 高德's walking island, 1236, and clear of its XiaomiUAConnectedDevice's 1237. */
     private const val ID = 1239
+    private const val AMAP_WALK_ID = 1236
     private const val AMAP_UA_ID = 1237
     private const val CHANNEL = "mc_transit"
-    /** As long as SystemUI believes a silent trip (AmapTransitScene.STALE_MS). */
-    private const val TIMEOUT_MS = 30L * 60_000L
 
     private const val PIC = "miui.focus.pic_mc_transit"
     private const val PIC_BG = "miui.focus.pic_mc_transit_bg"
-    /**
-     * The three pictures the progress bar is drawn with ([template]'s `progressInfo`): the vehicle
-     * where the ride has got to, the stop ahead of it, and the destination. Their own keys, not
-     * [PIC]: that one is the line's number and the island's left half wears it.
-     */
+    private const val PIC_LEFT = "miui.focus.pic_mc_left"
+    private const val PIC_RIGHT = "miui.focus.pic_mc_right"
+    /** The progress bar's three pictures: the vehicle, the stop ahead, the leg's end. */
     private const val PIC_VEHICLE = "miui.focus.pic_mc_vehicle"
     private const val PIC_PIN = "miui.focus.pic_mc_pin"
     private const val PIC_FLAG = "miui.focus.pic_mc_flag"
@@ -83,15 +72,11 @@ internal object AmapTransitIsland {
     private const val WHEEL = 0xff2a2d33.toInt()
     private const val HUB = 0xff6c717a.toInt()
     private const val LAMP = 0xffdfe9ff.toInt()
-    /** The destination pin, grey - it is where the ride ends, not a line. */
-    private const val DEST = 0xffa2a4a9.toInt()
 
     /**
      * The plugin's boxes for the bar's three pictures, in dp (focus_notification_module_progress):
      * the thumb is 60x47 and drawn `fitXY`, each pin 30x47, all three standing on the container's
      * foot, and the 12dp bar sits 4dp above that foot - 31dp to [BAR_FOOT] inside a box.
-     * The pictures are drawn to exactly those boxes, so nothing is stretched and the bar's place
-     * inside them is known.
      */
     private const val THUMB_W = 60f
     private const val SLOT_W = 30f
@@ -99,9 +84,7 @@ internal object AmapTransitIsland {
     private const val BAR_FOOT = 43f
     /**
      * The metro and the pins are drawn in 设计图.jpg's own pixels, three to a dp (its 12dp bar is
-     * 36px tall): they were traced from it there, and matched to it there. The thumb's and the
-     * pins' boxes stand on the same foot, so all three share [SLOT_Y], the box's top in the
-     * design; the thumb's box is placed so the car sits in its middle.
+     * 36px tall): they were traced from it there, and matched to it there.
      */
     private const val DESIGN_PX = 3f
     private const val SLOT_Y = 138f
@@ -136,137 +119,83 @@ internal object AmapTransitIsland {
         "C592.6 239.8 593.1 241 593.4 242 C590 242 587.5 241.9 585.5 241.5 C582 240.8 578.5 240.1 576.5 239.4 " +
         "C575.2 238.9 574.6 237.8 574.6 236.5 L574.6 230 C574.6 228.9 575.2 228.1 576 228.1 Z"
 
-    /** The card's height, as the layout has it. */
+    /** The ground's size: the notification card's height, its corner radius, how much of it. */
     private const val CARD_DP = 176f
-    /**
-     * The card's corner radius, the system's own for a notification's card: the plugin's
-     * focus_notify_bg_img_bg is a rectangle of notification_item_bg_radius, and its template clips
-     * to it (`outlineProvider="background"` + `clipToOutline="true"`). A card that draws its own
-     * pixels has to cut them itself, or the four corners come out square.
-     */
     private const val CORNER_DP = 24f
-    /** The ground is soft; two thirds of the card's pixels are plenty and a third the memory. */
-    private const val GROUND_SCALE = 0.67f
     private const val BOTTOM = 0xff07080b.toInt()
-    /** Where the landmark's own centre sits across the card: right of centre, clear of the words. */
+    /** Where the landmark's own centre sits across the ground, and how far past a cover it grows. */
     private const val LANDMARK_AT = 0.72f
-    /**
-     * How much the picture is grown past a bare cover. Covering the card and standing right of
-     * centre at once costs size - the picture is 807x378 with the landmark in the middle, so the
-     * further right it is put the wider it must be - and this is how much of that is spent.
-     */
     private const val LANDMARK_ZOOM = 1.25f
     /**
-     * Where the picture sits vertically, as a share of the height the growth bought: 0 spends all
-     * of it lifting the landmark, 1 spends none. The landmark pictures are taken with the subject
-     * low in the frame, so with the picture only just grown it comes out under the words' last
-     * line - and lifting it is exactly what the growth is for, which is why [LANDMARK_ZOOM] buys
-     * more than a bare cover.
-     */
-    private const val LANDMARK_DOWN = 0f
-    /**
-     * The narrowest fill the bar draws as a piece of itself rather than as a standing mark.
-     *
-     * The fill's ends are capped at half its height, so once it is narrower than it is tall the
-     * two caps meet and what is left is a square head, not a rounded one - 高德's own 2% for a
-     * ride just begun does exactly that. The bar is about 880x42 px on this phone, so the fill is
-     * as wide as it is tall - the width at which the cap is exactly a half-circle - at 4.8% of it,
-     * which as a whole percent is 5.
+     * The narrowest fill the bar draws as a piece of itself: below the bar's own height the caps
+     * meet and the fill is a square head (about 4.8% of the bar on this phone).
      */
     private const val PROGRESS_MIN = 5
 
-    /**
-     * The milestones the leg's own progress belongs to: 下一站 (3), 下一站即终点 (4), 到达普通站
-     * (5) and 到达换乘站 (6) - the ones where the ride is between stations.
-     *
-     * ColorOS draws a station overview for exactly these and no others: its card builder puts
-     * `cardStationOverview` in `K()` (3/4), `a()` (5) and `d()` (6) only. At 到达起始站附近 (1) and
-     * 候车 (2) it puts `cardWaitingInformation` - the list of trains coming, line, direction and
-     * arrival - in that place instead, and at 到站 (7) it puts the landmark; neither has a bar.
-     *
-     * Which is also why the bar has to be held back here: before the ride starts the only card 高德
-     * has sent is the walk to the station, and its `location.persent` is how far along the WALK is
-     * (0.5, halfway there), so a bar drawn from it said the 4号线 was half ridden while the walker
-     * was still on the street.
-     */
-    private val PROGRESS_AT = setOf("3", "4", "5", "6")
-
-    enum class Style { CARD, TEMPLATE, FLAT, SCENE }
-
-    /**
-     * The official scenes the focus plugin knows (its own strings), for trying a ride in each:
-     * `AMAPPROBE --es island templateBaseScene` and the rest of [SCENES]. [Style.TEMPLATE] sends
-     * the same fields with no scene at all, which is what a build that will not take one falls
-     * back to.
-     */
-    /**
-     * The one scene a ride is posted in: `template_v2`, which is what the plugin's own sample
-     * carries ({"param_v2": {..., "scene": "template_v2"}}). The plugin's other scene names -
-     * templateBaseScene, templateBaseProgressScene, templateRevertScene,
-     * templateRevertProgressScene, templateRevertOversizeScene - belong to its V3 factory
-     * (param_v3), which a param_v2 never reaches: posting them one by one changed nothing, which
-     * is how they were tried.
-     */
-    val SCENES = listOf("template_v2")
-
-    @Volatile var style = Style.SCENE
-        private set
-    /** The scene [Style.SCENE] posts under; the only one a param_v2 reads. */
-    @Volatile var scene: String? = "template_v2"
-        private set
+    /** A new milestone floats once: the stop before the end, a transfer, the arrivals. */
+    private val FLOAT_AT = setOf(AmapTransitCard.NEXT_DESTINATION,
+        AmapTransitCard.ARRIVE_TRANSFER_STATION, AmapTransitCard.ARRIVE_LINE_DESTINATION,
+        AmapTransitCard.ARRIVE_FINAL_DESTINATION)
 
     @Volatile private var posted = false
     @Volatile private var lastStatus: String? = null
     @Volatile private var lastKey: String? = null
-    /** The entity last shown, for a repost when the landmark arrives or the style changes. */
+    /** The entity last shown, for a repost once its landmark arrives. */
     @Volatile private var lastEntity: String? = null
     @Volatile private var lastError: String? = null
     @Volatile private var art: AmapTransitScene.Art.Set? = null
     @Volatile private var artPick: AmapTransitScene.Art.Pick? = null
     @Volatile private var held = 0
-    @Volatile private var lastHeld: String? = null
 
     /**
-     * 高德's own 1237 (XiaomiUAConnectedDevice) is not posted while the ride's card is up: it
-     * would be a second, smaller island for the same ride. What it said is kept for the probe.
+     * 高德's own notifications: its 1237 is not posted while the trip's card is up, and its walking
+     * island (1236) is watched, since while it is up it is the trip's walking card.
      */
     fun handle() {
         try {
             Xp.hookAll(NotificationManager::class.java, "notify") { chain ->
                 val a = chain.args
                 val id = a.firstOrNull { it is Int } as Int?
-                val n = a.lastOrNull() as? Notification
-                if (!posted || id != AMAP_UA_ID || n == null) return@hookAll chain.proceed()
-                held++
-                lastHeld = n.extras.getCharSequence(Notification.EXTRA_TITLE).toString() + " | " +
-                    n.extras.getCharSequence(Notification.EXTRA_TEXT)
-                if (held == 1) Xp.log(TAG + "holding back 高德's own $AMAP_UA_ID: $lastHeld")
+                if (id == AMAP_WALK_ID) AmapTransitShare.walkIsland(true)
+                if (!posted || id != AMAP_UA_ID) return@hookAll chain.proceed()
+                if (held++ == 0) Xp.log(TAG + "holding back 高德's own $AMAP_UA_ID")
                 null
             }
+            Xp.hookAll(NotificationManager::class.java, "cancel") { chain ->
+                val id = chain.args.firstOrNull { it is Int } as Int?
+                if (id == AMAP_WALK_ID) AmapTransitShare.walkIsland(false)
+                chain.proceed()
+            }
         } catch (t: Throwable) {
-            Xp.log(TAG + "notify hook failed: $t")
+            Xp.log(TAG + "notification hooks failed: $t")
         }
     }
 
-    /** The ride's island for [entity], or none for null or a leg that is not a ride. */
-    fun update(ctx: Context, entity: String?) {
-        try {
-            val trip = entity?.let { AmapTransitScene.Trip.parse(JSONObject(it)) }
-            if (trip == null || !trip.leg.rides()) {
+    /** The trip's island for [entity] - none for null - and the kind of card it is. */
+    fun update(ctx: Context, entity: String?): String {
+        return try {
+            val trip = entity?.let { AmapTransitCard.Trip.parse(JSONObject(it)) }
+            val card = AmapTransitCard.of(trip)
+            if (trip == null || card == null) {
                 cancel(ctx)
-                return
+                return ""
             }
             lastEntity = entity
-            post(ctx, trip, JSONObject(entity).optString("deepLink"))
+            if (card.kind == AmapTransitCard.Card.KIND_WALK && AmapTransitShare.walkIslandUp()) {
+                cancel(ctx)
+                return card.kind + " (高德's own)"
+            }
+            post(ctx, trip, card)
             lastError = null
+            card.kind
         } catch (t: Throwable) {
             lastError = t.toString()
             Xp.log(TAG + "not posted: $t")
+            "error"
         }
     }
 
-    fun cancel(ctx: Context) {
-        lastEntity = null
+    private fun cancel(ctx: Context) {
         if (!posted) return
         posted = false
         lastStatus = null
@@ -275,72 +204,15 @@ internal object AmapTransitIsland {
         Xp.log(TAG + "taken down")
     }
 
-    /**
-     * `AMAPPROBE --es island card|template|flat`, or one of the plugin's own scenes by name:
-     * the style, and the ride again in it.
-     */
-    fun setStyle(ctx: Context?, name: String): String {
-        // SCENE is chosen by a scene's own name below, never by the word "scene": matching that
-        // here would set the style and clear the scene it is the whole point of.
-        val s = Style.values().firstOrNull {
-            it != Style.SCENE && it.name.equals(name, ignoreCase = true)
-        }
-        if (s != null) {
-            style = s
-            scene = null
-        } else if (SCENES.any { it.equals(name, ignoreCase = true) }) {
-            style = Style.SCENE
-            scene = SCENES.first { it.equals(name, ignoreCase = true) }
-        } else {
-            return "unknown style $name (card, template, flat, ${SCENES.joinToString(", ")})"
-        }
-        Xp.log(TAG + "style " + style.name.lowercase() + (scene?.let { " $it" } ?: ""))
-        val e = lastEntity
-        if (ctx != null && e != null) {
-            // A different layout under the same id: take the old one down so it is drawn anew.
-            ctx.getSystemService(NotificationManager::class.java)?.cancel(ID)
-            lastStatus = null
-            update(ctx, e)
-        }
-        return describe()
-    }
-
-    /**
-     * The ride in one of the plugin's own scenes ([SCENES]): the fields a template scene is read
-     * for - the words, the line's own progress, its badge and the ground - carried at the top of
-     * `miui.focus.param` under the `scene` name the plugin acts on, rather than [Style.TEMPLATE]'s
-     * `param_v2` with no scene at all. Which of the scenes takes which fields is what posting
-     * them one by one answers.
-     */
-    private fun official(trip: AmapTransitScene.Trip, f: AmapTransitScene.Frame, title: String,
-                         milestone: Boolean, float: Boolean): JSONObject {
-        return template(trip, f, title, milestone, float)
-            .put("scene", scene.orEmpty())
-            .put("title", title)
-            .put("content", listOf(f.line, f.direction).filter { it.isNotEmpty() }.joinToString(" "))
-            .put("subContent", f.secondary)
-            .put("colorTitle", "#FFFFFF")
-            .put("colorContent", "#FFFFFF")
-            .put("colorBg", "#000000")
-            .put("showSmallIcon", false)
-            .put("padding", true)
-        // The progress is [template]'s `multiProgressInfo`, which the plugin's own strings
-        // describe the rules of ("progress > 100, reduced to 100", "points > 4, limited to 4").
-        // A hand-made `progressInfo` beside it is not that node: the plugin logs "progressInfo
-        // param error" for it, and a param it cannot read is a param it falls back from.
-    }
-
     fun describe(): String {
-        val sb = StringBuilder("island: style=")
-            .append(if (style == Style.SCENE) "scene " + scene else style.name.lowercase())
-            .append(" posted=").append(posted)
+        val sb = StringBuilder("island: posted=").append(posted)
             .append(" art=").append(if (art != null) "yes" else artPick?.toString() ?: "-")
-        if (held > 0) sb.append(" held1237=").append(held).append(" (").append(lastHeld).append(')')
+        if (held > 0) sb.append(" held1237=").append(held)
         lastError?.let { sb.append(" error=").append(it) }
         return sb.toString()
     }
 
-    private fun post(ctx: Context, trip: AmapTransitScene.Trip, deepLink: String) {
+    private fun post(ctx: Context, trip: AmapTransitCard.Trip, c: AmapTransitCard.Card) {
         val nm = ctx.getSystemService(NotificationManager::class.java) ?: return
         if (nm.getNotificationChannel(CHANNEL) == null) {
             nm.createNotificationChannel(NotificationChannel(CHANNEL, "公交/地铁导航",
@@ -350,63 +222,39 @@ internal object AmapTransitIsland {
                 setShowBadge(false)
             })
         }
-        val f = AmapTransitScene.Frame.of(trip)
-        fetchArt(ctx, f)
-        val title = f.primary.ifEmpty { f.line }
-        val content = listOf(f.line, f.secondary).filter { it.isNotEmpty() }.joinToString(" · ")
-        // A new milestone floats once, the way 高德's walking island floats at a turn; the same
-        // one reposted (the keepalive, the landmark arriving) does not.
-        val milestone = trip.status != lastStatus
-        lastStatus = trip.status
-        val float = milestone && trip.status in FLOAT_AT
-        val badge = Icon.createWithBitmap(badge(f.line, f.lineBg, f.lineText))
+        val pick = AmapTransitScene.Art.Pick.of(trip, c)
+        fetchArt(ctx, pick)
+        val title = c.primary.ifEmpty { c.lockTitle }
+        val content = listOf(c.secondaryLine, c.secondary).map { it.trim() }
+            .filter { it.isNotEmpty() }.joinToString(" ")
+        val lineRow = listOf(c.line, c.direction).filter { it.isNotEmpty() }.joinToString(" ")
+        // A new milestone floats once and may alert; the same one reposted stays quiet.
+        val milestone = c.status + "|" + c.kind != lastStatus
+        lastStatus = c.status + "|" + c.kind
+        val float = milestone && c.status in FLOAT_AT
+        val dp = Resources.getSystem().displayMetrics.density
+        val icon = if (c.line.isNotEmpty()) badge(c.line, c.lineBg, c.lineText) else appIcon(ctx)
         val pics = Bundle().apply {
-            putParcelable(PIC, badge)
-            putParcelable("miui.focus.pic_large", badge)
-            // The progress bar's own three pictures, by the names its `progressInfo` asks for.
-            putParcelable(PIC_VEHICLE, Icon.createWithBitmap(vehicle(f.subway, f.lineBg)))
-            putParcelable(PIC_PIN, Icon.createWithBitmap(pin(f.lineBg)))
-            putParcelable(PIC_FLAG, Icon.createWithBitmap(flag()))
+            putParcelable(PIC, Icon.createWithBitmap(icon))
+            putParcelable("miui.focus.pic_large", Icon.createWithBitmap(icon))
+            putParcelable(PIC_LEFT, Icon.createWithBitmap(
+                if (c.leftLine.isNotEmpty()) chip(c.leftLine, c.leftLineColor, dp) else icon))
+            if (c.rightLine.isNotEmpty()) {
+                putParcelable(PIC_RIGHT, Icon.createWithBitmap(chip(c.rightLine, c.rightLineColor, dp)))
+            }
+            putParcelable(PIC_BG, Icon.createWithBitmap(ground(ctx, c, pick)))
+            if (c.stations != null) {
+                putParcelable(PIC_VEHICLE, Icon.createWithBitmap(vehicle(c.subway(), c.lineBg)))
+                putParcelable(PIC_PIN, Icon.createWithBitmap(pin(c.lineBg)))
+                putParcelable(PIC_FLAG, Icon.createWithBitmap(flag()))
+            }
         }
+        val param = template(trip, c, title, content, lineRow, milestone, float)
         val extras = Bundle()
-        when (style) {
-            Style.CARD -> {
-                extras.putParcelable("miui.focus.rv", card(ctx, f))
-                extras.putString("miui.focus.param.custom",
-                    shared(JSONObject(), title, f, milestone, float).toString())
-            }
-            Style.TEMPLATE -> {
-                val bg = ground(ctx, f, 0.5f)
-                pics.putParcelable(PIC_BG, Icon.createWithBitmap(bg))
-                extras.putString("miui.focus.param",
-                    JSONObject().put("param_v2", template(trip, f, title, milestone, float)).toString())
-            }
-            Style.SCENE -> {
-                val bg = ground(ctx, f, 0.5f)
-                pics.putParcelable(PIC_BG, Icon.createWithBitmap(bg))
-                // `param_v2` is the envelope and `scene` inside it picks the template, which is
-                // how the plugin's own sample carries it: {"param_v2": {..., "scene": "template_v2"}}.
-                // Without the envelope the param is not read at all and the plugin falls back.
-                extras.putString("miui.focus.param",
-                    JSONObject().put("param_v2",
-                        official(trip, f, title, milestone, float)).toString())
-            }
-            Style.FLAT -> extras.putString("miui.focus.param",
-                shared(JSONObject(), title, f, milestone, float)
-                    .put("protocol", 1)
-                    .put("scene", "templateRevertProgressScene")
-                    .put("title", title)
-                    .put("content", content)
-                    .put("colorTitle", "#FFFFFF")
-                    .put("colorContent", "#FFFFFF")
-                    .put("colorBg", "#000000")
-                    .put("showSmallIcon", false)
-                    .put("padding", true)
-                    .toString())
-        }
+        extras.putString("miui.focus.param", JSONObject().put("param_v2", param).toString())
         extras.putBundle("miui.focus.pics", pics)
         val open = Intent(Intent.ACTION_VIEW,
-            Uri.parse(deepLink.ifEmpty { "amapuri://amap?clearStack=0&keepStack=1" }))
+            Uri.parse(trip.deepLink.ifEmpty { "amapuri://amap?clearStack=0&keepStack=1" }))
             .setPackage(ctx.packageName)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         val small = ctx.resources.getIdentifier("notification_amap", "drawable", ctx.packageName)
@@ -414,120 +262,100 @@ internal object AmapTransitIsland {
         val n = Notification.Builder(ctx, CHANNEL)
             .setSmallIcon(small)
             .setContentTitle(title)
-            .setContentText(content)
+            .setContentText(content.ifEmpty { lineRow })
             .setCategory(Notification.CATEGORY_NAVIGATION)
             .setOngoing(true)
-            // A new milestone may alert again, so HyperOS re-floats it (arriving, transfer); the
-            // keepalive repost of the same state stays quiet.
             .setOnlyAlertOnce(!milestone)
             .setShowWhen(false)
-            .setTimeoutAfter(TIMEOUT_MS)
+            .setTimeoutAfter(timeout(c.status))
             .setContentIntent(PendingIntent.getActivity(ctx, ID, open,
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT))
             .addExtras(extras)
             .build()
         nm.notify(ID, n)
         posted = true
-        val key = "$style|$title|$content"
-        if (key != lastKey) Xp.log(TAG + "${style.name.lowercase()}: $title | $content")
+        val key = "${c.kind}|$title|$content"
+        if (key != lastKey) Xp.log(TAG + "${c.kind} ${c.status}: $title | $content")
         lastKey = key
     }
 
-    /** Floats on: the stop before yours, a transfer, arriving. */
-    private val FLOAT_AT = setOf("4", "6", "7")
+    /** GaoDePtNaviSceneRouter.h, as the notification's own end: AmapTransitShare's backstop. */
+    private fun timeout(status: String): Long = when (status) {
+        AmapTransitCard.ARRIVE_FINAL_DESTINATION -> 30_000L
+        AmapTransitCard.ARRIVE_LINE_DESTINATION -> 15 * 60_000L
+        else -> 30 * 60_000L
+    }
 
     /**
-     * What every style says the same way: the status bar's and the AOD's line, floating, and
-     * the super island - the line's badge, the milestone beside it, the stations left after.
+     * The template: the card's words in baseInfo, the line's badge in picInfo, the landmark in
+     * bgInfo, the capsule in param_island, and the leg's progress where the card has a station
+     * overview - the milestones between stops, 下一站 / 下一站即终点 / 当前站 / 换乘.
      */
-    private fun shared(o: JSONObject, title: String, f: AmapTransitScene.Frame,
-                       milestone: Boolean, float: Boolean): JSONObject {
+    private fun template(trip: AmapTransitCard.Trip, c: AmapTransitCard.Card, title: String,
+                         content: String, lineRow: String, milestone: Boolean, float: Boolean): JSONObject {
         val island = JSONObject()
             .put("islandProperty", 1)
             .put("bigIslandArea", JSONObject()
                 .put("imageTextInfoLeft", JSONObject()
                     .put("type", 1)
-                    .put("picInfo", JSONObject().put("type", 1).put("pic", PIC))
+                    .put("picInfo", JSONObject().put("type", 1).put("pic", PIC_LEFT))
+                    .put("textInfo", JSONObject().put("title", c.leftWhite)))
+                .put("imageTextInfoRight", JSONObject()
+                    .put("type", 2)
+                    .apply {
+                        if (c.rightLine.isNotEmpty()) {
+                            put("picInfo", JSONObject().put("type", 1).put("pic", PIC_RIGHT))
+                        }
+                    }
                     .put("textInfo", JSONObject().put("title",
-                        f.islandLeft.ifEmpty { title })))
-                .apply {
-                    // The island's other half is the milestone's own word's opposite number: the
-                    // station, or the line a transfer changes to - not the card's guide line.
-                    val right = f.islandRight.ifEmpty { f.secondary }
-                    if (right.isNotEmpty()) put("imageTextInfoRight", JSONObject()
-                        .put("type", 2)
-                        .put("textInfo", JSONObject().put("title", right)))
-                })
+                        listOf(c.rightWhite, c.rightGray).filter { it.isNotEmpty() }.joinToString(" ")))))
             .put("smallIslandArea", JSONObject()
                 .put("picInfo", JSONObject().put("type", 1).put("pic", PIC)))
-        return o.put("ticker", title)
+        val o = JSONObject()
+            .put("protocol", 1)
+            .put("scene", "template_v2")
+            .put("ticker", c.lockTitle)
             .put("tickerPic", PIC)
-            .put("aodTitle", title)
+            .put("aodTitle", c.lockTitle)
             .put("aodPic", PIC)
             .put("enableFloat", float)
             .put("reopen", if (milestone) "reopen" else "close")
             .put("updatable", true)
             .put("param_island", island)
-    }
-
-    /**
-     * The system's large template (param_v2), for a HyperOS that will not take 高德's own
-     * layout: the milestone over the line and the stations left (baseInfo), the leg's progress
-     * in the line's colour with a node per station still to come (multiProgressInfo), the
-     * line's badge (picInfo) and the ground (bgInfo).
-     */
-    private fun template(trip: AmapTransitScene.Trip, f: AmapTransitScene.Frame, title: String,
-                         milestone: Boolean, float: Boolean): JSONObject {
-        val o = shared(JSONObject(), title, f, milestone, float)
-            .put("protocol", 1)
+            .put("title", title)
+            .put("content", content)
+            .put("colorTitle", "#FFFFFF")
+            .put("colorContent", "#FFFFFF")
+            .put("colorBg", "#000000")
+            .put("showSmallIcon", false)
+            .put("padding", true)
             .put("baseInfo", JSONObject()
                 .put("type", 2)
                 .put("title", title)
-                .put("content", listOf(f.line, f.direction).filter { it.isNotEmpty() }.joinToString(" "))
-                .put("subContent", f.secondary)
+                .put("content", content)
+                .put("subContent", lineRow)
                 .put("colorTitle", "#FFFFFF")
                 .put("colorContent", "#CCFFFFFF")
                 .put("colorSubContent", "#B3FFFFFF"))
             .put("picInfo", JSONObject().put("type", 1).put("pic", PIC))
             .put("bgInfo", JSONObject().put("type", 1).put("picBg", PIC_BG)
-                .put("colorBg", hex(AmapTransitScene.blend(f.lineBg, BOTTOM, 0.55f))))
-        // How long the leg is: its station list when 高德 gave one, and otherwise the stops still
-        // to come, which is all a ride built out of 高德's cards knows. A ride always has an empty
-        // `via` - the module's own entity cannot fill it - so without the second the guard below
-        // never opened and the card never had a bar at all.
-        val leg = trip.leg
-        val total = if (leg.via.size > 0) leg.via.size + 1 else leg.remain + 1
-        if (f.nodes != null && total > 1 && f.status in PROGRESS_AT) {
-            // 高德's own reading of where the ride has got to when the card carried one -
-            // `location.persent`, a real ride's 0.02 / 0.44 / 0.71 down its leg - and only the
-            // shape of the stops left when it did not. Counting stops instead is not the same
-            // thing: a leg with three of four stops left is not a quarter of the way along it.
-            val done = (total - leg.remain).coerceIn(0, total)
+                .put("colorBg", hex(AmapTransitScene.blend(c.lineBg, BOTTOM, 0.55f))))
+        val leg = trip.current
+        if (c.stations != null && leg != null) {
+            // 高德's own share of the leg (`location.persent`) where it gave one, else the stops
+            // gone by of the leg's own. ColorOS's overview carries no figure at all - three stops
+            // and which one the train is at - and this bar is the template's nearest thing to it.
+            val total = leg.via.size + 1
+            val done = (total - (leg.remain ?: total)).coerceIn(0, total)
             val said = if (trip.legPercent in 0.0..1.0) (trip.legPercent * 100).toInt()
                 else done * 100 / total
-            // The fill has a floor: narrower than the bar is tall it stops being a piece of the
-            // bar and draws as a mark standing up at the left end, which is what a ride that has
-            // just begun looks like - 高德's own `persent` for boarding is 0.02. A ride that is
-            // genuinely nowhere along its leg still shows nothing.
             val percent = if (said in 1 until PROGRESS_MIN) PROGRESS_MIN else said
-            // `progressInfo`, not `multiProgressInfo`. The plugin takes the two for the same slot
-            // of the card and asks about this one FIRST (`TemplateFactoryV3`: multiProgressInfo
-            // before progressInfo), and they are not the same bar: `multiProgressInfo` is a row of
-            // segments and dots, while `progressInfo` is the one drawn like the design - a single
-            // bar filled to the ride's own place in the line's colour, a picture riding that edge,
-            // a pin where it is going and a flag at the end. Its own three pictures are what
-            // `picForward` / `picMiddle` / `picEnd` name, and they are sent in `miui.focus.pics`
-            // with the rest.
-            //
-            // No title either way. The words are already on `baseInfo.subContent` above the bar,
-            // and ColorOS's own station overview carries none at all - its `cardStationOverview`
-            // is a list of stops, `isCurStation`, `isTwoStation` and `curIndex`, with not one
-            // string in it. Sending the same sentence twice made the card read it twice over.
+            // progressInfo rather than multiProgressInfo: the plugin asks for the latter first and
+            // draws it as segments and dots; this one is the design's single bar with a car on it.
             o.put("progressInfo", JSONObject()
                 .put("progress", percent.coerceIn(0, 100))
-                .put("colorProgress", hex(f.lineBg))
-                // Deepening towards the car, as the design's fill does.
-                .put("colorProgressEnd", hex(AmapTransitScene.blend(f.lineBg, 0xff000000.toInt(), 0.25f)))
+                .put("colorProgress", hex(c.lineBg))
+                .put("colorProgressEnd", hex(AmapTransitScene.blend(c.lineBg, 0xff000000.toInt(), 0.25f)))
                 .put("picForward", PIC_VEHICLE)
                 .put("picMiddle", PIC_PIN)
                 .put("picEnd", PIC_FLAG))
@@ -535,34 +363,7 @@ internal object AmapTransitIsland {
         return o
     }
 
-    // ------------------------------------------------------------------ the card
-
-    /**
-     * The card's views: the ground (the line's colour, the landmark), the line's pill, where it
-     * is heading, the milestone and what is left, the track. Pixels for this screen: the
-     * notification is drawn on the phone that posts it.
-     */
-    private fun card(ctx: Context, f: AmapTransitScene.Frame): RemoteViews {
-        val dp = ctx.resources.displayMetrics.density
-        val rv = RemoteViews(BuildConfig.APPLICATION_ID, R.layout.mc_transit_card)
-        rv.setImageViewBitmap(R.id.mc_transit_ground, ground(ctx, f, GROUND_SCALE))
-        if (f.line.isNotEmpty()) {
-            rv.setImageViewBitmap(R.id.mc_transit_line, pill(f.line, f.lineBg, f.lineText, dp))
-        } else {
-            rv.setViewVisibility(R.id.mc_transit_line, View.GONE)
-        }
-        rv.setTextViewText(R.id.mc_transit_direction, f.direction)
-        rv.setTextViewText(R.id.mc_transit_primary, f.primary.ifEmpty { f.line })
-        rv.setTextViewText(R.id.mc_transit_secondary, f.secondary)
-        rv.setViewVisibility(R.id.mc_transit_secondary, if (f.secondary.isEmpty()) View.GONE else View.VISIBLE)
-        if (f.nodes != null) {
-            rv.setImageViewBitmap(R.id.mc_transit_track, track(f, contentWidth(ctx), dp))
-            rv.setViewVisibility(R.id.mc_transit_track, View.VISIBLE)
-        } else {
-            rv.setViewVisibility(R.id.mc_transit_track, View.GONE)
-        }
-        return rv
-    }
+    // ------------------------------------------------------------------ pictures
 
     /** The card as wide as a notification row: the screen less the shade's margins. */
     private fun cardWidth(ctx: Context): Int {
@@ -570,118 +371,108 @@ internal object AmapTransitIsland {
         return (minOf(m.widthPixels, m.heightPixels) - 2 * 14f * m.density).toInt().coerceAtLeast(1)
     }
 
-    /** Inside the card's padding (the layout's 18dp each side). */
-    private fun contentWidth(ctx: Context) =
-        (cardWidth(ctx) - 36f * ctx.resources.displayMetrics.density).toInt().coerceAtLeast(1)
-
     /**
-     * The ground, as the page has it in little: the line's colour into near-black, and the
-     * landmark on the right, fading into the colour under the words and darkening under the
-     * track. A default picture rather than a landmark stays dim, as on the page. Everything is
-     * cut to the card's corners, the way the system's own card is.
+     * The ground: the line's colour into near-black, and the landmark on the right, fading into
+     * the colour under the words and darkening at the foot. A default picture rather than a
+     * landmark stays dim, as on the page. Cut to the card's corners, as the system's own card is.
      */
-    private fun ground(ctx: Context, f: AmapTransitScene.Frame, scale: Float): Bitmap {
+    private fun ground(ctx: Context, c: AmapTransitCard.Card, pick: AmapTransitScene.Art.Pick): Bitmap {
         val dp = ctx.resources.displayMetrics.density
+        val scale = 0.5f
         val w = (cardWidth(ctx) * scale).toInt().coerceAtLeast(1)
         val h = (CARD_DP * dp * scale).toInt().coerceAtLeast(1)
         val b = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-        val c = Canvas(b)
-        c.clipPath(corners(w, h, CORNER_DP * dp * scale))
+        val canvas = Canvas(b)
+        canvas.clipPath(Path().apply {
+            val r = (CORNER_DP * dp * scale).coerceAtMost(minOf(w, h) / 2f)
+            addRoundRect(RectF(0f, 0f, w.toFloat(), h.toFloat()), r, r, Path.Direction.CW)
+        })
         val p = Paint(Paint.DITHER_FLAG)
-        val top = AmapTransitScene.blend(f.lineBg, BOTTOM, 0.42f)
+        val top = AmapTransitScene.blend(c.lineBg, BOTTOM, 0.42f)
         p.shader = LinearGradient(0f, 0f, w.toFloat(), h.toFloat(),
-            intArrayOf(top, AmapTransitScene.blend(f.lineBg, BOTTOM, 0.72f), BOTTOM),
+            intArrayOf(top, AmapTransitScene.blend(c.lineBg, BOTTOM, 0.72f), BOTTOM),
             floatArrayOf(0f, 0.55f, 1f), Shader.TileMode.CLAMP)
-        c.drawRect(0f, 0f, w.toFloat(), h.toFloat(), p)
+        canvas.drawRect(0f, 0f, w.toFloat(), h.toFloat(), p)
         val set = art
         val still = set?.still
-        if (still != null && set.pick == artPick) {
-            // Placed by the landmark inside the picture rather than by the picture's own edge.
-            // Pinned to its right edge, a picture of a building of this aspect lands centred,
-            // roof through the milestone and the stations; grown just past a cover, so no edge
-            // of it shows, what it is a picture *of* can be put where there is room instead -
-            // right of centre, and lifted by the height the growth bought.
+        if (still != null && set.pick == pick) {
+            // Placed by the landmark in the picture, not by its edge: grown past a cover so no
+            // edge shows, right of centre where the words are not, lifted by what the growth bought.
             val cover = maxOf(w / still.width.toFloat(), h / still.height.toFloat()) * LANDMARK_ZOOM
             val lw = still.width * cover
             val lh = still.height * cover
             val left = w * LANDMARK_AT - lw / 2f
-            val topY = h - lh + (lh - h) * LANDMARK_DOWN
-            val r = RectF(left, topY, left + lw, topY + lh)
+            val r = RectF(left, h - lh, left + lw, h.toFloat())
             val ip = Paint(Paint.FILTER_BITMAP_FLAG or Paint.DITHER_FLAG)
             ip.alpha = if (set.pick.fallback) 110 else 235
-            c.drawBitmap(still, null, r, ip)
-            // Into the colour on the left, under the words - held at full strength until the
-            // picture's own left edge and fading out from there, so that edge is not a seam
-            // across the card. The picture no longer reaches the card's left side (it is placed
-            // by the landmark in it, not by its own edge), which is what leaves the seam to hide.
+            canvas.drawBitmap(still, null, r, ip)
             val fade = Paint(Paint.DITHER_FLAG)
             val seam = maxOf(0f, r.left)
             val fadeEnd = seam + w * 0.45f
             fade.shader = LinearGradient(0f, 0f, fadeEnd, 0f,
                 intArrayOf(top, top, top and 0x00ffffff),
                 floatArrayOf(0f, (seam / fadeEnd).coerceIn(0f, 1f), 1f), Shader.TileMode.CLAMP)
-            c.drawRect(0f, 0f, w.toFloat(), h.toFloat(), fade)
-            // And darker at the foot, under the station names.
+            canvas.drawRect(0f, 0f, w.toFloat(), h.toFloat(), fade)
             fade.shader = LinearGradient(0f, h * 0.45f, 0f, h.toFloat(),
                 0x00000000, 0x99000000.toInt(), Shader.TileMode.CLAMP)
-            c.drawRect(0f, 0f, w.toFloat(), h.toFloat(), fade)
+            canvas.drawRect(0f, 0f, w.toFloat(), h.toFloat(), fade)
         }
         return b
     }
 
-    /** The three stops, the page's own Track, the badge's room only when there is a badge. */
-    private fun track(f: AmapTransitScene.Frame, w: Int, dp: Float): Bitmap {        val badged = f.nodes.badge.any { it != null }
-        val top = (if (badged) AmapTransitScene.Track.TOP_DP else 12f) * dp
-        val h = (top + AmapTransitScene.Track.BOTTOM_DP * dp).toInt()
-        val b = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-        AmapTransitScene.Track(dp).draw(Canvas(b), f, w * 0.12f, w * 0.88f, top)
-        return b
+    /**
+     * The landmark for the card, fetched in 高德's process the way the page fetches it in
+     * SystemUI's; the card is posted again, quietly, once it is here.
+     */
+    private fun fetchArt(ctx: Context, pick: AmapTransitScene.Art.Pick) {
+        if (pick == artPick) return
+        artPick = pick
+        art = null
+        AmapTransitScene.Art.request(ctx, pick) { set ->
+            AmapTransitShare.post(Runnable {
+                if (set.pick != artPick) return@Runnable
+                art = set
+                val e = lastEntity ?: return@Runnable
+                update(ctx, e)
+            })
+        }
     }
 
     /**
-     * A rounded rectangle's path, for cutting a bitmap to the card's corners. `clipPath` is
-     * antialiased while `clipRect` is not, and this is a soft gradient against a light shade.
+     * The line-coloured half of a capsule half (ColorOS's capsule*TextLine): the text in white on
+     * a rounded chip of the colour - 「7」 on 7号线's green, 「B口」 on the line's colour.
      */
-    private fun corners(w: Int, h: Int, r: Float): Path {
-        val radius = r.coerceAtMost(minOf(w, h) / 2f)
-        val p = Path()
-        p.addRoundRect(RectF(0f, 0f, w.toFloat(), h.toFloat()), radius, radius, Path.Direction.CW)
-        return p
-    }
-
-    /** The line's name in a pill of its colour: 「地铁1号线」 on red. */
-    private fun pill(line: String, bg: Int, fg: Int, dp: Float): Bitmap {
+    private fun chip(text: String, bg: Int, dp: Float): Bitmap {
         val p = Paint(Paint.ANTI_ALIAS_FLAG)
         p.typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-        p.textSize = 13f * dp
+        p.textSize = 15f * dp
         val fm = p.fontMetrics
         val h = (fm.bottom - fm.top) + 6f * dp
-        val w = p.measureText(line) + 16f * dp
+        val w = maxOf(p.measureText(text) + 14f * dp, h)
         val b = Bitmap.createBitmap(w.toInt().coerceAtLeast(1), h.toInt().coerceAtLeast(1),
             Bitmap.Config.ARGB_8888)
         val c = Canvas(b)
         p.color = bg
-        c.drawRoundRect(RectF(0f, 0f, b.width.toFloat(), b.height.toFloat()), h / 2f, h / 2f, p)
-        p.color = if (Color.alpha(fg) == 0) Color.WHITE else fg
-        c.drawText(line, 8f * dp, b.height / 2f - (fm.ascent + fm.descent) / 2f, p)
+        c.drawRoundRect(RectF(0f, 0f, b.width.toFloat(), b.height.toFloat()), 6f * dp, 6f * dp, p)
+        p.color = Color.WHITE
+        p.textAlign = Paint.Align.CENTER
+        c.drawText(text, b.width / 2f, b.height / 2f - (fm.ascent + fm.descent) / 2f, p)
         return b
     }
 
-    /**
-     * The landmark for the frame, fetched in 高德's process the way the page fetches it in
-     * SystemUI's (AmapTransitScene.Art: OPPO's pictures, kept in 高德's cache); the card is
-     * posted again, quietly, once it is here.
-     */
-    private fun fetchArt(ctx: Context, f: AmapTransitScene.Frame) {
-        if (f.art == artPick) return
-        artPick = f.art
-        art = null
-        AmapTransitScene.Art.request(ctx, f.art) { set ->
-            if (set.pick != artPick) return@request
-            art = set
-            val e = lastEntity ?: return@request
-            if (style != Style.FLAT) update(ctx, e)
+    /** 高德's own icon, for the cards that are not about a line (the end, off the route, a walk). */
+    private fun appIcon(ctx: Context): Bitmap {
+        val size = 96
+        val b = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        try {
+            val d = ctx.packageManager.getApplicationIcon(ctx.packageName)
+            d.setBounds(0, 0, size, size)
+            d.draw(Canvas(b))
+        } catch (t: Throwable) {
+            Canvas(b).drawCircle(size / 2f, size / 2f, size / 2f,
+                Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xff4a86ff.toInt() })
         }
+        return b
     }
 
     private fun hex(c: Int) = String.format("#%06X", c and 0xffffff)

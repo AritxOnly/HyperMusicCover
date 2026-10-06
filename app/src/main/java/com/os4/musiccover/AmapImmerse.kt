@@ -34,8 +34,7 @@ import java.util.concurrent.atomic.AtomicInteger
  *
  * `adb shell am broadcast -a com.os4.musiccover.AMAPPROBE` answers in the main process only.
  * With `--ez ask true` - what a freshly started SystemUI sends - it re-sends the start instead,
- * if a page is up. With `--es transit demo` (or `end`) it plays a made-up subway ride through
- * AmapTransitShare, island and all.
+ * if a page is up. `--es transit raw|begin|stop|demo|end` drives AmapTransitShare (see its probe).
  * The class names here are 高德's own and unobfuscated: the AJX bridge finds modules by name, so
  * they cannot be minified away.
  */
@@ -136,7 +135,7 @@ internal object AmapImmerse {
         } catch (t: Throwable) {
             Xp.log(TAG + "immerse module hooks failed: " + t)
         }
-        // The bus and subway page's half: ColorOS 17's IntelligentIntent provider, stood in for.
+        // The bus and subway trip's half: 高德's trip channels, read the way SceneService would.
         AmapTransitShare.handle(cl)
         try {
             // The service's sendPreviewCommandToAjx: the one static (boolean) method on it.
@@ -189,32 +188,12 @@ internal object AmapImmerse {
                     // A payload rides in base64: its JSON holds Chinese and colons, which `am
                     // broadcast` reads as a URI and cuts apart on the way.
                     val b64 = i.getStringExtra("json")
-                    AmapTransitShare.json = if (b64.isNullOrEmpty()) ""
+                    val json = if (b64.isNullOrEmpty()) ""
                     else runCatching {
                         String(android.util.Base64.decode(b64, android.util.Base64.DEFAULT),
                             Charsets.UTF_8)
                     }.getOrDefault("")
-                    resultData = AmapTransitShare.probe(it)
-                    return
-                }
-                i.getStringExtra("oppo")?.let {
-                    AmapTransitShare.spoof(it.toBoolean())
-                    resultData = AmapTransitShare.describe()
-                    return
-                }
-                // `--es footnavi '<name>,<lat>,<lng>'`: 高德's own walking navigation, asked for
-                // from outside, so the one call it takes can be proved before anything is wired
-                // to it. See AmapFootNavi.
-                i.getStringExtra("footnavi")?.let {
-                    val p = it.split(',')
-                    val cl = appLoader
-                    resultData = if (p.size != 3) "expected name,lat,lng"
-                    else if (cl == null) "no 高德 class loader yet"
-                    else AmapFootNavi.start(cl, p[1].toDouble(), p[2].toDouble(), p[0])
-                    return
-                }
-                i.getStringExtra("island")?.let {
-                    resultData = AmapTransitIsland.setStyle(appCtx, it)
+                    resultData = AmapTransitShare.probe(it, json)
                     return
                 }
                 if (i.getBooleanExtra("ask", false)) {
@@ -226,19 +205,19 @@ internal object AmapImmerse {
                 // Everything at once, for one paste: the ride's own payloads, how often 高德
                 // pushed them, and the probe's state in one answer.
                 if (i.getBooleanExtra("full", false)) {
-                    resultData = AmapTransitShare.eventsDump() + "\n" +
-                        AmapTransitShare.ledgerDump() + "\n" +
+                    resultData = AmapTransitShare.Ledger.eventsDump() + "\n" +
+                        AmapTransitShare.Ledger.dump() + "\n" +
                         AmapTransitShare.describe()
                     return
                 }
                 // The whole ledger, for a ride's worth of payloads at once.
                 if (i.getBooleanExtra("max", false)) {
-                    resultData = AmapTransitShare.ledgerDump()
+                    resultData = AmapTransitShare.Ledger.dump()
                     return
                 }
                 // How often 高德 pushed, one line per send.
                 if (i.getBooleanExtra("events", false)) {
-                    resultData = AmapTransitShare.eventsDump()
+                    resultData = AmapTransitShare.Ledger.eventsDump()
                     return
                 }
                 val sb = StringBuilder()

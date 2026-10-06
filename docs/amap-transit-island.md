@@ -43,35 +43,19 @@ ColorOS 17 锁屏上的高德「逐站地铁播报」**不是高德画的**，�
 
 SceneService 的公交模块只在 **ColorOS 17 及以上**初始化（`GaoDePublicTransportModule.c()` 检查 `isAtLeastOS17`）。
 
-## 3. OPPO 那条协议（本模块只在桥上用它）
+## 3. OPPO 那条协议（澎湃上不走）
 
-高德脚本要以 `il3` 的身份把数据交给 `IntelligentIntent`：
+高德的脚本以 `il3`（日志 tag `LiveCardOppoIntelligentTemplate`）把 entity 交给 `IntelligentIntent` provider：
+`queryFeature` / `shareIntent` / `deleteIntent`，intent 名 `com.autonavi.minimap#Navigation.NotifyPublicTransportStatus`，
+`intentEntity` 即 SceneService 的 `GaoDePtIntentEntity`（字段见 `AmapTransitCard.Trip`）。
 
-1. `acquireUnstableContentProviderClient("IntelligentIntent")`；
-2. `call("queryFeature", "querySupportIntent", {intentName})`，只有回 `{"code":0,"data":"{\"querySupportIntent\":true}"}` 才算支持；
-3. `call("shareIntent", null, {intentData})`；结束用 `deleteIntent` / `deleteEntity`。
-   另有 `getSid`、`enableIntelligentIntent`、`querySupportIntentByPackage`。
+**澎湃上高德的脚本不 `bizBegin(10200)`，这条路本身没有 entity。** 但 `AmapOppoBridge.kt` 必须留着：
 
-- intent 名：`com.autonavi.minimap#Navigation.NotifyPublicTransportStatus`
-- 返回统一是 `Bundle{ "result": CallResult JSON }`，`CallResult = {code, message, data}`；code 0 成功，1003 不支持。
-- `intentData` 外层：`{intentName, intentVersion, identifier, timestamp, serviceId{}, intentAction{actionType, actionStatus,…}, intentEntity{…}, extra{}}`。
-- `intentEntity` 就是 SceneService 的 `GaoDePtIntentEntity`：`status`（里程碑 1-7）、`naviInfo[]`（每段一段，当前段 `isCurrent`）、`destCitycode`、`destStation` / `destLatitude` / `destLongitude`、`exitName`、`guideInfo`、`deepLink`、`arrived` / `offRoute` / `gpsSignalStatus`、`path[]`（整条折线，页面用不到）。
-
-`naviInfo[]` 每项：`transportType`（`0`步行 `1`公交 `2`地铁 `12`轮渡 `13`索道 `100`打车 `102`骑行）、`lineName` / `lineDirection`、`lineBgColor` / `lineTextColor` / `borderColor`、`remainStations`、`on_station{stationName, waitInfo{realTime[]}}`、`off_station{stationName, coord, port_list[{name, shield, coord, status}]}`、`via_st_list[{name, coord, isTransferStation}]`。
-
-**里程碑 `status`**（SceneService 的枚举，也是页面文案的依据）：
-
-| code | 含义 | 主文案 |
-|---|---|---|
-| 1 | 到达起始站附近 | 上车站名 |
-| 2 | 候车 | 上车站名 + 实时到站 |
-| 3 | 下一站 | 「下一站 XX」 |
-| 4 | 下一站即终点 | 「下一站 XX」（**高德不发 4**，保留兼容） |
-| 5 | 到达普通站 | 「当前站 XX」 |
-| 6 | 到达换乘站 | 「准备换乘」+「可换乘 N 号线」 |
-| 7 | 到站 | 「已到达 XX」+ 出站口 |
-
-副文案优先 `guideInfo`，否则「N站 XX下车」。当前下标 = `clamp(via.size − remainStations, 0, via.size−1)`（`com.oplus.sdp.ya.e`）。
+**高德只在通道上有已连接设备时才往 113 发数据。** 2026-10-06 实测：去掉桥，开始导航只有 `bizBegin(113)`、`bizBegin(103)`
+和 103 的卡片，113 一条消息都没有（没有计划、没有实时）；装回桥，开始导航后 3.2 s 计划（`type 24`，21 KB）和实时（`type 25`）都到了。
+桥做的事：把 OPPO 智能卡（10200 / `il3`）的设备配置注入每条通道的设备表（`xn0.a`），在脚本开每条通道时补 `bizBegin(10200)`，
+提前给 `il3` 设好 provider 和 intent，并冒充 `IntelligentIntent` provider 让它判定为已连接。`il3` 转发过来的 `shareIntent` 只是
+103/113 原始载荷的再包装，没有 `intentName`，应答后丢弃——数据从通道上直接读。
 
 ## 4. 澎湃上高德实际发的是什么（真机实测）
 
@@ -112,13 +96,24 @@ SceneService 的公交模块只在 **ColorOS 17 及以上**初始化（`GaoDePub
 - `realtime.buses[].trip[].track` 是车辆坐标（`xs` 经度、`ys` 纬度，字符串）。
 - `subway[].tripTime[].mainTitle` 是地铁倒计时（「2分钟」）。
 
-### 剩余站数的取法（`AmapTransitShare.show`）
+### bizType 113 · `type 24` —— 整条行程计划（开始导航时就到）
 
-| 段类型 | 用的字段 |
-|---|---|
-| 公交 | `arriveRemind.remainStopNum`（更细，优先） |
-| 地铁 | `cardData.location.remainStations` |
-| 兜底 | `titleItems` 拼回整句后抠出的「N站」 |
+`bizBegin(103)` 之后约 30 ms 到（路线页每展示一个方案也会发一次，所以要和卡片的胶囊对得上才算这趟的）：
+
+- `segmentlist[]`，每段一次乘车：`bus_key_name`（「7号线」）、`bustype`（2 地铁 / 1 公交）、`color`、`directionName`、`busid`、
+  `on_station`（含 `start_time` / `end_time` 首末班）、`via_st_list[]`（名字 + 坐标）、`off_station`（`is_trans`）、
+  `outport`（出站口，带坐标）、`inport`（进站口）、`footlength` / `foottime`（这段之前的步行）、`driver_coord_list`（两端坐标）；
+- `spoi` / `epoi`（起终点名字和坐标）、`endfootlength` / `endfoottime`（最后一段步行）、`allLength`、`expensetime`（全程秒数）。
+
+这就是 ColorOS `naviInfo[]` 需要的全部内容，**本模块据此拼出完整 entity**（§6）。
+
+### 113 `type 25` 里认得的字段
+
+- `locationData.groupIndex` = 当前是第几段（和 103 卡的 `planData` 胶囊同一个计数：步行 0 / 乘车 1 / 步行 2），
+  `linkIndex` = 这段里第几站。`arriveRemind` 的站数只对 `groupIndex` 那一段有效（步行时它数的是别的）。
+- `arriveRemind.curStopName` / `remainStopNum`：列车**到站**时才更新（地下没有 GPS，`speed` 恒为 0），站与站之间一动不动。
+- `arriveRemind.tipType`：乘车中 4，**这段坐完 48**（10-05 下车那一刻和 103 卡换成步行卡同时出现）。
+- 高德**不发「到站」卡**：下车时 103 卡直接从「乘坐 地铁7号线」跳到「步行至 目的地」，之后「已到达 X」+ `arrived:true`，紧跟 `bizEnd(103)`。
 
 ## 5. 每站背景图（地标图）
 
@@ -156,106 +151,117 @@ shanghai, 021,  TheBund        (31.241969,121.490214) ...
 
 ## 6. 移植到本模块（HyperOS）
 
-### 6.1 高德进程 · `AmapTransitShare.kt`
+**原则：ColorOS 的东西原样照搬，只有高德不告诉我们的才自己推。** ColorOS 上高德直接给 `status`（里程碑），
+这里没有，只能从「卡片在哪一段」和「这段还剩几站」推出来；其余（卡片文案、选站、换乘、到站、终点卡、各种计时）全部是 SceneService 的规则。
 
-两件事并行：
+```
+高德进程                                                   SystemUI
+NativesModuleWearable ── 103 卡 / 113 计划+实时 ──┐
+                                                  ├─ AmapTransitShare（线程、计时、发送）
+                         AmapTransitMilestones ───┤    └ AmapTransitEntity → GaoDePtIntentEntity
+                                                  │         ├─ AmapTransitIsland（焦点通知）── AmapTransitCard
+                                                  │         └─ op transit ───────────────────→ AmapTransitScene ── AmapTransitCard
+```
 
-**（a）冒充 `IntelligentIntent` provider**（§3 那条协议）
-- hook `ContentResolver.acquire(Unstable)ContentProviderClient`：只有原本返回 **null** 且问的是 `IntelligentIntent` 时才换成 Settings 的 client 交回去（真 ColorOS 上不动）；
-- hook `ContentProviderClient.call`：只拦这一批 client，按 SceneService 的格式回答 `queryFeature` / `shareIntent` / `deleteIntent` / `getSid`，不会真的打到 Settings；
-- 收到合法的 `shareIntent` 就把 `intentEntity`（去掉 `path`）转给 SystemUI（`op transit`）。
+### 6.1 实体：`AmapTransitEntity.kt`
 
-**（b）桥接并直接读通道**
-- `bridgeOppo`：把 10200（`thid_sdk_template_oppo_intelligent` → `il3`）的设备配置注入进 `xn0.a` 返回的设备表，让**脚本会开的每条通道**都把 `il3` 一起建起来；同时在 `NativesModuleWearable.bizBegin/bizBeginWithData` 旁路调用 `WearableService`，把 `bizBegin(10200)` 连同 `{authority, intentName}` 的 begin data 一起补上。这样 `il3.isSupport` 问到的就是我们自己的假 provider，OPPO 那条路真正跑起来。（代价是这套注入是否真的贡献了数据，只能靠探针的 `shares=` / `bridge:` 两行判断。）
-- `watchWearable`：hook `NativesModuleWearable` 的 `bizBegin / bizBeginWithData / bizEnd / sendMessage / sendNotify / sendLockScreenMessage`，`sendMessage(103|113, payload)` 送进 `ride()`。
-- `ride()` + `show()`：把 103 和 113 合成一份 ColorOS 形状的 `GaoDePtIntentEntity`——线路、方向、线路色、剩余站数、里程碑 status、上下车站、出站口、实时到站、坐标、deepLink——再走 `tell()` 交给 SystemUI。**SystemUI 端和焦点岛都不用改**，因为喂给它们的是同一份形状。
-- 步行段（`title` 含「步行」）不接管，交给高德自己的岛；行程结束 `clear()` 撤销。
-- 状态重复时 60 秒（`KEEPALIVE_MS`）补一次，免得 SystemUI 把长区间当结束。
+- **胶囊就是分段**：103 卡的 `planData[]` 每个胶囊一段（步行胶囊 = 步行段），第 k 个乘车胶囊 ↔ 计划的第 k 个 `segmentlist`；
+  两边线路名逐个对得上（「7号线」对「地铁7号线(燕山--美的大道)」，「1号线」不对「11号线」）才认这份计划是这趟的（`fits`）。
+- 乘车段从计划填：线路/方向/颜色、上车站与首末班、途经站（带坐标，给地标用）、下车站、出站口；步行段填长度和时长。
+- 后面还有乘车的那一段，下车站标成换乘站（`isTransferStation`）。
+- 当前段补上：剩余站数、实时到站（地铁 `subway[].tripTime`、公交 `realtime.buses[].trip`，按 `busid` 认自己的线）、卡片句子里的出站口（「(B口)」）。
+- **没有对得上的计划时**（模块中途重启、路线页的计划不是这趟）：只有胶囊和卡片的信息，途经站用「已经到过的站 + 不知道名字的占位」凑出 ColorOS 下标算法要的长度。
 
-### 6.2 高德进程 · `AmapTransitIsland.kt` 与 `AmapFocus.java`
+### 6.2 里程碑：`AmapTransitMilestones.kt`（纯 Kotlin，可在电脑上跑）
 
-高德在澎湃上只有步行/骑行发焦点通知（id 1236），公交/地铁没有。所以**以高德身份补发一条焦点通知**：
+| 情形 | status | 说明 |
+|---|---|---|
+| 第一次看到某个乘车段，且剩余站数 = 全部站数 | 2 候车 | 直到第一站过去 |
+| 剩余站数减少（到了一站） | 5 当前站 | 停 30 s（`DWELL_MS`，不是 ColorOS 的数，模仿停站） |
+| 之后 | 3 下一站 | 剩 1 站时 4 下一站即终点（ColorOS 的 `W()` 遇到换乘会改回 3） |
+| 卡片离开一个乘车段、后面还有乘车 | 6 到达换乘站 | 保留 30 s，然后是换乘步行 / 下一条线的候车 |
+| 卡片离开一个乘车段、后面没有乘车 | 7 到站 | 地铁保留 **5 min**（`GaoDePtRideCodeDeferBindManager`），高德的步行导航岛（1236）一出现就结束；公交 30 s |
+| 最后一段就是乘车，且高德说坐完（剩 0 / `tipType 48`） | 7 | 地铁 5 min、公交 35 s 后出终点卡（`GaoDePtFinalDestCardManager`） |
+| 卡片 `arrived` / 「已到达 X」 | 8 终点 | 终点卡 30 s，之后什么都不收 |
+| 当前段是步行 | — | ColorOS 的静默步行卡（`ya.n.f`）；高德自己的步行岛在时让给它 |
+| 卡片 `offRoute` | — | 偏航卡（`ya.f`） |
 
-- **id 1239**（避开 1236，以及高德自己的 `XiaomiUAConnectedDevice` 1237）；卡在时把 1237 拦掉（`handle()` hook `NotificationManager.notify`），免得一条行程两个岛。
-- 三种样式，探针可切（`--es island card|template|flat`）：
-  - **`template`（默认）**：系统大模板 `param_v2`——baseInfo（里程碑大字 + 线路和方向 + 副文案）、multiProgressInfo（按剩余站数走的进度条，线路色，副文案在条子上方重复一行）、picInfo（线路号圆牌）、bgInfo（地面）。
-  - **`card`**：`miui.focus.rv` 自定义布局 `res/layout/mc_transit_card.xml`，由 SystemUI 从**模块包**inflate（高德有 `QUERY_ALL_PACKAGES`，能引用）。176dp、24dp 圆角，地面（线路色渐变 + 地标图，在**高德进程**里下载缓存）、线路色胶囊、方向、大字里程碑、剩余站数、底部三节点轨道（复用 `AmapTransitScene.Track`）。ticker / AOD / 超级岛在 `miui.focus.param.custom`。
-  - **`flat`**：protocol 1 两行小模板。
-- `FLOAT_AT = {4,6,7}`：下一站即终点、换乘、到站时上浮一次；同一状态重发不浮。
-- **`AmapFocus.java`（SystemUI 进程）是这套能成立的前提**。焦点插件会把 1239 直接丢掉：
+没有计划时，下一站的名字不知道，就停在「当前站 X」而不是猜一个。
 
-  ```
-  FocusPlugin: onInflateSuccess 0|com.autonavi.minimap|1239|null|10385
-  FocusPlugin: onAuthFailed     0|com.autonavi.minimap|1239|null|10385  com.autonavi.minimap
-  FocusPlugin: removeByKey / removeFocusNotificationByKey / removeIslandDataByKey
-  ```
+### 6.3 卡片：`AmapTransitCard.java`（SceneService `ya.b` 等逐函数移植）
 
-  死因不是跨包 `RemoteViews`（那只解释 `onInflateSuccess`），而是 `FocusNotificationController.fetchAuthResult` 里的 `canCustomFocus(pkg)`——一张云端名单，高德不在上面。`canPassXMSPermission` 是同一条路上更早的一道门。
+`e0`（里程碑说哪一站）、`d0` / `X`、`Y`（「N站 XX下车 / 换乘」）、`l` / `h` / `m` / `o` / `n`（站点概览，两站或三站、换乘站、换乘线路角标）、
+`ya.e` 三节点/两节点、`W`、`k0`、`f0` / `b0`、`j0`（公交↔地铁不画换乘）、候车卡 `p` / `q` / `k` / `g`（首末班、「列车预计 N 分钟进站」）、
+到站卡 `b`（地铁有出站口时左半是出站口色块）、终点卡 `ya.a`（「已到达 X / 全程N分钟」）、偏航卡 `ya.f`、步行卡 `ya.n.f`、路由 `GaoDePtNaviSceneRouter.j`。
+文案逐字取自 SceneService 的 `gaode_pt_*` 资源。离线测试：`AmapTransitCardTest`（10-05 真实行程 + 一个换乘计划，逐步断言）。
 
-  `NotificationSettingsManager` 定义在控制中心插件自己的 APK 里，由 SystemUI 运行时才构造的 class loader 加载，所以 `AmapFocus` 盯着 `BaseDexClassLoader` 的构造函数等它出现，然后对 `com.autonavi.minimap` 这一个包名的 `canCustomFocus` / `canPassXMSPermission` 答 true，别的一概不动。入口在 `Main.java`。
+### 6.4 焦点通知：`AmapTransitIsland.kt`
 
-### 6.3 SystemUI · `AmapTransitScene.java`
+| ColorOS 卡片 | 澎湃 `param_v2`（scene `template_v2`） |
+|---|---|
+| 胶囊左 / 右 | `param_island.bigIslandArea.imageTextInfoLeft / Right`；线路色那一截（`capsule*TextLine`）画成色块图片放 `picInfo`，白字进 `textInfo` |
+| `cardPrimaryInfo` | `baseInfo.title` |
+| `cardSecondaryLineName` + `cardSecondaryInfo` | `baseInfo.content` |
+| 线路 + 方向 | `baseInfo.subContent` |
+| `titleInLock` | `ticker` / `aodTitle` |
+| `cardStationOverview` | `progressInfo`（设计图那根条：车头 / 站点针 / 终点旗） |
+| 地标 | `bgInfo` |
 
-一个新的 `ImmersiveScene`，进程内自己画，照 OPPO 五一路那种样式：
+id 1239；高德自己的 1237 在卡片在时拦掉；1236（高德步行导航岛）被监视，用于让出步行卡和结束地铁到站保留。
+`AmapFocus.java`（SystemUI）让插件的授权链放行高德的焦点通知（`canCustomFocus` / `canPassXMSPermission`）。
 
-- 线路色底、线路/方向、里程碑文案（`Frame.milestone`）、**横向三节点实时进度**（当前站居中加粗，换乘站画成带 ⇄ 的胶囊并在上方挂换乘线路号方形徽标，颜色取换乘那条线的颜色）；
-- 三节点只画**真正被点名的站**：高德经常把同一个站放在两个槽位（下一站和终点常常同站），重复的只留一个，空位从**右往左**排（一个名字站在它旁边那站该在的位置，不是被顶到左边）；名字和轨道不重叠；
-- 中间是地标动图和名字图；地面（线路色 → 近黑 + 地标静图）画在 **shade 窗口之下的 `CountdownScene.GroundSurface`** 上——锁屏玻璃行采样的是窗口后面的东西，窗口里的 View 采不到；
-- 地标动图**只播一遍就停**（`AnimatedImageDrawable` `setRepeatCount(0)`），状态真的变了才 `replayArt()` 重播；keepalive 重发不重播；
-- 换乘线路号取自当前段之后的第一段（`Trip.nextLine`）；
-- 公交/地铁段时由它接管高德的焦点岛（在 `ImmersiveHost.SCENES` 里排在地图**前面**），步行段仍交给 `AmapNavScene` 的地图；`STALE_MS` 十分钟无数据视为结束。
+### 6.5 锁屏页：`AmapTransitScene.java`
 
-`AmapTransitLandmarks.java` 是 OPPO 地标表 + CDN + 0.8 km 匹配（原样照搬 §5.3）。
+画同一张卡：线路色块 + 方向、主副文案（副文案前的线路色块：换乘的下一条线、到站的出站口；候车卡显示下一班车/首末班）、
+两站或三站的概览（列车在两站之间还是停在中间那站，换乘站 ⇄ + 下一条线角标）、地标（在途：卡片点名那一站 0.8 km 内的地标；
+到站：出站口 → 地标 → 城市默认（地铁）→ 全国默认）。步行卡不认领页面（那是高德自己的步行导航地图）。
 
 ## 7. 调试命令
 
 ```sh
-# 高德进程，一次拿全：脚本对设备层的调用、每条通道的采样、
-# 假 provider 的计数、焦点通知状态、bridge 结果、send 频率
-adb shell am broadcast -a com.os4.musiccover.AMAPPROBE --ez full true
-# 只取某一部分
-adb shell am broadcast -a com.os4.musiccover.AMAPPROBE --ez max true     # 整本 ledger（一次行程的全部载荷）
-adb shell am broadcast -a com.os4.musiccover.AMAPPROBE --ez events true  # 每次发送的时刻和大小（看间隔）
+# 高德进程状态：当前段 / status / 卡片种类 / 计划是否对得上 / 保留中的里程碑 / 终点卡
+adb shell am broadcast -a com.os4.musiccover.AMAPPROBE
+adb shell am broadcast -a com.os4.musiccover.AMAPPROBE --ez max true      # 每种载荷最近一份（整份）
+adb shell am broadcast -a com.os4.musiccover.AMAPPROBE --ez events true   # 每次发送的时刻
 
-# 把一段真载荷重新走一遍 ride()（试载荷形状，不用坐车）
+# 把一份载荷当作刚收到（base64，103 卡或 113 datas）；begin/stop = bizBegin/bizEnd(103)
 adb shell am broadcast -a com.os4.musiccover.AMAPPROBE --es transit raw --es json '<base64>'
+adb shell am broadcast -a com.os4.musiccover.AMAPPROBE --es transit begin|stop
+# 停站 30 s / 地铁到站 5 min 缩成十分之一（回放用），slow 恢复
+adb shell am broadcast -a com.os4.musiccover.AMAPPROBE --es transit fast|slow
+adb shell am broadcast -a com.os4.musiccover.AMAPPROBE --es transit demo|end
 
-# 切换焦点通知样式并立刻重发
-adb shell am broadcast -a com.os4.musiccover.AMAPPROBE --es island card|template|flat
+# 用上一次导航的真实计划逐站模拟整趟（十分之一时长，期间挡住高德的真实数据，不会在高德里起导航）
+adb shell am broadcast --receiver-foreground -a com.os4.musiccover.AMAPPROBE --es transit sim
+# 整趟回放（10-05 那次 7 号线 + 补写的计划）：.scratch/amap-ledger/replay1005.py
+# 高德在后台会被 Greezer 冻住，发给它的广播都要带 --receiver-foreground，否则被扣下、乱序送达
 
-# 整条链路演示：高德进程假装收到一段地铁数据 → 焦点岛 + 转给 SystemUI
-adb shell am broadcast -a com.os4.musiccover.AMAPPROBE --es transit demo
-adb shell am broadcast -a com.os4.musiccover.AMAPPROBE --es transit end
-# 逐段（进站/乘车/换乘/到达）
-adb shell am broadcast -a com.os4.musiccover.AMAPPROBE --es transit 乘车
-
-# 只测 SystemUI 页面（北京 1 号线，下一站天安门东，会匹配故宫地标图）
+# 只测 SystemUI 页面
 adb shell am broadcast -a com.os4.musiccover.PROBE -p com.android.systemui --es op transit --ez demo true
-adb shell am broadcast -a com.os4.musiccover.PROBE -p com.android.systemui --es op transit --es json '<intentEntity JSON>'
 adb shell am broadcast -a com.os4.musiccover.PROBE -p com.android.systemui --es op transit --es do end
-# 不点焦点岛，直接开关这一页
-adb shell am broadcast -a com.os4.musiccover.PROBE -p com.android.systemui --es op immersive --es id amap-transit --es do open
-adb shell am broadcast -a com.os4.musiccover.PROBE -p com.android.systemui --es op immersive --es id amap-transit --es do close
 ```
 
 ## 8. 代码位置
 
 | 文件 | 进程 | 作用 |
 |---|---|---|
-| `AmapTransitShare.kt` | 高德 | 假 `IntelligentIntent` provider；桥接 10200；读 103/113 合成 entity 转给 SystemUI |
-| `AmapTransitIsland.kt` | 高德 | 公交/地铁段的焦点通知（id 1239，自定义大卡 / 大模板 / 小模板） |
-| `res/layout/mc_transit_card.xml` | SystemUI inflate | 焦点大卡的布局（`res/raw/mc_keep.xml` 保住它不被 R8 删） |
-| `AmapFocus.java` | SystemUI | 让高德的焦点卡过 `FocusPlugin` 的授权链 |
-| `AmapImmerse.kt` | 高德 | 启动上面的 hook；SystemUI 重启时重发最后一次状态；探针 |
-| `AmapTransitScene.java` | SystemUI | 数据模型、选站/选图规则、图片下载缓存（`cache/mc-transit/`）、页面绘制 |
-| `AmapTransitLandmarks.java` | SystemUI | OPPO 地标表（42 城）、CDN 地址、0.8 km 匹配 |
-| `ImmersiveHost.java` | SystemUI | 场景列表里排在地图前面，只在公交/地铁段认领高德的焦点岛 |
-| `Main.java` | SystemUI | `op transit`、`AmapFocus.install` |
+| `AmapTransitShare.kt` | 高德 | 读 103/113、线程与计时、ColorOS 的生命周期规则、发给 SystemUI 和岛、探针、`transit sim` |
+| `AmapOppoBridge.kt` | 高德 | 给 113 通道一个「已连接设备」，否则高德不发计划和实时（§3） |
+| `AmapTransitMilestones.kt` | 高德 | 推里程碑（纯逻辑） |
+| `AmapTransitEntity.kt` | 高德 | 计划 + 胶囊 + 卡片 + 实时 → `GaoDePtIntentEntity` |
+| `AmapTransitCard.java` | 两边 | SceneService 卡片构建器的移植 |
+| `AmapTransitIsland.kt` | 高德 | 焦点通知（id 1239）与进度条三张图 |
+| `AmapFootNavi.kt` | 高德 | 开始导航时直接进高德自己的步行导航（开头那段步行） |
+| `AmapFocus.java` | SystemUI | 焦点插件授权放行 |
+| `AmapTransitScene.java` | SystemUI | 锁屏页、地标图下载缓存 |
+| `AmapTransitLandmarks.java` | 两边 | OPPO 地标表、CDN、0.8 km 匹配、按坐标认城市 |
 
 ## 9. 已知边界与风险
 
-- **真机验证范围**：2026-10-02 的厦门地铁 2 号线一次行程（103/113 通道、载荷读法、焦点卡上屏都以此为准）。**公交路径（`transportType 1`）与换乘站（status 6）没有真机记录**，代码有分支但不等于验证过。
-- **桥接 10200 是否真的贡献数据未知**：`shares=` 长期为 0 也说明不了问题（§4 的数据全走 103/113）。要判断只能看探针的 `bridge:` 和 `shares=`。
-- **息屏（AOD）表现没有验证记录**：岛的 `aodTitle/aodPic` 和页面的 doze 分支都在，但没见实测。
-- 高德的通道载荷是**私有格式**，随版本可能变；升级高德后 `ride()` 的读法要重新对。
-- 图片来自 OPPO CDN，OPPO 随时可能改路径或加鉴权；地标缺失靠逐级回退兜住。
+- **高德不给 status**：候车何时结束、停站多久、换乘/到站显示多久，都是推出来的（§6.2），不是 ColorOS 的原样。
+  地铁站与站之间没有任何实时信号，所以「候车」会一直到第一站过去。
+- **乘车码**：ColorOS 刷乘车码出站会提前结束地铁到站卡，这里没有对应信号，只能等 5 分钟或高德步行导航开始。
+- **真机只验过 10-05 那一次地铁行程的载荷**；公交（`realtime.buses` 的字段）、换乘、偏航、只有乘车没有末段步行的行程都没有真机记录，
+  代码按 ColorOS 写，载荷读法是推测。
+- 计划只在开始导航时发；模块或高德中途重启会丢计划，走没有计划的退化路径。
+- 高德的通道载荷是私有格式；地标图来自 OPPO CDN，随时可能变。

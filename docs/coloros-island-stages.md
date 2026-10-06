@@ -1,7 +1,7 @@
 # ColorOS 17 高德公交/地铁卡：小岛在各里程碑分别显示什么
 
 > 来源：`D:\coloros17-re\`（ColorOS17-v16-fuxi-FULL-20260928 全量逆向）里的
-> `jadx/SceneService/sources/`，以及 `D:\coloros17-re\apks\SceneService.apk` 的资源表。
+> `jadx-full/SceneService/sources/`（`jadx/` 那份不全，缺 `ya.*`；2026-10-06 用 `-Xmx3g -j 2` 重新反编译），以及 `D:\coloros17-re\apks\SceneService.apk` 的资源表。
 > 卡构建器是 `com.oplus.sdp.ya.b`（日志 tag `GaoDePt_BusOrSubwayParser`），
 > 里程碑枚举是 `com.coloros.scene.business.publicTransport.gaode.constant.GaoDePublicTransportNavMilestone`。
 > 字符串取自 `com.oplus.sdp.dc.b`（R id 持有类）的 id → `aapt2 dump resources`。
@@ -45,11 +45,11 @@
 | **4** 下一站即终点 | **「下一站」** | **站名** | **「下一站 %s」** / guideInfo |
 | **5** 到达普通站 | **「当前站」** | **站名** | **「当前站 %s」** / guideInfo |
 | **6** 到达换乘站 | **「换乘」** | 线路名（线路色）+ 「往X」 | **「准备换乘」** / … |
-| **7** 到站 | 「到站」白字；出站后改成 **出站口**（如「B口」，线路底色） | **下车站名** | 下车站名 / **「已到站」** |
+| **7** 到站 | 「到站」白字；地铁且知道出站口时改为 **出站口**（如「B口」，线路底色） | **下车站名** | 下车站名 / **「已到站」** |
 
 两种白/灰的分配也值得照抄：status 3/4/5/7 的小岛是 `capsuleLeftTextWhite` 放固定词（下一站/当前站），`capsuleRightTextWhite` 放站名；status 6 反过来，左边「换乘」是固定词、右边是线路名用底色画。
 
-**status 7 有两条分支**：还没出站时 `capsuleLeftShowIcon=true` + 左「白字」= 离开的那站；到站后改写为 `capsuleLeftShowIcon=false`、`capsuleLeftTextLine=出站口`、`capsuleLeftLineBgColor=线路色`——也就是**小岛左半变成一个带线路色的出站口胶囊**，右半是下车站名。状态 7 还会置 `cardShowCover` / `cardShowPath`，让大卡露出地标图。
+**status 7 有两条分支**（`ya.b.b`），分的是「是不是地铁、知不知道出站口」，与是否已出站无关：公交、或地铁但 `exitName` 为空、或这段没有途经站（概览第一项的线路色拿不到）时，左半是图标 +「到站」，副文案「已到站」；地铁且有出站口时 `capsuleLeftShowIcon=false`、`capsuleLeftTextLine=出站口`、`capsuleLeftLineBgColor=线路色`——**小岛左半是带线路色的出站口胶囊**，大卡副文案也换成同色的出站口。右半永远是下车站名，锁屏副标题永远是「已到站」。到站卡还带 `cardDestinationIcon` / `cardShowCover`（出站口坐标的地标图，`ya.b.O`），`cardShowPath=false`。
 
 ## 4. 文案是怎么拼出来的
 
@@ -86,9 +86,20 @@
 
 ## 6. 与本模块的对照
 
-本模块的 `AmapTransitIsland` 走的不是这套键（那是 ColorOS 的 `sdp` 卡，澎湃上不存在），它发的是 `miui.focus.param` 的 `param_v2`。但**语义可以照搬**：
+**2026-10-06 起本模块逐函数移植了这套规则**（`AmapTransitCard.java`），小岛左右两半就是 ColorOS 的
+`capsuleLeft*` / `capsuleRight*`：白字进 `textInfo`，线路底色那一截（`capsule*TextLine`）画成色块图片进 `picInfo`。
+§3 的表就是现在的实际显示，`AmapTransitCardTest` 按 10-05 真实行程逐步断言。
 
-- 本模块 status 3/5 的「下一站 / 当前站」正是 ColorOS 的 `gaode_pt_next_station` / `gaode_pt_current_station`，措辞一致；
-- ColorOS 的小岛左右是「固定词 + 站名」两段，本模块的 `param_island.bigIslandArea` 也是 `imageTextInfoLeft`（线路徽标 + 里程碑）/ `imageTextInfoRight`（剩余站数），结构同源；
-- **status 6（换乘）小岛左边是「换乘」而不是站名**，右边才是线路名 —— 本模块目前在换乘时仍按「当前站/下一站」处理，这一条可以对齐；
-- **status 7 小岛左半是出站口胶囊**（线路底色）—— 本模块的 `exitName` 只进了 entity（给页面用），没有进焦点卡的小岛，可以补。
+## 7. 生命周期（谁让卡片出现、保留、消失）
+
+| ColorOS 类 | 规则 | 本模块 |
+|---|---|---|
+| `GaoDePtNaviSceneRouter.j` | 偏航 → 终点(8) → 端内结束(9) → 步行/骑行 → 打车 → 公交地铁 | `AmapTransitCard.of` 同序 |
+| `GaoDePtNaviSceneRouter.h` | 无新数据：status 8 30 s、status 7 15 min、其余 30 min 后撤卡 | `AmapTransitShare.silence` |
+| `GaoDePtRideCodeDeferBindManager` | 地铁 status 7 且下一段是步行：步行卡推迟 5 min，刷乘车码或步行导航开始则提前 | `AmapTransitMilestones` 的到站保留；高德步行岛（1236）出现即提前 |
+| `GaoDePtFinalDestCardManager` | 最后一段是公共交通且 status 7：地铁 5 min / 公交 35 s 后出终点卡 | `AmapTransitShare.finalCard` |
+| `GaoDePtNaviIntentHandler.l` + `ya.a` | 终点卡 30 s；之后同一行程的数据全部忽略 | `showFinal` + `finalShown` |
+| `GaoDePtDismissHandler.b` | 删除意图：终点卡在/待出、或正在最后一段步行时忽略 | `bizEnd(103)` 时同样判断 |
+| `GaoDePtWalkRideHandler` / `ya.n.f` | 步行段：静默步行卡「步行至 XX / 共步行N米，M分钟」 | 步行段卡片；高德自己的步行岛在时让出 |
+
+ColorOS 的 status 由高德给；澎湃上高德不给，`AmapTransitMilestones` 从「卡片在哪段 + 剩几站」推（见 `amap-transit-island.md` §6.2）。
