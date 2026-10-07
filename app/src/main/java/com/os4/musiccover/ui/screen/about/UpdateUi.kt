@@ -197,6 +197,12 @@ fun rememberUpdateController(isCurrent: () -> Boolean): UpdateController {
                     return@LaunchedEffect
                 }
 
+                is InstallOutcome.SavedToDownloads -> {
+                    states.installing = false
+                    states.status = resources.getString(R.string.update_saved_to_downloads, outcome.name)
+                    return@LaunchedEffect
+                }
+
                 is InstallOutcome.NotOurs -> {
                     states.installing = false
                     states.status = resources.getString(R.string.update_not_ours)

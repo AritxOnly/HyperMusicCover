@@ -69,7 +69,7 @@ final class LocalLyrics {
             }
             return f;
         } catch (Throwable t) {
-            Xp.log("[MCLocal] lookup failed: " + t);
+            Xp.w("[MCLocal] lookup failed: " + t);
             return null;
         }
     }
@@ -497,7 +497,7 @@ final class LocalLyrics {
             }
             return null;
         } catch (Throwable t) {
-            Xp.log("[MCLocal] ID3 read failed: " + t);
+            Xp.w("[MCLocal] ID3 read failed: " + t);
             return null;
         } finally {
             close(f);
@@ -622,7 +622,7 @@ final class LocalLyrics {
             }
             return null;
         } catch (Throwable t) {
-            Xp.log("[MCLocal] FLAC read failed: " + t);
+            Xp.w("[MCLocal] FLAC read failed: " + t);
             return null;
         } finally {
             close(f);

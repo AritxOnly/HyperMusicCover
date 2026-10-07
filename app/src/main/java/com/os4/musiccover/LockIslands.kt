@@ -368,7 +368,7 @@ internal object LockIslands {
             Xp.findClass("com.android.systemui.statusbar.notification.collection.coordinator." +
                 "KeyguardCoordinator\$notifFilter\$1", classLoader)
         }.getOrElse {
-            Xp.log("MCIsland: keyguard filter unavailable, no notification islands: $it")
+            Xp.w("MCIsland: keyguard filter unavailable, no notification islands: $it")
             return
         }
         runCatching {
@@ -377,7 +377,7 @@ internal object LockIslands {
                 runCatching { consider(chain.thisObject, chain.args, hidden) }
                     .getOrDefault(hidden)
             }
-        }.onFailure { Xp.log("MCIsland: filter hook failed: $it"); return }
+        }.onFailure { Xp.w("MCIsland: filter hook failed: $it"); return }
         runCatching {
             val pluggable = Xp.findClass("com.android.systemui.statusbar.notification.collection." +
                 "listbuilder.pluggable.Pluggable", classLoader)
@@ -386,7 +386,7 @@ internal object LockIslands {
                 if (chain.thisObject === filter?.get()) runCatching { commit() }
                 result
             }
-        }.onFailure { Xp.log("MCIsland: run end unavailable: $it") }
+        }.onFailure { Xp.w("MCIsland: run end unavailable: $it") }
         // The countdown reads its timer from locked runs only, and a countdown stopped with the
         // phone unlocked is gone before the next one: locked straight into the doze, every row
         // is hidden and nothing reads it, and the page stayed up with the stopped timer on it
@@ -401,7 +401,7 @@ internal object LockIslands {
                 }
                 result
             }
-        }.onFailure { Xp.log("MCIsland: removals unavailable: $it") }
+        }.onFailure { Xp.w("MCIsland: removals unavailable: $it") }
         NumState.install(classLoader)
         NumState.addListener { folded ->
             if (!nativeStack) return@addListener
@@ -593,6 +593,19 @@ internal object LockIslands {
     }
 
     /** [key]'s notifications: the stack island's, or itself. */
+    /**
+     * The stack island's newest notification, when every notification in it is one app's and
+     * that one opens something: tapped, the island opens it as its row would, rather than
+     * spreading the stack out to show one app's notifications (the user, 2026-10-07). Null for
+     * more than one app, or nothing to open.
+     */
+    fun stackSingleAppLead(): String? {
+        val members = stackFrom
+        val lead = members.firstOrNull() ?: return null
+        if (lead.intent == null || members.any { it.pkg != lead.pkg }) return null
+        return lead.key
+    }
+
     fun membersOf(key: String): List<String> = when {
         key == STACK_KEY -> stackMembers
         isAppGroup(key) -> appGroupMembers[key].orEmpty()

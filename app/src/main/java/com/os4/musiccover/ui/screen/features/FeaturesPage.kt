@@ -28,6 +28,7 @@ import com.os4.musiccover.ModuleBridge
 import com.os4.musiccover.R
 import com.os4.musiccover.ShadeActivity
 import com.os4.musiccover.MiniPlayerActivity
+import com.os4.musiccover.TransitActivity
 import com.os4.musiccover.ui.util.PageScaffold
 import kotlinx.coroutines.delay
 import top.yukonga.miuix.kmp.basic.BasicComponent
@@ -96,7 +97,8 @@ private fun FeatureList(
             Column {
                 // The 12dp under the bar that every other list page in this app leaves. It was
                 // missing on this one card, which put it flush against the title.
-                // The order is the user's (2026-09-30): the islands, the cover, the shade.
+                // The order is the user's (2026-09-30): the islands, the cover, the shade; 高德's trip
+                // went last when it got its switch (2026-10-07).
                 Card(
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 12.dp)
                 ) {
@@ -122,6 +124,15 @@ private fun FeatureList(
                         title = stringResource(R.string.features_shade_title),
                         summary = stringResource(R.string.features_shade_summary),
                         onClick = { onOpen(ShadeActivity::class.java) },
+                    )
+                }
+                Card(
+                    modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)
+                ) {
+                    ArrowPreference(
+                        title = stringResource(R.string.features_transit_title),
+                        summary = stringResource(R.string.features_transit_summary),
+                        onClick = { onOpen(TransitActivity::class.java) },
                     )
                 }
             }
@@ -500,6 +511,15 @@ private fun LyricsGroup(
             },
         )
         SwitchPreference(
+            title = stringResource(R.string.lyrics_roma),
+            checked = module.lyricsRoma,
+            enabled = enabled,
+            onCheckedChange = {
+                onChange(module.copy(lyricsRoma = it))
+                ModuleBridge.setLyricsRoma(context, it)
+            },
+        )
+        SwitchPreference(
             title = stringResource(R.string.lyrics_hdr),
             summary = stringResource(R.string.lyrics_hdr_summary),
             checked = module.lyricsHdr,
@@ -549,6 +569,17 @@ private fun CardGroup(
             onCheckedChange = {
                 onChange(module.copy(mcTitleTap = it))
                 ModuleBridge.setCardTitleTap(context, it)
+            },
+        )
+        // The progress bar's glow, the island's look on the card's own bar (#49). Not tied to
+        // cover mode either: it is the OEM's card in every mode.
+        SwitchPreference(
+            title = stringResource(R.string.media_bar_glow),
+            checked = module.mediaBarGlow,
+            enabled = enabled,
+            onCheckedChange = {
+                onChange(module.copy(mediaBarGlow = it))
+                ModuleBridge.setMediaBarGlow(context, it)
             },
         )
         // Sits here because that is where it was asked for, but it is not a card setting and does

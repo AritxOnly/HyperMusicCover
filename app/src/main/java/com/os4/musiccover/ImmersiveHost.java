@@ -43,9 +43,10 @@ import java.util.Set;
  * Opening and closing on the lit lock screen crossfade the page with what is under it, over the
  * cover's own crossfade (Main.fadeMsFor the clock's response, eased out the same way), so the
  * page arrives with the clock. Closed, the clock starts home at once and the page fades out with
- * it; turned round half way, the fade turns from where it is. Everything else - an unlock, the
- * doze, the shade over an app - is a cut, as it always was: those go with the lock screen's own
- * motion, and a page fading there would be one left behind.
+ * it; turned round half way, the fade turns from where it is. An unlock fades the page out with
+ * the lock screen's own content as that starts to leave (onLockScreenLeaving). Everything else -
+ * the doze, the shade over an app - is a cut, as it always was: those go with the lock screen's
+ * own motion, and a page fading there would be one left behind.
  *
  * The page is blurred above and below the band it keeps its information in (EdgeBlurView,
  * ImmersiveScene.sharpBand), which is where the clock and the cards sit over it.
@@ -97,6 +98,9 @@ final class ImmersiveHost {
     private static final List<ImmersiveScene> SCENES = new ArrayList<>();
 
     static {
+        // Before the map: both are 高德's island, and the ride's page claims it only while 高德's
+        // current leg is a bus or a subway.
+        SCENES.add(AmapTransitScene.INSTANCE);
         SCENES.add(AmapNavScene.INSTANCE);
         SCENES.add(CountdownScene.INSTANCE);
     }
@@ -315,7 +319,7 @@ final class ImmersiveHost {
                         if (sTapPage) scene.onPageTap();
                         else scene.onRowTap();
                     } catch (Throwable t) {
-                        Xp.log(TAG + scene.id() + " tap failed: " + t);
+                        Xp.w(TAG + scene.id() + " tap failed: " + t);
                     }
                 }
                 endTap();
@@ -371,7 +375,7 @@ final class ImmersiveHost {
         try {
             return open.pageHit(x, y);
         } catch (Throwable t) {
-            Xp.log(TAG + open.id() + " page hit failed: " + t);
+            Xp.w(TAG + open.id() + " page hit failed: " + t);
             return false;
         }
     }
@@ -426,8 +430,8 @@ final class ImmersiveHost {
     /** From LockIslands: the scene's island was tapped open. */
     static void open(ImmersiveScene scene) {
         if (sOpen == scene && !sYield) return;
-        // Another page on the lit lock screen - just closed for this one, or still open: the two
-        // crossfade. The new one then appears as opened pages do, from nothing - or, when it is
+        // Another page on the lit lock screen - just closed for this one, or still open: the one
+        // dips out and the other in (SWAP_OUT_SHARE). The new one appears from nothing - or, when it is
         // the one still fading out of the last crossfade, from where it has got to: a run of
         // taps between two islands turns the two fades round rather than restarting them.
         float backFrom = scene == sSwapOut ? sSwapFade : Float.NaN;
@@ -575,7 +579,7 @@ final class ImmersiveHost {
                 try {
                     s.release();
                 } catch (Throwable t) {
-                    Xp.log(TAG + s.id() + " release failed: " + t);
+                    Xp.w(TAG + s.id() + " release failed: " + t);
                 }
             }
             Xp.log(TAG + "unlocked: " + prepared.size()
@@ -791,6 +795,7 @@ final class ImmersiveHost {
             if (parent != null) parent.removeView(sSlot);
             Xp.log(TAG + "slot removed");
         }
+        holdScreen(false);
         sSlot = null;
         sEdge = null;
         sVeil = null;
@@ -819,7 +824,7 @@ final class ImmersiveHost {
                         try {
                             s.prepare(slot);
                         } catch (Throwable t) {
-                            Xp.log(TAG + s.id() + " prepare failed: " + t);
+                            Xp.w(TAG + s.id() + " prepare failed: " + t);
                         }
                         if (sLetGo.contains(s)) {
                             sMain.removeCallbacks(LET_GO_EXPIRED);
@@ -907,7 +912,7 @@ final class ImmersiveHost {
             try {
                 Main.onImmersive(keep);
             } catch (Throwable t) {
-                Xp.log(TAG + "lock screen " + (keep ? "hold" : "hand-back") + " failed: " + t);
+                Xp.w(TAG + "lock screen " + (keep ? "hold" : "hand-back") + " failed: " + t);
             }
         }
         if (sSlot == null) return false;
@@ -950,7 +955,7 @@ final class ImmersiveHost {
             try {
                 s.onShown(shown && s == page || s == swap, dozing && s != swap);
             } catch (Throwable t) {
-                Xp.log(TAG + s.id() + " show failed: " + t);
+                Xp.w(TAG + s.id() + " show failed: " + t);
             }
         }
         if (shown != sShown) {
@@ -958,7 +963,87 @@ final class ImmersiveHost {
             Xp.log(TAG + (shown ? "shown " + page.id() + (dozing ? " (doze)" : "") : "hidden"));
             changed = true;
         }
+        holdScreen(shown && !dozing && page != sLeaving && page.isNavigation() && litNow());
         return changed;
+    }
+
+    // ---------------------------------------------------------------- 屏幕常亮
+
+    /**
+     * Keeps the lit lock screen on while a navigation page is up, the way the lyrics' 屏幕常亮
+     * does (LockLyrics.holdScreen): keepScreenOn on the slot, which is in the shade window, so
+     * the window manager holds a screen wake lock over the keyguard's 10s timeout. Never in a
+     * doze - asked for there it pulls the phone out of the AOD at full brightness - and not with
+     * the phone in a pocket or face down, where the lock screen's own timeout takes it again.
+     */
+    private static void holdScreen(boolean asked) {
+        if (asked) {
+            try {
+                asked = Main.sAppCtx != null && MiniPlayerRuntime.navKeepOn(Main.sAppCtx);
+            } catch (Throwable t) {
+                asked = false;
+            }
+        }
+        sScreenAsked = asked;
+        watchProximity(asked);
+        applyScreenHold();
+    }
+
+    private static void applyScreenHold() {
+        FrameLayout slot = sSlot;
+        boolean want = sScreenAsked && !sCovered && slot != null;
+        if (want == sScreenHeld) return;
+        sScreenHeld = want;
+        if (slot != null) slot.setKeepScreenOn(want);
+        Xp.log(TAG + (want ? "holding the screen on for the navigation" : "screen may sleep again"));
+    }
+
+    /** The setting changed: weighed again on the next frame the shade window draws. */
+    static void navKeepOnChanged() {
+        sMain.post(new Runnable() {
+            @Override
+            public void run() {
+                if (sSlot != null) sSlot.invalidate();
+                if (!sShown) holdScreen(false);
+            }
+        });
+    }
+
+    private static boolean sScreenAsked;
+    private static boolean sScreenHeld;
+    /** The proximity sensor reads near: the phone is in a pocket or face down. */
+    private static boolean sCovered;
+    private static android.hardware.SensorEventListener sProximity;
+
+    /** Listens only while the screen is being held, so a sleeping phone keeps no sensor on. */
+    private static void watchProximity(boolean on) {
+        if (on == (sProximity != null)) return;
+        android.hardware.SensorManager sm = Main.sAppCtx == null ? null
+                : Main.sAppCtx.getSystemService(android.hardware.SensorManager.class);
+        if (sm == null) return;
+        if (!on) {
+            sm.unregisterListener(sProximity);
+            sProximity = null;
+            sCovered = false;
+            return;
+        }
+        android.hardware.Sensor s = sm.getDefaultSensor(android.hardware.Sensor.TYPE_PROXIMITY);
+        if (s == null) return;
+        final float far = s.getMaximumRange();
+        sProximity = new android.hardware.SensorEventListener() {
+            @Override
+            public void onSensorChanged(android.hardware.SensorEvent e) {
+                boolean covered = e.values.length > 0 && e.values[0] < far;
+                if (covered == sCovered) return;
+                sCovered = covered;
+                applyScreenHold();
+            }
+
+            @Override
+            public void onAccuracyChanged(android.hardware.Sensor sensor, int accuracy) {
+            }
+        };
+        sm.registerListener(sProximity, s, android.hardware.SensorManager.SENSOR_DELAY_NORMAL, sMain);
     }
 
     private static boolean litNow() {
@@ -975,8 +1060,11 @@ final class ImmersiveHost {
         if (!shown) {
             stopFade();
             sFade = sFadeTo = 1f;
+            sExiting = false;
             return;
         }
+        // Going with the lock screen's content (onLockScreenLeaving): not brought back meanwhile.
+        if (sExiting) return;
         boolean leaving = page == sLeaving;
         if (!sShown) {
             // Appearing.
@@ -999,6 +1087,59 @@ final class ImmersiveHost {
         startFade(page, to, leaving && sLeaveOntoCover);
     }
 
+    /**
+     * How long the page takes to go once the lock screen starts to leave. An unlock is otherwise a
+     * cut, at the window's going - but HyperOS fades the lock screen's own content out first, over
+     * about this long, and a page left standing at full strength through that went a beat after
+     * everything else (filmed 2026-10-07: four frames at 30fps with the clock and the shortcuts
+     * gone and the page still there).
+     */
+    private static final long EXIT_FADE_MS = 120L;
+    /** How long an exit that did not take the lock screen away holds the page down. */
+    private static final long EXIT_GIVE_UP_MS = 1500L;
+    private static boolean sExiting;
+
+    /** The lock screen started leaving (KeyguardService's exit animation). Main thread. */
+    static void onLockScreenLeaving() {
+        final ImmersiveScene page = sOpen;
+        if (!sShown || page == null || sExiting) return;
+        sExiting = true;
+        stopFade();
+        final float from = sFade;
+        sFadeTo = 0f;
+        ValueAnimator a = ValueAnimator.ofFloat(0f, 1f);
+        a.setDuration(EXIT_FADE_MS);
+        a.setInterpolator(t -> 1f - (1f - t) * (1f - t) * (1f - t));
+        a.addUpdateListener(an -> {
+            if (sFadeAnim != an) return;
+            sFade = from * (1f - (float) an.getAnimatedValue());
+            setPageFade(page, sFade);
+        });
+        sFadeAnim = a;
+        a.start();
+        sMain.removeCallbacks(EXIT_GIVE_UP);
+        sMain.postDelayed(EXIT_GIVE_UP, EXIT_GIVE_UP_MS);
+        Xp.log(TAG + "lock screen leaving: " + page.id() + " goes with it");
+    }
+
+    /** Still on a lit lock screen after an exit: it was not one, and the page comes back. */
+    private static final Runnable EXIT_GIVE_UP = () -> {
+        if (!sExiting) return;
+        if (!onLockScreen() || !screenOn()) return;
+        sExiting = false;
+        sFadeTo = sFade;
+        Xp.log(TAG + "lock screen stayed: the page comes back");
+        apply();
+    };
+
+    /**
+     * An exchange between two pages is a dip, not a crossfade: the one going out takes this share
+     * of the fade, and the one coming in waits this much of its own before it starts - by then
+     * the other is at under 1%.
+     */
+    private static final float SWAP_OUT_SHARE = 0.5f;
+    private static final float SWAP_IN_DELAY = 0.4f;
+
     /** @param late the curve that keeps the page until the cover under it is mostly in */
     private static void startFade(final ImmersiveScene page, final float to, boolean late) {
         stopFade();
@@ -1015,6 +1156,13 @@ final class ImmersiveHost {
             a.setInterpolator(t -> {
                 float e = 1f - (1f - t) * (1f - t) * (1f - t);
                 return e * e;
+            });
+        } else if (to > from && sSwapOut != null) {
+            // Coming in over a page going out: not until that one has all but gone. Two pages of
+            // words crossfaded read as one jumble for the middle of it (2026-10-07).
+            a.setInterpolator(t -> {
+                float u = Math.max(0f, (t - SWAP_IN_DELAY) / (1f - SWAP_IN_DELAY));
+                return 1f - (1f - u) * (1f - u) * (1f - u);
             });
         } else {
             a.setInterpolator(t -> 1f - (1f - t) * (1f - t) * (1f - t));
@@ -1052,7 +1200,7 @@ final class ImmersiveHost {
         try {
             page.setFade(alpha);
         } catch (Throwable t) {
-            Xp.log(TAG + page.id() + " fade failed: " + t);
+            Xp.w(TAG + page.id() + " fade failed: " + t);
         }
         if (sEdge != null && !sEdgeFromSwap) sEdge.setFade(alpha);
     }
@@ -1064,7 +1212,7 @@ final class ImmersiveHost {
         sSwapOut = out;
         final float from = sFade;
         sSwapFade = from;
-        long ms = Math.max(1L, Math.round(Main.fadeMsFor(Main.sClockResponse) * from));
+        long ms = Math.max(1L, Math.round(Main.fadeMsFor(Main.sClockResponse) * from * SWAP_OUT_SHARE));
         ValueAnimator a = ValueAnimator.ofFloat(0f, 1f);
         a.setDuration(ms);
         a.setInterpolator(t -> 1f - (1f - t) * (1f - t) * (1f - t));
@@ -1091,7 +1239,7 @@ final class ImmersiveHost {
         try {
             out.setFade(alpha);
         } catch (Throwable t) {
-            Xp.log(TAG + out.id() + " fade failed: " + t);
+            Xp.w(TAG + out.id() + " fade failed: " + t);
         }
         if (sEdge != null && sEdgeFromSwap) sEdge.setFade(alpha);
     }
@@ -1228,7 +1376,7 @@ final class ImmersiveHost {
             sDozeLifts++;
         } catch (Throwable t) {
             // Drawn all the same: whatever lifts the display next shows it.
-            Xp.log(TAG + "draw wake lock failed: " + t);
+            Xp.w(TAG + "draw wake lock failed: " + t);
         }
         sLiftView = drawer;
         sLiftAt = SystemClock.uptimeMillis();
@@ -1317,7 +1465,7 @@ final class ImmersiveHost {
             }, sMain);
             sDisplayWatched = true;
         } catch (Throwable t) {
-            Xp.log(TAG + "display listener failed: " + t);
+            Xp.w(TAG + "display listener failed: " + t);
         }
     }
 

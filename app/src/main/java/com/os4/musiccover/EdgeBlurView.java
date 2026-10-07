@@ -228,7 +228,7 @@ final class EdgeBlurView extends View {
             mAlphas.clear();
             mPad = null;
             mUnavailable = true;
-            Xp.log("MCImmersive: edge blur unavailable: " + t);
+            Xp.w("MCImmersive: edge blur unavailable: " + t);
         }
         layoutStrips();
     }

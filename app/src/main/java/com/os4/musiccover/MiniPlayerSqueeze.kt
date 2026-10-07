@@ -28,8 +28,6 @@ import kotlin.math.sqrt
 internal class ShortcutDisc(context: Context) : FrameLayout(context) {
     private val element = MaterialElement(context)
 
-    /** The element the card's material is on, for EdgeProbe. */
-    internal val materialView: View get() = element
     private var dressWith: ((ImageView) -> Unit)? = null
     private var dressedAs = -1
     private var shapeW = 0

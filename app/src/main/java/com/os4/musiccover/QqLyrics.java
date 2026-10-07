@@ -70,7 +70,7 @@ final class QqLyrics {
         try {
             got = fetch(q, answered);
         } catch (Throwable t) {
-            Xp.log("[" + TAG + "] failed: " + t);
+            Xp.w("[" + TAG + "] failed: " + t);
             answered[0] = false;
         }
         // A miss is remembered only when the search actually answered.
@@ -84,8 +84,23 @@ final class QqLyrics {
 
     private static Found fetch(NcmLyrics.Query q, boolean[] answered) throws Exception {
         long started = android.os.SystemClock.uptimeMillis();
+        // QQ 音乐 playing: its own id for the song, and its lyric by that - the original, the
+        // translation and the romanisation, with no search to lose the song in. Measured
+        // 2026-10-07, the id alone answers; names and length need not be sent.
+        if (q.qqId != null) {
+            Found f = lyrics(new LyricMatch.Candidate(q.qqId, q.title, q.artist, q.album, 0L, null));
+            if (f != null) {
+                answered[0] = true;
+                Xp.log("[" + TAG + "] " + f.id + " by id -> " + (f.words ? "qrc" : "lrc")
+                        + (f.translation != null ? " + translation" : "")
+                        + (f.roma != null ? " + romanisation" : "") + " in "
+                        + (android.os.SystemClock.uptimeMillis() - started) + "ms");
+                return f;
+            }
+        }
         LyricMatch.Wanted w = new LyricMatch.Wanted(q);
-        List<LyricMatch.Candidate> cands = search(joined(q.title, q.artist), answered);
+        List<LyricMatch.Candidate> cands = search(joined(TrackName.untranslated(q.title),
+                TrackName.unaliased(NcmLyrics.firstArtist(q.artist))), answered);
         LyricMatch.Pick p = LyricMatch.best(cands, w);
         // Several credited names and none of them on the best result: the search ranked on the
         // wrong one. Asked again by the title and the album, as HyperLyrics Enhanced does.
@@ -145,7 +160,46 @@ final class QqLyrics {
         return text == null ? null : new org.json.JSONObject(text);
     }
 
+    /**
+     * What a search answered lately, by its words, for a couple of minutes.
+     *
+     * The duration is not in the words but it is in the score, and QQ 音乐 publishes a new
+     * track with the previous one's duration for its first half second: the right song came
+     * back scored 60 against the stale duration, and the lookup for the real one (measured
+     * 2026-10-06, 反着爱一场) asked the same question again - and that second request hung until
+     * its read timeout, six seconds before the slow route found the lyric on KuGou. The same
+     * words re-scored against the new duration need no second request.
+     */
+    private static final long SEARCH_TTL_MS = 120_000L;
+    private static final Map<String, Object[]> SEARCHES =
+            new LinkedHashMap<String, Object[]>(9, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<String, Object[]> eldest) {
+                    return size() > 8;
+                }
+            };
+
+    @SuppressWarnings("unchecked")
     static List<LyricMatch.Candidate> search(String keyword, boolean[] answered) throws Exception {
+        long now = android.os.SystemClock.uptimeMillis();
+        synchronized (SEARCHES) {
+            Object[] hit = SEARCHES.get(keyword);
+            if (hit != null && now - (Long) hit[0] < SEARCH_TTL_MS) {
+                answered[0] = true;
+                return (List<LyricMatch.Candidate>) hit[1];
+            }
+        }
+        List<LyricMatch.Candidate> out = searchOnline(keyword, answered);
+        if (answered[0] && !out.isEmpty()) {
+            synchronized (SEARCHES) {
+                SEARCHES.put(keyword, new Object[]{now, out});
+            }
+        }
+        return out;
+    }
+
+    private static List<LyricMatch.Candidate> searchOnline(String keyword, boolean[] answered)
+            throws Exception {
         List<LyricMatch.Candidate> out = new ArrayList<>();
         org.json.JSONObject param = new org.json.JSONObject();
         param.put("search_id", String.valueOf(10000000000000000L

@@ -33,9 +33,6 @@ import org.json.JSONObject
 /** HyperChanger's compact card, hosted in SystemUI's shortcut area. */
 internal class MiniPlayerView(context: Context) : FrameLayout(context) {
     private var materialLayer = MaterialElement(context)
-
-    /** The element the card's material is on, for EdgeProbe. */
-    internal val materialView: View get() = materialLayer
     private val artwork = ImageView(context)
 
     /**
@@ -43,9 +40,6 @@ internal class MiniPlayerView(context: Context) : FrameLayout(context) {
      * moves, fades, turns or rounds the artwork does it to this, so a view in it goes along.
      */
     private val slot = FrameLayout(context)
-
-    /** The picture's round slot, for EdgeProbe. */
-    internal val artSlot: View get() = slot
 
     /**
      * Everything but the glass - the picture's slot, the lines, the buttons - in one layer: the

@@ -142,13 +142,13 @@ final class WebLyrics {
         try {
             if (kugou) got = kugou(q, ask);
         } catch (Throwable t) {
-            Xp.log("[MCWeb] KuGou failed: " + t);
+            Xp.w("[MCWeb] KuGou failed: " + t);
         }
         if (got == null && lrclib) {
             try {
                 got = lrclib(q, ask);
             } catch (Throwable t) {
-                Xp.log("[MCWeb] LrcLib failed: " + t);
+                Xp.w("[MCWeb] LrcLib failed: " + t);
             }
         }
         synchronized (CACHE) {

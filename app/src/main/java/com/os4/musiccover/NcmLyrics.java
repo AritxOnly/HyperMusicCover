@@ -51,17 +51,27 @@ final class NcmLyrics {
         final String artist;
         final String album;
         final long durationMs;
+        /**
+         * QQ 音乐's own id for the song (its MEDIA_ID), or null. With it QQ's lyric is asked for
+         * by the id, no search: the search is where QQ's renamed songs got lost (QqLyrics).
+         */
+        final String qqId;
 
         Query(String title, String artist, String album, long durationMs) {
+            this(title, artist, album, durationMs, null);
+        }
+
+        Query(String title, String artist, String album, long durationMs, String qqId) {
             this.title = title;
             this.artist = artist;
             this.album = album;
             this.durationMs = durationMs;
+            this.qqId = qqId;
         }
 
         /** Stable across a track's lifetime, so it can key a cache. */
         String key() {
-            return title + '|' + artist + '|' + album + '|' + durationMs;
+            return title + '|' + artist + '|' + album + '|' + durationMs + '|' + qqId;
         }
 
         @Override
@@ -100,8 +110,31 @@ final class NcmLyrics {
             dur = md.getLong(MediaMetadata.METADATA_KEY_DURATION);
         } catch (Throwable ignored) {
         }
-        return build(title, artist, album, dur);
+        // A player singing into TITLE: the song and singer as ARTIST spells them (TrackName).
+        try {
+            String[] sung = TrackName.searchName(c.getPackageName(), md);
+            if (sung != null) {
+                title = sung[0];
+                artist = sung[1];
+            }
+        } catch (Throwable ignored) {
+        }
+        String pkg = c.getPackageName();
+        boolean qq = pkg != null && pkg.startsWith("com.tencent.qqmusic");
+        // QQ 音乐 publishes 60000 for the length of every song now, the whole way through
+        // (2026-10-07, 打上花火, aLIEz, 夢灯籠 - all a minute). Taken at its word, every right
+        // answer lost 30 points for being four minutes long and nothing passed.
+        if (qq && dur == QQ_PLACEHOLDER_MS) {
+            dur = 0L;
+        }
+        Query q = build(title, artist, album, dur);
+        String qqId = qq ? LyricSource.idOf(c) : null;
+        return q == null || qqId == null ? q
+                : new Query(q.title, q.artist, q.album, q.durationMs, qqId);
     }
+
+    /** What QQ 音乐 publishes as a song's duration when it is not saying. */
+    private static final long QQ_PLACEHOLDER_MS = 60_000L;
 
     /**
      * The four raw fields, rearranged into something searchable.
@@ -114,6 +147,14 @@ final class NcmLyrics {
         title = title == null ? "" : title.trim();
         artist = artist == null ? "" : artist.trim();
         album = album == null ? "" : album.trim();
+        title = TrackName.undecorated(title);
+        // 汽水 sings into TITLE as well, with "歌名 — 歌手" in ARTIST - the song first, an em dash
+        // between. Searched as published, it asked for a song called "作曲：AKA时空恋人" (#56).
+        java.util.List<TrackName.Split> em = TrackName.splits(artist);
+        if (!em.isEmpty() && artist.contains(TrackName.EM)) {
+            title = em.get(0).song;
+            artist = em.get(0).singer;
+        }
         // Salt Player publishes "Artist - Song" in ARTIST, so the song name is in there as well
         // as - or instead of - TITLE. The first " - " splits it: a dash inside the song name
         // ("i'm so tired... (Stripped - Live in LA)") comes after the one that matters, and
@@ -232,7 +273,7 @@ final class NcmLyrics {
         try {
             got = fetch(q);
         } catch (Throwable t) {
-            Xp.log("[MCNcm] failed: " + t);
+            Xp.w("[MCNcm] failed: " + t);
         }
         if (got != null) {
             synchronized (CACHE) {
@@ -435,7 +476,7 @@ final class NcmLyrics {
             Xp.log("[MCNcm] searched \"" + terms + "\" ahead of time in "
                     + (android.os.SystemClock.uptimeMillis() - t0) + "ms");
         } catch (Throwable t) {
-            Xp.log("[MCNcm] searching ahead failed: " + t);
+            Xp.w("[MCNcm] searching ahead failed: " + t);
         }
     }
 
@@ -497,6 +538,11 @@ final class NcmLyrics {
                     + "\", and its album)");
             return null;
         }
+        return lyricsOf(id, started);
+    }
+
+    /** One song's lyric by its id, with whatever translation and romanisation it carries. */
+    private static Found lyricsOf(String id, long started) throws Exception {
         String lyric = get(String.format(LYRIC, id));
         if (lyric == null) {
             return null;
@@ -517,6 +563,60 @@ final class NcmLyrics {
                 + (android.os.SystemClock.uptimeMillis() - started) + "ms");
         return new Found(id, use, tlyric, yrc != null, romalrc);
     }
+
+    private static final String LYRIC_SEARCH =
+            "https://music.163.com/api/search/get?s=%s&type=1006&limit=10";
+
+    /**
+     * The song that sings `line`, found by its words rather than its name - the one of them
+     * nearest `durationMs` long, and within LYRIC_SEARCH_SLACK_MS of it.
+     *
+     * For a song whose name cannot be matched across languages: Apple's Chinese storefront
+     * publishes サザンオールスターズ's 真夏の果実 as "Manatsu No Kajitsu" by 南天群星, which no name
+     * search finds, while one sung line of it finds the song and every cover of it (measured
+     * 2026-10-06). Asked only to borrow a translation for a lyric already in hand, whose own lines
+     * then decide whether the copy found is the same song (LyricParse.borrowTranslations).
+     */
+    static Found byLyric(String line, long durationMs) {
+        if (line == null || line.trim().isEmpty()) {
+            return null;
+        }
+        try {
+            long started = android.os.SystemClock.uptimeMillis();
+            String json = get(String.format(LYRIC_SEARCH, URLEncoder.encode(line.trim(), "UTF-8")));
+            if (json == null) {
+                return null;
+            }
+            org.json.JSONArray songs = new org.json.JSONObject(json).getJSONObject("result")
+                    .getJSONArray("songs");
+            String best = null;
+            long bestGap = Long.MAX_VALUE;
+            for (int i = 0; i < songs.length(); i++) {
+                org.json.JSONObject song = songs.optJSONObject(i);
+                if (song == null) {
+                    continue;
+                }
+                long dur = song.optLong("duration", song.optLong("dt", 0L));
+                long gap = durationMs > 0 && dur > 0 ? Math.abs(dur - durationMs) : Long.MAX_VALUE - 1;
+                if (gap < bestGap) {
+                    bestGap = gap;
+                    best = String.valueOf(song.optLong("id"));
+                }
+            }
+            if (best == null || (durationMs > 0 && bestGap > LYRIC_SEARCH_SLACK_MS)) {
+                Xp.log("[MCNcm] nothing sings \"" + line + "\" near " + durationMs + "ms");
+                return null;
+            }
+            Xp.log("[MCNcm] \"" + line + "\" is sung by " + best + ", " + bestGap + "ms off");
+            return lyricsOf(best, started);
+        } catch (Throwable t) {
+            Xp.w("[MCNcm] lyric search failed: " + t);
+            return null;
+        }
+    }
+
+    /** How far from our duration a song found by its words may be: a remaster, a longer fade. */
+    private static final long LYRIC_SEARCH_SLACK_MS = 15000L;
 
     /** One of the response's lyric slots, or null when it is absent or empty. */
     private static String body(org.json.JSONObject o, String field) {
@@ -550,12 +650,12 @@ final class NcmLyrics {
 
     /** Title and artist, which is what the search endpoint ranks on. */
     static String terms(Query q) {
-        return joined(q.title, firstArtist(q.artist));
+        return joined(TrackName.untranslated(q.title), TrackName.unaliased(firstArtist(q.artist)));
     }
 
     /** The album's name and its artist, which is what the album search ranks on. */
     private static String albumTerms(Query q) {
-        return joined(q.album, firstArtist(q.artist));
+        return joined(q.album, TrackName.unaliased(firstArtist(q.artist)));
     }
 
     /** Two search terms, either of which may be missing, in the one order the endpoint wants. */
@@ -689,7 +789,7 @@ final class NcmLyrics {
             Xp.log("[MCNcm] album " + album + " (" + q.album + ") -> " + id);
             return id;
         } catch (Throwable t) {
-            Xp.log("[MCNcm] album lookup failed: " + t);
+            Xp.w("[MCNcm] album lookup failed: " + t);
             return null;
         }
     }

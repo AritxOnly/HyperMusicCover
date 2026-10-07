@@ -71,8 +71,27 @@ object MiniPlayerRuntime {
             config.optBoolean(MiniPlayerConfig.MEDIA_COLLAPSED_DEFAULT)
     }
 
+    /** MiniPlayerConfig.NAV_KEEP_ON as saved: read once, then kept by applyConfig. */
+    @Volatile private var navKeepOnSaved: Boolean? = null
+
+    /** Whether a navigation page keeps the lock screen lit (ImmersiveHost.holdScreen, #63). */
+    @JvmStatic fun navKeepOn(context: Context): Boolean = navKeepOnSaved
+        ?: JSONObject(configJson(context)).optBoolean(MiniPlayerConfig.NAV_KEEP_ON)
+            .also { navKeepOnSaved = it }
+
+    /** Whether the bottom's lasting lines stand after the date (DateStatus): the islands on, and it. */
+    @JvmStatic fun statusAtDate(context: Context): Boolean = JSONObject(configJson(context)).let {
+        it.optBoolean(MiniPlayerConfig.ENABLED) && it.optBoolean(MiniPlayerConfig.STATUS_AT_DATE)
+    }
+
     @JvmStatic fun applyConfig(context: Context, raw: String?) {
-        MiniPlayerConfig.apply(prefs(context), raw)
+        val saved = MiniPlayerConfig.apply(prefs(context), raw)
+        DateStatus.configChanged()
+        val keep = JSONObject(saved).optBoolean(MiniPlayerConfig.NAV_KEEP_ON)
+        if (keep != navKeepOnSaved) {
+            navKeepOnSaved = keep
+            ImmersiveHost.navKeepOnChanged()
+        }
         syncNotificationGrouping(context)
         Main.onMiniBackdropSettingChanged(sinkWithExpandedBackground(context))
         lastRoot?.get()?.let { root -> root.post { attach(root, lastShortcutController?.get()) } }
@@ -122,7 +141,7 @@ object MiniPlayerRuntime {
                 }
                 chain.proceed(args)
             }
-        }.onFailure { Xp.log("MCMini: native header visibility hook unavailable: $it") }
+        }.onFailure { Xp.w("MCMini: native header visibility hook unavailable: $it") }
         runCatching {
             val cls = Xp.findClass("com.android.keyguard.shortcut.MiuiShortcutController", classLoader)
             Xp.hookAll(cls, "addShortcutViews") { chain ->
@@ -130,7 +149,7 @@ object MiniPlayerRuntime {
                 (chain.args.firstOrNull() as? View)?.let { scheduleInstall(it, chain.thisObject) }
                 result
             }
-        }.onFailure { Xp.log("MCMini: shortcut hook unavailable, no mini player: $it") }
+        }.onFailure { Xp.w("MCMini: shortcut hook unavailable, no mini player: $it") }
         // The lock screen's list scrolling under the finger, wherever the gesture started -
         // between rows too, where the card swipe never sees it: the rows are the list's again.
         runCatching {
@@ -145,7 +164,7 @@ object MiniPlayerRuntime {
                 }
                 result
             }
-        }.onFailure { Xp.log("MCMini: list scroll hook unavailable: $it") }
+        }.onFailure { Xp.w("MCMini: list scroll hook unavailable: $it") }
         // A row given back to its island ahead of its morph home is left to the stack as a
         // transient view: laid out no more, drawn still. The stack takes it away when its own
         // animation ends; the morph's rows are kept until the morph has landed (holdTransient).
@@ -165,12 +184,12 @@ object MiniPlayerRuntime {
                         chain.proceed()
                     }
                 }
-            }.onFailure { Xp.log("MCMini: transient hold unavailable on $name: $it") }
+            }.onFailure { Xp.w("MCMini: transient hold unavailable on $name: $it") }
         }
         MiniPlayerScene.install(classLoader)
         installCardMaterialHooks(classLoader)
         runCatching { installAodDim(classLoader) }
-            .onFailure { Xp.log("MCMini: full-AOD dim unavailable: $it") }
+            .onFailure { Xp.w("MCMini: full-AOD dim unavailable: $it") }
         LockIslands.install(classLoader)
     }
 
@@ -208,7 +227,7 @@ object MiniPlayerRuntime {
         try {
             Xp.callMethod(row, "removeFromTransientContainer")
         } catch (t: Throwable) {
-            Xp.log("MCMini: transient release failed: $t")
+            Xp.w("MCMini: transient release failed: $t")
         } finally {
             passTransient = false
         }
@@ -219,6 +238,52 @@ object MiniPlayerRuntime {
      * for a controller made with both shortcuts switched off (MiniPlayerController.rowCentreY).
      */
     @Volatile internal var rowCentreShare = Float.NaN
+
+    /** `op fod`: a sensor rect to lay the row out against instead of the phone's; empty = none. */
+    @Volatile internal var fodProbe: android.graphics.Rect? = null
+    private var fodReadAt = 0L
+    private var fodRead: android.graphics.Rect? = null
+
+    /**
+     * The under-display fingerprint sensor, in screen pixels, on a phone that has one with a
+     * finger enrolled; null otherwise. Where it is low enough to meet the row of islands - an
+     * optical sensor sits about as low as the torch and camera - the row goes above it: a swipe
+     * across the islands began on the sensor, and the sensor took it (#66).
+     *
+     * SystemUI's own reading (MiuiGxzwUtils.getFodPosition: the vendor's
+     * persist.vendor.sys.fp.fod.location.X_Y and size scaled to the screen as set). That answers
+     * a default rect on a phone without the sensor, so ro.hardware.fp.fod is asked first.
+     * Read again every few seconds at most: it is asked on every layout of the row.
+     */
+    internal fun fingerprintArea(context: Context): android.graphics.Rect? {
+        fodProbe?.let { return it.takeUnless { r -> r.isEmpty } }
+        val now = android.os.SystemClock.uptimeMillis()
+        if (fodReadAt != 0L && now - fodReadAt < 5000L) return fodRead
+        fodReadAt = now
+        fodRead = runCatching { readFingerprintArea(context) }
+            .onFailure { Xp.log("MCMini: fingerprint area unreadable: $it") }
+            .getOrNull()
+        return fodRead
+    }
+
+    private fun readFingerprintArea(context: Context): android.graphics.Rect? {
+        val props = Class.forName(listOf("android", "os", "SystemProperties").joinToString("."))
+        val fod = props.getMethod("getBoolean", String::class.java, Boolean::class.javaPrimitiveType)
+            .invoke(null, "ro.hardware.fp.fod", false) as Boolean
+        if (!fod) return null
+        // No finger enrolled, no print on the lock screen and nothing there to touch.
+        // FingerprintManager by name: the SDK this builds against no longer has it.
+        val enrolled = runCatching {
+            context.getSystemService("fingerprint")
+                ?.let { Xp.callMethod(it, "hasEnrolledFingerprints") as Boolean }
+        }.getOrNull() ?: true
+        if (!enrolled) return null
+        val utils = Xp.findClass("com.miui.keyguard.biometrics.fod.MiuiGxzwUtils",
+            loader ?: context.classLoader)
+        val rect = utils.getMethod("getFodPosition", Context::class.java)
+            .invoke(null, context) as android.graphics.Rect
+        return android.graphics.Rect(rect).takeUnless { it.isEmpty }
+    }
 
     /**
      * Bumped whenever the card is dressed differently; part of the pill's appearance key. Not on
@@ -275,7 +340,7 @@ object MiniPlayerRuntime {
             field.isAccessible = true
             (field.get(null) as Map<*, *>).values.filterNotNull().map { it.javaClass }.distinct()
         }.getOrElse {
-            Xp.log("MCMini: effect map unavailable, naming the effects instead: $it")
+            Xp.w("MCMini: effect map unavailable, naming the effects instead: $it")
             listOf("MediaViewNormalEffect", "MediaViewBlurEffect", "MediaViewBlurOnKeyguardEffect",
                 "MediaViewGlassEffect", "MediaViewGlassOnKeyguardEffect",
                 "MediaViewGlassOnKeyguardLightWallPaperEffect", "MediaViewGlassFullAodEffect")
@@ -330,7 +395,7 @@ object MiniPlayerRuntime {
                     }
                     result
                 }
-            }.onFailure { Xp.log("MCMini: ${cls.simpleName} hook unavailable: $it") }
+            }.onFailure { Xp.w("MCMini: ${cls.simpleName} hook unavailable: $it") }
         }
         // What the effects call on the card's background: record the outermost of them.
         listOf(
@@ -375,7 +440,7 @@ object MiniPlayerRuntime {
                         }
                     }
                 }
-            }.onFailure { Xp.log("MCMini: material recorder on $className unavailable: $it") }
+            }.onFailure { Xp.w("MCMini: material recorder on $className unavailable: $it") }
         }
     }
 
@@ -652,7 +717,7 @@ object MiniPlayerRuntime {
         val depth = runCatching { dimDepth(args) }.getOrNull()
         aodDimDepth = depth ?: -1f
         aodDimLook = depth?.let { d -> runCatching { dimLook(d) }.getOrNull() }
-        EdgeWatch.ours { for (view in dressedViews.toList()) dimView(view, args) }
+        run { for (view in dressedViews.toList()) dimView(view, args) }
         dimNote("frame ${Integer.toHexString(args[4] as Int)} ta=${"%.2f".format(args[13] as Float)} " +
             "d=${depth?.let { "%.2f".format(it) } ?: "?"}${if (aodDimLook == null) " raw" else ""}")
         // The run ends in completeFullAodAnim; should it be cut short, the last frame settles it.
@@ -828,7 +893,7 @@ object MiniPlayerRuntime {
         lastRoot = WeakReference(root)
         lastShortcutController = shortcutController?.let(::WeakReference)
         fun doInstall() = runCatching { attach(root, shortcutController) }
-            .onFailure { Xp.log("MCMini: attach failed: $it") }
+            .onFailure { Xp.w("MCMini: attach failed: $it") }
         doInstall()
         root.post { doInstall() }
         root.postDelayed({ doInstall() }, 250L)
@@ -940,6 +1005,7 @@ object MiniPlayerRuntime {
             routedX = ev.rawX
             routedY = ev.rawY
             routedDrag = false
+            routedSwiped = false
             routedMorph = false
             routedSpread = false
             routedStack = false
@@ -996,6 +1062,13 @@ object MiniPlayerRuntime {
             noteTouch("down ${ev.rawX.toInt()},${ev.rawY.toInt()} pill=${pill != null} " +
                 "small=$routedSmall caught=$routedMorph disc=${hit?.second}" +
                 (pillOwner?.smallProbe(ev.rawX, ev.rawY)?.let { " [$it]" } ?: ""))
+        }
+        // A drag on the lock screen itself - the swipe up to the PIN pad - is the lock screen
+        // leaving: the buttons held through the wake are let go so they fade with it.
+        if (routed?.get() == null && action == MotionEvent.ACTION_MOVE && !routedSwiped) {
+            val dx = ev.rawX - routedX
+            val dy = ev.rawY - routedY
+            routedSwiped = live().map { it.letGoOnDrag(dx, dy) }.any { it }
         }
         val target = routed?.get() ?: return false
         routedTracker?.addMovement(ev)
@@ -1153,6 +1226,9 @@ object MiniPlayerRuntime {
     private var routedStack = false
     private var routedTracker: VelocityTracker? = null
 
+    /** This gesture, not the pill's, has been past the slop and told the rows (letGoOnDrag). */
+    private var routedSwiped = false
+
     /** The gesture began on the small island, not the pill. */
     private var routedSmall = false
 
@@ -1236,8 +1312,9 @@ object MiniPlayerRuntime {
         // The media card pulled down with other islands in the row: the music comes home as a
         // flight, as a notification's row does, and the others make room for it.
         if (fromNative && live().any { it.musicCollapses() }) return collapseRow(MUSIC_ISLAND, ev)
-        val owner = live().firstOrNull { it.canDrag(fromNative, small) } ?: return false
-        val span = owner.dragSpan() ?: return false
+        val owner = live().firstOrNull { it.canDrag(fromNative, small) }
+            ?: return refused("drag", live().joinToString(",") { it.dragRefusal(fromNative, small) })
+        val span = owner.dragSpan() ?: return refused("drag", "no span")
         if (!owner.beginDragMorph(fromNative)) return false
         dragCaught = false
         val density = owner.density()
@@ -1438,6 +1515,17 @@ object MiniPlayerRuntime {
     }
 
     /**
+     * A pull or a scene that found no morph to run, and why: the card then went without one and
+     * the pill turned up on its own a moment later (the user, 2026-10-07, not reproduced). Into
+     * `op mini`'s touches and the log, whose clock lines it up with the swipe.
+     */
+    internal fun refused(what: String, why: String): Boolean {
+        noteTouch("$what refused: $why")
+        Xp.log("MCMini: $what refused: $why")
+        return false
+    }
+
+    /**
      * Every time the pill went, and whether it went back into its circle or in one frame - with
      * each thing that decides that - for `op mini`, first in it so a long reply cannot cut it off.
      * Only one in so many went without its way back (2026-09-29), and not on demand.
@@ -1462,6 +1550,31 @@ object MiniPlayerRuntime {
     /** The row spread out as the list is being pulled home (NumState's hands-up folds it). */
     @JvmStatic fun spreadFolding(): Boolean = live().any { it.spreadFolding() }
 
+    /**
+     * `op fod`: the fingerprint sensor the row of islands keeps clear of (#66), and where the row
+     * is. `--es rect l,t,r,b` (screen pixels) lays it out against that rect instead, to try the
+     * lift on a phone whose sensor sits clear of the row; `none` as if there were no sensor;
+     * `phone` back to the phone's own. Not saved.
+     */
+    @JvmStatic fun fingerprintProbe(rect: String?): String {
+        val note = when (rect?.trim()) {
+            null, "" -> ""
+            "phone" -> { fodProbe = null; "back to the phone's sensor; " }
+            "none" -> { fodProbe = android.graphics.Rect(); "as if there were no sensor; " }
+            else -> {
+                val n = rect.split(',').map { it.trim().toInt() }
+                require(n.size == 4) { "rect wants l,t,r,b" }
+                fodProbe = android.graphics.Rect(n[0], n[1], n[2], n[3])
+                "laid out against $fodProbe; "
+            }
+        }
+        fodReadAt = 0L
+        val rows = live()
+        rows.forEach { it.relayout() }
+        return note + "probe=${fodProbe ?: "off"} || " +
+            rows.joinToString(" || ") { it.describeFingerprint() }.ifEmpty { "no controller" }
+    }
+
     /** The keyguard's notification stack, for NumStateProbe. */
     @JvmStatic fun stackForProbe(): ViewGroup? = live().firstNotNullOfOrNull { it.stackForProbe() }
 
@@ -1469,7 +1582,7 @@ object MiniPlayerRuntime {
     @JvmStatic fun describe(): String {
         val sb = StringBuilder("gone: " + synchronized(goneLog) { goneLog.joinToString(" ; ") } +
             " || material=$cardEffect gen=$materialGeneration same=$materialRepeats calls=${cardRecipe?.size} empty=$emptyEffect " +
-            "aod=${MiniPlayerScene.aodActive} ${describeAodDim()} || ${LockIslands.describe()} || clock: ${Main.roomTrace()} || touches: " +
+            "aod=${MiniPlayerScene.aodActive} ${describeAodDim()} || ${LockIslands.describe()} || touches: " +
             synchronized(touchLog) { touchLog.joinToString(" ; ") })
         synchronized(controllers) { controllers.values.toList() }.forEach { held ->
             sb.append(" || ").append(held.controller.describe())
@@ -1489,99 +1602,6 @@ object MiniPlayerRuntime {
             }
         }
         return sb.toString()
-    }
-
-    /** `op edge`: the pill's and the discs' clip chains and outlines (EdgeProbe). */
-    @JvmStatic fun edge(): String =
-        "material=$cardEffect\n" + live().joinToString("\n") { it.describeEdge() }
-
-    /**
-     * Everything `op edge` has for a jagged rim on a phone we do not have (EdgeWatch): the
-     * phone and its renderers, the clip chains, the card's recipe as replayed, who else set our
-     * views and whether our calls arrived as sent, then the rim as SystemUI's buffer holds it.
-     * [done] is called on the main thread once the pixels are in.
-     */
-    @JvmStatic fun edgeReport(ctx: Context, save: java.io.File?, done: (String) -> Unit) {
-        val head = EdgeWatch.device(ctx) + "\n" + edge() + "\n" + recipeText() + "\n" + EdgeWatch.describe()
-        EdgeProbe.measure(live().flatMap { it.edgeViews() }, save) { rim ->
-            done(head + "\nnow " + rim + "\n" + earlierRims())
-        }
-    }
-
-    private fun recipeText(): String {
-        val recipe = cardRecipe ?: return "recipe: none"
-        val bg = cardBackground?.newDrawable()
-        val sb = StringBuilder("recipe (${recipe.size} calls, bg=")
-            .append(bg?.javaClass?.simpleName ?: "none")
-        if (bg is GradientDrawable) sb.append(" r=").append(bg.cornerRadius)
-        sb.append("):")
-        for (call in recipe) {
-            sb.append("\n  ").append(call.method.declaringClass.simpleName).append('.').append(call.method.name)
-            sb.append(call.args.mapIndexed { i, a ->
-                when {
-                    i == call.viewAt -> "V"
-                    a is FloatArray -> a.joinToString(",", "[", "]") { "%.2f".format(it) }
-                    a is IntArray -> a.joinToString(",", "[", "]") { Integer.toHexString(it) }
-                    a is Context -> "ctx"
-                    else -> a.toString()
-                }
-            }.joinToString(",", "(", ")"))
-        }
-        return sb.toString()
-    }
-
-    private fun watchEdge(view: View) {
-        val role = when (view.parent) {
-            is MiniPlayerView -> "pill"
-            is ShortcutDisc -> "disc"
-            else -> "other"
-        }
-        EdgeWatch.watch(view, "$role.element")
-        (view.parent as? View)?.let { EdgeWatch.watch(it, "$role.frame") }
-    }
-
-    private val edgeHandler = Handler(Looper.getMainLooper())
-    private val rims = ArrayDeque<String>()
-    private var rimAt = 0L
-    private var rimPosted = false
-    private var edgeSnapshots = 0
-
-    /**
-     * The rim read from the pixels while the lock screen is up, at most every 30s.
-     *
-     * The app's "copy" row is pressed with the lock screen gone and nothing of the islands on
-     * the window, so `op edge` hands back the last few of these, each with the clock time a
-     * tester can match to their screenshot. The first few also go to the log in full, for a
-     * tester's LSPosed log.
-     */
-    internal fun rimSoon(ctx: Context) {
-        val now = android.os.SystemClock.uptimeMillis()
-        if (rimPosted || rimAt != 0L && now - rimAt < 30_000L) return
-        rimPosted = true
-        edgeHandler.postDelayed({
-            rimPosted = false
-            rimAt = android.os.SystemClock.uptimeMillis()
-            val stamp = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.ROOT).format(java.util.Date())
-            runCatching {
-                EdgeProbe.measure(live().flatMap { it.edgeViews() }) { rim ->
-                    synchronized(rims) {
-                        rims.addLast("$stamp $rim")
-                        while (rims.size > 4) rims.removeFirst()
-                    }
-                    if (edgeSnapshots < 6) {
-                        edgeSnapshots++
-                        val head = EdgeWatch.device(ctx) + "\n" + edge() + "\n" + recipeText() + "\n" +
-                            EdgeWatch.describe()
-                        "$head\n$stamp $rim".lines().forEach { Xp.log("MCEdge: snapshot $it") }
-                    }
-                }
-            }.onFailure { Xp.log("MCEdge: rim failed: $it") }
-        }, 1500L)
-    }
-
-    private fun earlierRims(): String = synchronized(rims) {
-        if (rims.isEmpty()) "earlier on the lock screen: none" else
-            "earlier on the lock screen:" + rims.joinToString("") { "\n" + it }
     }
 
     @JvmStatic fun nativeHeaderHidden(): Boolean = synchronized(controllers) {
@@ -1777,8 +1797,7 @@ object MiniPlayerRuntime {
                 }
             val util = Class.forName("com.android.systemui.statusbar.notification.utils.NotificationUtil",
                 false, classLoader)
-            watchEdge(view)
-            (view.parent as? View)?.let { container -> EdgeWatch.ours {
+            (view.parent as? View)?.let { container -> run {
                 // Blur mode 1, the notification container radius, and through the window.
                 util.getMethod("applyContainerViewBlur", Context::class.java, View::class.java,
                     Int::class.javaPrimitiveType, Int::class.javaPrimitiveType,
@@ -1798,7 +1817,7 @@ object MiniPlayerRuntime {
                 error("no card or notification material has been recorded yet")
             view.setImageDrawable(null)
             view.background = cardBackground?.newDrawable(res)?.mutate()
-            if (recipe != null) EdgeWatch.ours {
+            if (recipe != null) run {
                 recipe.forEach { call ->
                     val args = call.args.copyOf()
                     args[call.viewAt] = view
@@ -1806,7 +1825,7 @@ object MiniPlayerRuntime {
                 }
             }
             if (notificationStyle) notificationLook()?.let { (colors, glass) ->
-                runCatching { EdgeWatch.ours {
+                runCatching { run {
                     notificationBackground?.newDrawable(res)?.mutate()?.let { view.background = it }
                     val blend = notificationBlendMethod ?: blendMethod ?: recipe?.firstOrNull {
                         it.method.name == "applyElementViewBlend"
@@ -1820,13 +1839,12 @@ object MiniPlayerRuntime {
             }
             dressedViews.add(view)
             // Dressed in the AOD - a small island coming up there: dimmed as the rest are.
-            aodDimArgs?.let { EdgeWatch.ours { dimView(view, it) } }
-            rimSoon(view.context)
+            aodDimArgs?.let { run { dimView(view, it) } }
         }.onFailure { error ->
             val cause = (error as? java.lang.reflect.InvocationTargetException)?.targetException ?: error
             if (!materialFailed) {
                 materialFailed = true
-                Xp.log("MCMini: card material unavailable, plain fill instead: $cause")
+                Xp.w("MCMini: card material unavailable, plain fill instead: $cause")
             }
             view.background = null
             view.setImageDrawable(GradientDrawable().apply { setColor(0x9E1F2324.toInt()) })
@@ -1979,82 +1997,11 @@ private class MiniPlayerController(
         if (player?.visibility == View.VISIBLE) {
             position()
             followShortcuts()
-            MiniPlayerRuntime.rimSoon(context)
         }
         updateDiscs()
         lottiesFollowSight()
-        traceScene()
         true
     } finally { android.os.Trace.endSection() } }
-
-    /** For `op edge`: the pill's and the torch disc's clip chains, and their elements' Mi state. */
-    fun describeEdge(): String {
-        val sb = StringBuilder()
-        player?.let {
-            sb.append(EdgeProbe.describe("pill", it, host, true)).append('\n')
-            sb.append(EdgeProbe.describe("pillElement", it.materialView, it, true)).append('\n')
-        }
-        discs.forEachIndexed { i, d ->
-            d ?: return@forEachIndexed
-            sb.append(EdgeProbe.describe("disc$i", d, host, i == 0)).append('\n')
-            sb.append(EdgeProbe.describe("disc${i}Element", d.materialView, d, i == 0)).append('\n')
-        }
-        smallIsland?.let {
-            sb.append(EdgeProbe.describe("small", it, host, false)).append('\n')
-            sb.append(EdgeProbe.describe("smallElement", it.materialView, it, true)).append('\n')
-        }
-        return sb.toString()
-    }
-
-    /** The views whose rims EdgeProbe.measure reads from the window's pixels. */
-    fun edgeViews(): List<Pair<String, View>> {
-        val out = ArrayList<Pair<String, View>>()
-        player?.let {
-            out.add("pill" to it)
-            out.add("pill.art" to it.artSlot)
-        }
-        smallIsland?.let { out.add("small" to it) }
-        discs.forEachIndexed { i, d -> d?.let { out.add("disc$i" to it) } }
-        return out
-    }
-
-    // ---- a scene entry, every view of the row frame by frame, for `op mini`
-
-    private val sceneTrace = ArrayDeque<String>()
-    private var sceneTraceFrames = 0
-
-    private fun startSceneTrace() {
-        // An exit right after an entry keeps the entry: cleared, the entry's landing was gone
-        // by the time anyone read it (2026-09-26).
-        sceneTrace.addLast("${android.os.SystemClock.uptimeMillis() % 100000} ---- scene")
-        sceneTraceFrames = 150
-    }
-
-    private fun traceScene() {
-        if (sceneTraceFrames <= 0) return
-        sceneTraceFrames--
-        fun v(name: String, view: View?): String {
-            if (view == null) return " $name=-"
-            val xy = IntArray(2).also(view::getLocationOnScreen)
-            val base = " $name=${view.visibility}/a${"%.2f".format(view.alpha)}/t${"%.2f".format(view.transitionAlpha)}" +
-                "@${xy[0]},${xy[1]} ${view.width}x${view.height} z${view.translationZ.toInt()}"
-            // A pill's own layout width, whether a morph has its frame, and its second button:
-            // the stopwatch landed laid out as the middle island inside the big island's frame.
-            return if (view is MiniPlayerView) base + " lw${view.layoutParams?.width} m=${view.inMorph()} " +
-                "s2=${view.secondState()}" else base
-        }
-        val x = exchange
-        val sb = StringBuilder("${android.os.SystemClock.uptimeMillis() % 100000} morph=${morph != null} " +
-            "scene=${Main.coverSceneActive()} group=${group != null} sel=${selectedIsland?.takeLast(6)} " +
-            "sk=${smallKey?.takeLast(6)} seats=${x?.seats?.let { "${it.big?.takeLast(6)}/${it.small?.takeLast(6)}" }} " +
-            "swap=${swap?.let { "${it.smallMode}/${"%.2f".format(it.spring.value)}" }} land=${pillLandingBox != null}")
-        sb.append(v("pill", player)).append(v("small", smallIsland)).append(v("flight", flight))
-            .append(v("ghost", ghostPill)).append(v("gdisc", ghostDisc))
-        x?.movers?.values?.forEach { m -> sb.append(v("mv:" + m.key.takeLast(6) + (if (m.landed) "L" else ""), m.view)) }
-        sb.append(" pillArt=[").append(player?.artworkState()).append(']')
-        sceneTrace.addLast(sb.toString())
-        while (sceneTrace.size > 300) sceneTrace.removeFirst()
-    }
 
     private val followRelative = Matrix()
     private val followHost = Matrix()
@@ -2115,7 +2062,8 @@ private class MiniPlayerController(
         // hold wrote a frame ago. Waking, the pill let go on one and took the other: the row
         // dropped to nothing and faded in beside buttons that stayed (filmed 2026-09-26).
         if (MiniPlayerScene.fullScreenAodActive || holdButtons) rowHeldOff = true
-        else if (rowHeldOff && rowFade >= 0.99f) rowHeldOff = false
+        // ...or until the PIN pad is up, which keeps the row's fade down for as long as it is.
+        else if (rowHeldOff && (rowFade >= 0.99f || Main.bouncerShown())) rowHeldOff = false
         followRowFade = rowFade
         // The lock screen's editor button, up after a long press on the clock, is where the row
         // is and under it: the row goes as it comes, on its own fade, and comes back as it goes.
@@ -3941,6 +3889,12 @@ private class MiniPlayerController(
      * Sets the row up for the media card's morph and makes the music's morph, not started yet:
      * [toNative] the music goes up into the card, else the card comes down into the row.
      */
+    /** Why prepareGroup gave none, read after it: the parts of its state that refuse one. */
+    private fun groupRefusal(toNative: Boolean): String =
+        "usable=${controller?.let(::isUsable)} note=${noteMorphKey != null} flight=${flight != null} " +
+            "xchg=${exchange != null} sel=${selectedIsland?.takeLast(6)} small=${smallKey?.takeLast(6)} " +
+            "keys=${islandKeys.joinToString(",") { it.takeLast(6) }} toNative=$toNative"
+
     private fun prepareGroup(native: View, toNative: Boolean): MiniCardMorph? {
         musicComingDown = !toNative
         try {
@@ -4227,12 +4181,6 @@ private class MiniPlayerController(
                 }
             } else player?.let { if (kotlin.math.abs(it.alpha - v) > 0.002f) it.alpha = v }
         }
-        val box = lead.containerBox()
-        traced("MC g.trace") { trace("g c=${"%.3f".format(lead.progress)} to=${if (lead.toNative) "card" else "row"} " +
-            "lead=${box?.cx()?.toInt()},${box?.y?.toInt()} ${box?.w?.toInt()}x${box?.h?.toInt()} " +
-            "fol=${g.follower?.progress?.let { "%.3f".format(it) }} land=${g.smallLanding} " +
-            "sv=${view?.alpha?.let { "%.2f".format(it) }} " +
-            "small=${smallIsland?.let { "${it.visibility}/${"%.2f".format(it.alpha)}" }}") }
     }
 
     /** The real small island in the shape and place of the view landing on it, this frame. */
@@ -4286,9 +4234,6 @@ private class MiniPlayerController(
             rowsHeldUntil = android.os.SystemClock.uptimeMillis() + ROW_GONE_MS
         } else rowsHeldUntil = 0L
         trace("group end at=${if (toNative) "card" else "row"} " + smallState())
-        traceFrames = 30
-        Choreographer.getInstance().removeFrameCallback(traceFrame)
-        Choreographer.getInstance().postFrameCallback(traceFrame)
     }
 
     /**
@@ -4753,7 +4698,7 @@ private class MiniPlayerController(
     private fun setSmallShown(shown: Boolean, animate: Boolean) {
         val small = smallIsland ?: return
         val visible = small.visibility == View.VISIBLE
-        if (visible != shown && traceFrames > 0 || flight != null && visible != shown) {
+        if (visible != shown) {
             trace("small ${if (shown) "show" else "hide"} animate=$animate key=${smallKey?.takeLast(6)} " +
                 "noteMorph=${noteMorphKey?.takeLast(6)} out=$flightOut landing=$flightLanding group=${group != null}")
         }
@@ -4822,7 +4767,6 @@ private class MiniPlayerController(
      */
     fun islandDrag(dx: Float) {
         islandDragStep(dx)
-        traceIslandDrag(dx)
     }
 
     private fun islandDragStep(dx: Float) {
@@ -4866,39 +4810,11 @@ private class MiniPlayerController(
         }
     }
 
-    /** Every frame of a finger on the row, and its release, for `op mini`. */
-    private val islandTrace = ArrayDeque<String>()
-
-    private fun traceIsland(s: String) {
-        islandTrace.addLast("${android.os.SystemClock.uptimeMillis() % 100000} $s")
-        while (islandTrace.size > 150) islandTrace.removeFirst()
-    }
-
-    /**
-     * What the pill is drawn as this frame, for `op mini`: a shape that changes in one frame
-     * instead of over the spring shows here as the value it stepped from and to. [dx] the pull.
-     */
-    private fun traceIslandDrag(dx: Float) {
-        val v = player ?: return
-        val w = v.width.toFloat().coerceAtLeast(1f)
-        traceIsland("drag dx=${dx.toInt()} end=${!canSwitchIsland(next = dx < 0f)} " +
-            "sc=${"%.3f".format(v.scaleX)}/${"%.3f".format(v.scaleY)} piv=${v.pivotX.toInt()} " +
-            "tx=${v.translationX.toInt()} w=${v.width} morph=${v.inMorph()} " +
-            "sq=${"%.3f".format(squeeze.pillScaleX(w))}/${"%.3f".format(squeeze.pillScaleY())}" +
-            "+${squeeze.pillShiftPx().toInt()} " +
-            "row=${rowWidth.value.toInt()}>${rowWidth.target.toInt()}@${rowLeft.value.toInt()} " +
-            "small=${smallIsland?.let { "${it.visibility}/${it.shapeWidth}" }}")
-    }
-
     /** The finger is off: over the threshold the switch runs, under it the row springs back. */
     fun islandDragEnd(commit: Boolean, next: Boolean, vx: Float = 0f) {
         if (!islandDragging) return
         // Past the row's end there is nothing to switch to: it springs back as from a short pull.
         val switchable = canSwitchIsland(next)
-        traceIsland("end commit=$commit next=$next to=$switchable vx=${vx.toInt()} " +
-            "sc=${"%.3f".format(player?.scaleX ?: -1f)}/${"%.3f".format(player?.scaleY ?: -1f)} " +
-            "piv=${player?.pivotX?.toInt()} tx=${player?.translationX?.toInt()} " +
-            "nx=${player?.nudgeX?.toInt()} ny=${player?.nudgeY?.toInt()}")
         if (commit && switchable) {
             // A fling the way of the switch hands the switch its speed; one back against it none.
             switchIsland(next, flingPx = if (next == vx < 0f) kotlin.math.abs(vx) else 0f)
@@ -4916,8 +4832,6 @@ private class MiniPlayerController(
     private fun resetIslandDrag() {
         if (!islandDragging) return
         islandDragging = false
-        traceIsland("reset drag sc=${"%.3f".format(player?.scaleX ?: -1f)} " +
-            "tx=${player?.translationX?.toInt()} nx=${player?.nudgeX?.toInt()}")
         player?.let {
             it.animate().cancel()
             it.scaleX = 1f
@@ -5598,7 +5512,6 @@ private class MiniPlayerController(
             pinnedDy = dy
             pinMatrix.setTranslate(0f, dy)
             v.setAnimationMatrix(pinMatrix)
-            if (waited < PIN_TRACE_MS) trace("pin dy=${dy.toInt()} want=${pinWant.toInt()} y=${pinY.value.toInt()} $lastSettle")
             Choreographer.getInstance().postFrameCallback(this)
         } finally { android.os.Trace.endSection() } }
     }
@@ -6331,9 +6244,6 @@ private class MiniPlayerController(
         snapSmallOnce = true
         refresh()
         trace("exchange end " + smallState())
-        traceFrames = 30
-        Choreographer.getInstance().removeFrameCallback(traceFrame)
-        Choreographer.getInstance().postFrameCallback(traceFrame)
     }
 
     /**
@@ -6352,7 +6262,7 @@ private class MiniPlayerController(
         val key = (if (small) seats.small else seats.big) ?: return
         if (key == x.expanded) return
         if (key == STACK_ISLAND && LockIslands.foldsNatively()) {
-            openSpread("tap during a switch")
+            if (!openSingleApp("tap during a switch")) openSpread("tap during a switch")
             return
         }
         trace("switch tap ${key.takeLast(6)} small=$small")
@@ -6565,8 +6475,6 @@ private class MiniPlayerController(
         /** The stack's own drag was on it last frame; and the let-go already sent it home. */
         var wasDragged = false
         var letGoSent = false
-        /** The open list's last frame was logged as busy (watchOpen). */
-        var loggedBusy = false
         /** Pulled open by a finger still on the island: it scrolls the stack (followFinger). */
         var finger: SpreadFinger? = null
     }
@@ -6613,6 +6521,40 @@ private class MiniPlayerController(
             flight != null || player?.visibility != View.VISIBLE) return false
         openSpread("stack swipe", SpreadFinger(startY))
         return spread != null
+    }
+
+    /**
+     * The stack island tapped with one app's notifications in it: that app's newest one opened,
+     * as a tap on its own row opens it - the row's click (NotificationClicker), which wakes,
+     * asks the keyguard to go first where it has to, and starts the notification's intent. A
+     * spread out to a list of one app's notifications was a step on the way to the same place.
+     * False when there is more than one app, nothing to open, or no row to click: then it opens.
+     */
+    private fun openSingleApp(why: String): Boolean {
+        val key = LockIslands.stackSingleAppLead() ?: return false
+        val stack = notificationStack() ?: return false
+        var row: View? = null
+        for (i in 0 until stack.childCount) {
+            val child = stack.getChildAt(i)
+            if (!child.javaClass.name.contains("ExpandableNotificationRow")) continue
+            // Its own row, never its group's: the group's click expands the group instead.
+            row = if (rowKey(child) == key) child else childRows(child).firstOrNull { rowKey(it) == key }
+            if (row != null) break
+        }
+        if (row == null || !row.hasOnClickListeners()) {
+            MiniPlayerRuntime.noteTouch("open app ($why): no row for ${key.takeLast(6)}, spread instead")
+            return false
+        }
+        MiniPlayerRuntime.noteTouch("open app ($why): ${key.substringAfter('|').substringBefore('|')}")
+        // The row's own listener (ExpandableNotificationRowInjector$1) only posts the click to a
+        // flow, whose collector dropped it for a row folded away: tapped, nothing happened
+        // (2026-10-07). NotificationClicker, which the flow ends in, is the injector's
+        // clickListener (NotificationRowBinderImpl): called straight, as the flow would.
+        val clicker = runCatching {
+            Xp.getObjectField(Xp.callMethod(row, "getInjector"), "clickListener") as? View.OnClickListener
+        }.getOrNull()
+        if (clicker != null) clicker.onClick(row) else row.performClick()
+        return true
     }
 
     /**
@@ -7059,13 +7001,7 @@ private class MiniPlayerController(
     private fun watchOpen(s: Spread) {
         val y = NumState.position() ?: return
         val islandsY = NumState.scrollTo("NUMBER") ?: return
-        // Logged while anything has it - a pull the reads here miss still shows as busy.
-        val busy = NumState.busy()
-        if (y != s.lastY || busy && !s.loggedBusy) {
-            if (listPulled() || busy) spreadFrameLog(s, y, spreadProgress(s, y))
-            s.lastY = y
-        }
-        s.loggedBusy = busy
+        s.lastY = y
         val toward = if (s.cardsY >= islandsY) s.cardsY - y else y - s.cardsY
         val folded = NumState.inNumber == true
         if (folded || listPulled() && toward > dp(SPREAD_PULL_DP)) {
@@ -7173,7 +7109,7 @@ private class MiniPlayerController(
         // they are. No flight: the rows were never out of the stack for one to land on.
         if (spread != null) return
         if (key == STACK_ISLAND && LockIslands.foldsNatively()) {
-            openSpread("tap")
+            if (!openSingleApp("tap")) openSpread("tap")
             return
         }
         // Pulled down and on its way home still: a tap on its place - its logical place, the
@@ -7599,9 +7535,6 @@ private class MiniPlayerController(
                 (if (completed) "" else "why=${morph.lastCancel} ") + smallState())
             if (key == STACK_ISLAND || LockIslands.isAppGroup(key)) endPile(toNative)
             if (key == MUSIC_ISLAND) morphScene = false
-            traceFrames = 30
-            Choreographer.getInstance().removeFrameCallback(traceFrame)
-            Choreographer.getInstance().postFrameCallback(traceFrame)
             if (this@MiniPlayerController.morph === morph) this@MiniPlayerController.morph = null
             noteDrag = null
             val flew = flight != null
@@ -7771,6 +7704,13 @@ private class MiniPlayerController(
         if (!stackedStyle() && expandedKey()?.let { it != key } == true) {
             player?.springNudgeBack(0f, 0f)
             springSmallNudgeBack(0f, 0f)
+            // The music left the cover for the island out now (a page opened from it): pulled
+            // back up it goes into the cover, as a tap does. Exchanged as a plain card it came
+            // up over the wallpaper with the cover still held off (#63).
+            if (key == MUSIC_ISLAND && MiniPlayerRuntime.takeRestoreScene()) {
+                openCover()
+                return true
+            }
             return startExchange(key)
         }
         if (prepareFlight(key) == null) return false
@@ -8494,7 +8434,11 @@ private class MiniPlayerController(
         if (MiniPlayerScene.customAodActive) {
             holdButtons = false
             backSince = 0L
-            traceDoze(1f)
+            return
+        }
+        // The pad up with the hold still on, put up by something other than a swipe (letGoOnDrag).
+        if (!MiniPlayerScene.aodActive && Main.bouncerShown()) {
+            letGoOfButtons("bouncer")
             return
         }
         // The lower of the two chains as the doze left it this frame, before it is put back.
@@ -8508,7 +8452,6 @@ private class MiniPlayerController(
                 v = v.parent as? View
             }
         }
-        traceDoze(natural)
         if (MiniPlayerScene.aodActive) {
             backSince = 0L
             return
@@ -8519,29 +8462,35 @@ private class MiniPlayerController(
             !discsWanted) {
             holdButtons = false
             backSince = 0L
-            traceDoze(natural)
         }
     }
 
-    // ---- the doze, frame by frame, for `op mini`
+    /**
+     * The swipe up within the wake's hold: it let go only once the buttons had been back at full
+     * for a while, or two seconds on - and while the swipe faded them it never was, so every
+     * frame it wrote them back to 1 and the pill stayed on the held branch, deaf to the row's
+     * fade. The torch, the camera and the pill stood over the PIN pad on the first swipe after
+     * the wake, and were gone on the next (reported 2026-10-07). A drag past the slop, not the
+     * DOWN: a double tap to wake lands in the wake's fade-in, and letting go there drops the
+     * buttons to it. True once past the slop, whether or not there was a hold.
+     */
+    fun letGoOnDrag(dx: Float, dy: Float): Boolean {
+        if (kotlin.math.hypot(dx, dy) <= ViewConfiguration.get(context).scaledTouchSlop) return false
+        letGoOfButtons("swipe")
+        return true
+    }
 
-    private val dozeTrace = ArrayDeque<String>()
-    private var dozeTraceFrames = 0
-    private var dozeTraceState = ""
-
-    private fun traceDoze(natural: Float) {
-        val state = "aod=${MiniPlayerScene.aodActive} hold=$holdButtons"
-        if (state != dozeTraceState) {
-            dozeTraceState = state
-            dozeTraceFrames = 60
-        }
-        if (dozeTraceFrames <= 0) return
-        dozeTraceFrames--
-        dozeTrace.addLast("${android.os.SystemClock.uptimeMillis() % 100000} $state " +
-            "natural=${"%.2f".format(natural)} pill=${if (rowHeldOff) "held" else "row"}/" +
-            "${"%.2f".format(followRowFade)}->${"%.2f".format(followPillFade)} L=${discs[0]?.let { "${it.visibility}/${"%.2f".format(it.alpha)}" }} " +
-            "R=${discs[1]?.let { "${it.visibility}/${"%.2f".format(it.alpha)}" }}")
-        while (dozeTrace.size > 120) dozeTrace.removeFirst()
+    /**
+     * The lock screen is leaving: the buttons are the OEM's again, and the pill follows the row's
+     * fade from this frame rather than waiting for it to come back to full - it will not, until
+     * the pad is put away.
+     */
+    private fun letGoOfButtons(why: String) {
+        if (MiniPlayerScene.aodActive || !holdButtons && !rowHeldOff) return
+        holdButtons = false
+        backSince = 0L
+        rowHeldOff = false
+        MiniPlayerRuntime.noteTouch("buttons let go: $why")
     }
 
     /**
@@ -8731,7 +8680,7 @@ private class MiniPlayerController(
         // this runtime no longer watches: gone with it, not left asking for vsyncs.
         Choreographer.getInstance().let { c ->
             listOf(pulseFrame, smallNudgeFrame, swapFrame, rowFrame, appearFrame, smallGrowFrame,
-                traceFrame, pileSettle, spreadFrame, switchWait, rowWait).forEach(c::removeFrameCallback)
+                pileSettle, spreadFrame, switchWait, rowWait).forEach(c::removeFrameCallback)
         }
         // The waits for a row would otherwise go on to open it, on a controller already gone;
         // and a card still pinned is the stack's again, drawn where the stack has it.
@@ -8830,7 +8779,6 @@ private class MiniPlayerController(
 
     /** Frames the running notification morph has spent at its island's end. */
     private var restFrames = 0
-    private var traceFrames = 0
 
     private fun trace(what: String) {
         landTrace.addLast("${android.os.SystemClock.uptimeMillis() % 100000} $what")
@@ -8850,15 +8798,6 @@ private class MiniPlayerController(
             "held=${pillHeld()} pta=${"%.2f".format(pill?.transitionAlpha ?: -1f)} " +
             "pca=${"%.2f".format(pill?.contentAlphaNow() ?: -1f)} fca=${"%.2f".format(flight?.contentAlphaNow() ?: -1f)} " +
             "ghost=${ghostPill?.let { "${it.visibility}/${"%.2f".format(it.alpha)}/${it.width}" }} swap=${swap?.smallMode}"
-    }
-
-    private val traceFrame = object : Choreographer.FrameCallback {
-        override fun doFrame(frameTimeNanos: Long) { android.os.Trace.beginSection("MC traceFrame"); try {
-            if (traceFrames <= 0) return
-            traceFrames--
-            trace("after " + smallState())
-            Choreographer.getInstance().postFrameCallback(this)
-        } finally { android.os.Trace.endSection() } }
     }
 
     fun describe(): String {
@@ -8894,9 +8833,7 @@ private class MiniPlayerController(
         return islands + icons + "pill v=${v.visibility} a=${v.alpha} ta=${v.transitionAlpha} at=${xy[0]},${xy[1]} " +
             "${v.width}x${v.height} morph=${morph != null} header=" +
             (if (h == null) "none" else "v=${h.visibility} a=${h.alpha} ta=${h.transitionAlpha}") +
-            " last=[$lastPresentationLog] || islandDrag: " + islandTrace.joinToString(" ; ") +
-            " || land: " + landTrace.joinToString(" ; ") +
-            " || doze: " + dozeTrace.joinToString(" ; ") + " || scene: " + sceneTrace.joinToString(" ; ")
+            " last=[$lastPresentationLog] || land: " + landTrace.joinToString(" ; ")
     }
     fun nativeHeaderHidden(): Boolean = nativeSuppressionRequested
     fun visibleHeightDp(): Float = configuredHeightDp
@@ -8959,7 +8896,6 @@ private class MiniPlayerController(
      * now points; a scene route needs the mini player to be the selected presentation.
      */
     fun beginTransition(toNative: Boolean, scene: Boolean): Boolean {
-        if (scene) startSceneTrace()
         morph?.let { running ->
             running.aim(toNative)
             morphScene = scene
@@ -8987,24 +8923,28 @@ private class MiniPlayerController(
                 }
             }
         }
-        val view = player ?: return false
-        val token = controller?.sessionToken ?: return false
+        val what = if (scene) "scene morph" else "switch morph"
+        val view = player ?: return MiniPlayerRuntime.refused(what, "no pill")
+        val token = controller?.sessionToken ?: return MiniPlayerRuntime.refused(what, "no session")
         // The card already chosen: nothing to become.
         if (scene && MiniPlayerRuntime.nativeRequested(token)) return false
-        if (!view.isAttachedToWindow || !Main.miniPlayerMorphAllowed()) return false
-        val native = transitionHeader() ?: return false
+        if (!view.isAttachedToWindow) return MiniPlayerRuntime.refused(what, "pill detached")
+        if (!Main.miniPlayerMorphAllowed()) {
+            return MiniPlayerRuntime.refused(what, "not allowed " + Main.miniPlayerMorphWhy())
+        }
+        val native = transitionHeader() ?: return MiniPlayerRuntime.refused(what, "no card")
         if (scene && othersBesideMusic()) return startSceneFlight(native, toNative)
         // A switch still settling is finished where it was headed: the card morph has the pill.
-        val next = prepareGroup(native, toNative) ?: return false
+        val next = prepareGroup(native, toNative)
+            ?: return MiniPlayerRuntime.refused(what, "no group " + groupRefusal(toNative))
         morph = next
         morphScene = scene
         if (!next.start()) {
             morph = null
             morphScene = false
             endGroup(!toNative)
-            Xp.log("MCMini: no geometry for a morph; switching in place")
             updateVisibility()
-            return false
+            return MiniPlayerRuntime.refused(what, "no geometry; switching in place")
         }
         return true
     }
@@ -9149,6 +9089,19 @@ private class MiniPlayerController(
         return MiniPlayerRuntime.nativeRequested(token) == fromNative
     }
 
+    /** Which of canDrag's answers it was, for [MiniPlayerRuntime.refused]. */
+    fun dragRefusal(fromNative: Boolean, small: Boolean): String = when {
+        !config.getBoolean(MiniPlayerConfig.ENABLED) -> "off"
+        morph != null -> "morph running"
+        spread != null -> "spread"
+        musicFlies() -> "music flies"
+        exchange != null -> "exchange"
+        !fromNative && (if (small) smallKey != MUSIC_ISLAND else !selectedIsMusic()) -> "not the music"
+        controller?.sessionToken == null -> "no session"
+        !Main.miniPlayerMorphAllowed() -> "not allowed " + Main.miniPlayerMorphWhy()
+        else -> "nativeRequested=${MiniPlayerRuntime.nativeRequested(controller?.sessionToken)}"
+    }
+
     /** How far apart the pill and the card are: what a full pull covers. */
     fun dragSpan(): Float? {
         if (noteMorphKey != null) return noteSpan.takeIf { it > 0f }
@@ -9159,17 +9112,18 @@ private class MiniPlayerController(
     }
 
     fun beginDragMorph(fromNative: Boolean): Boolean { android.os.Trace.beginSection("MC beginDragMorph"); try {
-        if (player == null) return false
-        val native = transitionHeader() ?: return false
+        if (player == null) return MiniPlayerRuntime.refused("drag", "no pill")
+        val native = transitionHeader() ?: return MiniPlayerRuntime.refused("drag", "no card")
         // Starts at the end it was pulled from; release() aims it once the lift decides.
-        val next = prepareGroup(native, toNative = !fromNative) ?: return false
+        val next = prepareGroup(native, toNative = !fromNative)
+            ?: return MiniPlayerRuntime.refused("drag", "no group " + groupRefusal(!fromNative))
         morph = next
         morphScene = false
         if (!next.startDragging()) {
             morph = null
             endGroup(toNative = fromNative)
             updateVisibility()
-            return false
+            return MiniPlayerRuntime.refused("drag", "no geometry")
         }
         return true
     } finally { android.os.Trace.endSection() } }
@@ -9232,8 +9186,11 @@ private class MiniPlayerController(
         // and across to the torch and camera, which keep their own touches.
         val lx = buttonEdge(left, inner = true) ?: (xy[0] - 8f * d)
         val rx = buttonEdge(right, inner = false) ?: (xy[0] + view.width + 8f * d)
+        // Down to the bottom of the screen, but not from on the fingerprint sensor, which the
+        // row is lifted off where it lies under it (#66): a finger put there is unlocking.
         val inside = x >= minOf(lx, xy[0].toFloat()) && x < maxOf(rx, xy[0] + view.width.toFloat())
             && y >= xy[1] - 36f * d && y < host.height
+            && fingerprintInHost()?.contains(x.toInt(), y.toInt()) != true
         // The small island first: the camera's button (its shortcut_view_right_layout above
         // all) reaches well past its disc, over the small island's right half. Asked second, a
         // tap there was the camera's - and opened it (filmed 2026-09-25). Taken here, the whole
@@ -9336,7 +9293,7 @@ private class MiniPlayerController(
 
     fun refresh() {
         if (Looper.myLooper() != Looper.getMainLooper()) { scheduleRefresh(); return }
-        runCatching { refreshUnsafe() }.onFailure { Xp.log("MCMini: refresh failed: $it") }
+        runCatching { refreshUnsafe() }.onFailure { Xp.w("MCMini: refresh failed: $it") }
     }
 
     private fun scheduleRefresh() {
@@ -9500,8 +9457,11 @@ private class MiniPlayerController(
             lastTrack = ""
         }
         val metadata = metadataOf(current)
-        val track = current.packageName + "|" +
-            metadata?.getString(MediaMetadata.METADATA_KEY_TITLE).orEmpty()
+        // The song, not the title: Salt, 汽水 and QQ sing into TITLE, and every line threw the
+        // artwork away as a track change (#47, #56).
+        val track = TrackName.songKey(current.packageName, metadata).ifEmpty {
+            current.packageName + "|" + metadata?.getString(MediaMetadata.METADATA_KEY_TITLE).orEmpty()
+        }
         if (track != lastTrack) {
             if (lastTrack.isNotEmpty()) {
                 Xp.log("MCMini: track changed; preserving dynamic choice=" +
@@ -10318,6 +10278,7 @@ private class MiniPlayerController(
             if (value.sessionToken == controller?.sessionToken) usableSeenAt = android.os.SystemClock.uptimeMillis()
             return true
         }
+        if (cardHolds(value)) return true
         if (usableSeenAt == 0L || value.sessionToken != controller?.sessionToken ||
             value.sessionToken != liveFor) return false
         val left = usableSeenAt + USABLE_GAP_MS - android.os.SystemClock.uptimeMillis()
@@ -10326,6 +10287,21 @@ private class MiniPlayerController(
         handler.removeCallbacks(usableGapEnd)
         handler.postDelayed(usableGapEnd, left + 1L)
         return true
+    }
+
+    /**
+     * The session the lock screen's media card is showing, while the card is up, in a state that
+     * says nothing has played yet. QQ Music puts up its notification - and so the card - as soon
+     * as it is opened, with the session at NONE or STOPPED until the first play: read by state
+     * alone that was no music, so the card stayed a card on the lock screen and never went into
+     * the pill until something had been played. The card is what the lock screen shows as the
+     * music; once it goes, the state decides again.
+     */
+    private fun cardHolds(value: MediaController): Boolean {
+        val state = stateOf(value)?.state
+        if (state != PlaybackState.STATE_NONE && state != PlaybackState.STATE_STOPPED) return false
+        if (!Main.miniPlayerMediaCardPresent()) return false
+        return value.sessionToken == Main.miniPlayerSession()?.sessionToken
     }
 
     private fun playbackUsable(state: Int?): Boolean = when (state) {
@@ -10545,7 +10521,7 @@ private class MiniPlayerController(
             "sceneOverride=${Main.coverSceneActive()} transition=${morph != null}"
         if (log != lastPresentationLog) {
             lastPresentationLog = log
-            Xp.log("MCMini: presentation $log")
+            Xp.d("MCMini: presentation $log")
         }
         // A focus notification's second button while the pill is the only island: the big one.
         // Out of sight under a switch or a flight, it is set, not grown: it grew in only once the
@@ -10598,6 +10574,9 @@ private class MiniPlayerController(
         }
     }
 
+    /** The row laid out again on the next frame, for `op fod`. */
+    fun relayout() = schedulePosition()
+
     private fun schedulePosition() {
         if (positionPosted) return
         positionPosted = true
@@ -10626,7 +10605,7 @@ private class MiniPlayerController(
         val config = this.config
         val requestedWidth = dp(config.getDouble(MiniPlayerConfig.WIDTH).toFloat())
         val height = dp(MiniPlayerConfig.visibleHeightDp(config.toString()))
-        val centerY = rowCentreY(l, r, height)
+        val centerY = clearOfFingerprint(rowCentreY(l, r, height), height, l, r)
         val beside = small && !stackedStyle()
         if ((l == null || r == null) && config.optBoolean(MiniPlayerConfig.ADAPTIVE_WIDTH)) {
             widenedRest(l, r, beside, height, centerY)?.let { return it }
@@ -10689,6 +10668,48 @@ private class MiniPlayerController(
                 android.view.WindowInsets.Type.systemBars())?.bottom
         }.getOrNull() ?: 0
         return (host.height - inset - dp(12f) - height / 2f).coerceAtLeast(height / 2f)
+    }
+
+    /**
+     * The row's centre moved up off the fingerprint sensor where the two would meet
+     * (MiniPlayerRuntime.fingerprintArea, #66); the torch and camera stay where they are. Only
+     * the span between the buttons counts across: the row never reaches past them. Under a
+     * switch (MiniPlayerConfig.FOD_LIFT); off, the row stays put and only the touches that start
+     * on the sensor are still left to it.
+     */
+    private fun clearOfFingerprint(centerY: Float, height: Int, l: FloatArray?, r: FloatArray?): Float {
+        if (!config.optBoolean(MiniPlayerConfig.FOD_LIFT, true)) return centerY
+        val fod = fingerprintInHost() ?: return centerY
+        val from = l?.get(0) ?: 0f
+        val to = r?.get(0) ?: host.width.toFloat()
+        if (fod.right <= from || fod.left >= to) return centerY
+        val margin = dp(FOD_MARGIN_DP)
+        val top = centerY - height / 2f
+        val bottom = centerY + height / 2f
+        if (bottom + margin <= fod.top || top - margin >= fod.bottom) return centerY
+        val lifted = fod.top - margin - height / 2f
+        if (lifted != fodLiftedTo) {
+            fodLiftedTo = lifted
+            Xp.log("MCMini: row lifted off the fingerprint sensor $fod: centre $centerY -> $lifted")
+        }
+        return min(centerY, lifted)
+    }
+
+    private var fodLiftedTo = Float.NaN
+
+    /** The sensor in the host's coordinates, or null. */
+    private fun fingerprintInHost(): android.graphics.Rect? {
+        val fod = MiniPlayerRuntime.fingerprintArea(context) ?: return null
+        val at = IntArray(2).also(host::getLocationOnScreen)
+        return android.graphics.Rect(fod).apply { offset(-at[0], -at[1]) }
+    }
+
+    /** For `op fod`: the sensor as the row sees it, and where the row is. */
+    fun describeFingerprint(): String {
+        val fod = fingerprintInHost()
+        val rest = pillRest(smallKey != null)
+        return "sensor(host)=${fod ?: "none"} row centre=${rest?.centerY} height=${rest?.height}" +
+            " lifted=${if (fodLiftedTo.isNaN()) "never" else fodLiftedTo}"
     }
 
     /**
@@ -10782,7 +10803,7 @@ private class MiniPlayerController(
                     runCatching { transport(current, playing) }
                         .onFailure { dispatchFallback(fallbackKey) }
                 } else dispatchFallback(fallbackKey)
-            }.onFailure { Xp.log("MCMini: media command failed: $it") }
+            }.onFailure { Xp.w("MCMini: media command failed: $it") }
         }
     }
 
@@ -10803,6 +10824,9 @@ private class MiniPlayerController(
 /** The small island's nudge home: MiniPlayerView's OFFSET_RESPONSE, CoverMorphMotion's damping. */
 private const val SMALL_NUDGE_RESPONSE = 0.32f
 private const val SMALL_NUDGE_DAMPING = 0.8f
+
+/** Between the row of islands and the fingerprint sensor it is lifted above (#66). */
+private const val FOD_MARGIN_DP = 12f
 
 /** How long the pill waits, down, for a scene its morph has just landed into. */
 private const val SCENE_WAIT_MS = 1000L
@@ -11002,7 +11026,6 @@ private const val FLIGHT_HANDOFF = 0.18f
 /** The longest a landed card is held where the stack is settling it, and the least. */
 private const val PIN_MS = 1500L
 private const val PIN_SETTLE_MS = 150L
-private const val PIN_TRACE_MS = 1500L
 /** The held card's spring toward where it is to be; how long a target left stale is believed. */
 private const val PIN_RESPONSE = 0.3f
 /** Frames the stack's target has to hold, nothing leaving, before a landed card follows it. */

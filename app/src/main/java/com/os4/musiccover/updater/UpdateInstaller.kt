@@ -1,8 +1,11 @@
 package com.os4.musiccover.updater
 
+import android.content.ActivityNotFoundException
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.provider.MediaStore
 import android.util.Log
 import androidx.core.content.FileProvider
 import kotlinx.coroutines.CoroutineScope
@@ -36,6 +39,12 @@ sealed interface InstallOutcome {
 
     /** Nothing on the device would open an APK. */
     data object NoInstaller : InstallOutcome
+
+    /**
+     * Nothing would open it, so it was put in Downloads under [name] for the user to install by
+     * hand - the copy in this app's cache is out of a file manager's reach.
+     */
+    data class SavedToDownloads(val name: String) : InstallOutcome
 
     /**
      * The download came back signed by something that is not this project.
@@ -112,7 +121,8 @@ object UpdateInstaller {
                 } else if (handOff(app, file)) {
                     InstallOutcome.HandedOff
                 } else {
-                    InstallOutcome.NoInstaller
+                    saveToDownloads(app, file)?.let { InstallOutcome.SavedToDownloads(it) }
+                        ?: InstallOutcome.NoInstaller
                 }
             } catch (t: Throwable) {
                 if (cancelled) {
@@ -217,8 +227,13 @@ object UpdateInstaller {
      *
      * No installer is named, deliberately. Picking one would override the user's own default and
      * break for any build shipped under a different id; the intent is left for the system to
-     * resolve, and the probe is only so that a device with no APK handler at all can be told
-     * apart from one that took it.
+     * resolve.
+     *
+     * Started and caught rather than probed first. resolveActivity said yes on some phones and
+     * startActivity then threw "No Activity found to handle Intent" (reported 2026-10-07), which
+     * reached the user as the update failing: the probe and the start do not match intents the
+     * same way. `ACTION_INSTALL_PACKAGE` is the second try - the system installer's own action,
+     * which an APK handler that only half-declares VIEW does not stand in front of.
      */
     private fun handOff(context: Context, file: File): Boolean {
         val uri: Uri = FileProvider.getUriForFile(
@@ -226,12 +241,43 @@ object UpdateInstaller {
             "${context.packageName}.fileprovider",
             file,
         )
-        val intent = Intent(Intent.ACTION_VIEW)
-            .setDataAndType(uri, MIME_APK)
-            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        if (context.packageManager.resolveActivity(intent, 0) == null) return false
-        context.startActivity(intent)
-        return true
+        @Suppress("DEPRECATION")
+        for (action in listOf(Intent.ACTION_VIEW, Intent.ACTION_INSTALL_PACKAGE)) {
+            val intent = Intent(action)
+                .setDataAndType(uri, MIME_APK)
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            try {
+                context.startActivity(intent)
+                return true
+            } catch (e: ActivityNotFoundException) {
+                Log.w(TAG, "self-update: nothing took $action", e)
+            }
+        }
+        return false
+    }
+
+    /**
+     * The APK copied into the public Downloads, for a phone where nothing would take it. Returns
+     * the name it was saved under, which MediaStore may have numbered, or null if it could not be.
+     */
+    private fun saveToDownloads(context: Context, file: File): String? = try {
+        val resolver = context.contentResolver
+        val values = ContentValues().apply {
+            put(MediaStore.Downloads.DISPLAY_NAME, file.name)
+            put(MediaStore.Downloads.MIME_TYPE, MIME_APK)
+            put(MediaStore.Downloads.IS_PENDING, 1)
+        }
+        val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+            ?: throw IOException("MediaStore refused the entry")
+        resolver.openOutputStream(uri)!!.use { out -> file.inputStream().use { it.copyTo(out) } }
+        resolver.update(uri, ContentValues().apply { put(MediaStore.Downloads.IS_PENDING, 0) },
+            null, null)
+        resolver.query(uri, arrayOf(MediaStore.Downloads.DISPLAY_NAME), null, null, null)?.use {
+            if (it.moveToFirst()) it.getString(0) else null
+        } ?: file.name
+    } catch (t: Throwable) {
+        Log.w(TAG, "self-update: could not save to Downloads", t)
+        null
     }
 }

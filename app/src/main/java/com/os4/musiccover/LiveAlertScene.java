@@ -573,7 +573,7 @@ class LiveAlertScene implements ImmersiveScene {
             server.send(m);
             return true;
         } catch (Throwable t) {
-            Xp.log(mTag + "send " + what + " failed: " + t);
+            Xp.w(mTag + "send " + what + " failed: " + t);
             return false;
         }
     }
@@ -588,7 +588,7 @@ class LiveAlertScene implements ImmersiveScene {
                             ServiceConnection.class, int.class, UserHandle.class)
                     .invoke(ctx, intent, conn, Context.BIND_AUTO_CREATE, android.os.Process.myUserHandle());
         } catch (Throwable t) {
-            Xp.log(mTag + "bindServiceAsUser unavailable (" + t + "), plain bind");
+            Xp.w(mTag + "bindServiceAsUser unavailable (" + t + "), plain bind");
             return ctx.bindService(intent, conn, Context.BIND_AUTO_CREATE);
         }
     }

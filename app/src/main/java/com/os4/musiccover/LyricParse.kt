@@ -30,7 +30,7 @@ object LyricParse {
         if (translation.isNullOrBlank() || lines.isEmpty()) return lines
         val tr = lrc(translation)
         if (tr.isEmpty()) return lines
-        val texts = assign(lines, tr)
+        val texts = assign(lines, tr, ::translatable)
         val out = ArrayList<LyricLine>(lines.size)
         for ((i, line) in lines.withIndex()) {
             val text = texts[i]
@@ -40,10 +40,30 @@ object LyricParse {
     }
 
     /**
+     * A line a translation can belong to: not a singer's name standing alone ("应采儿:"), which
+     * NetEase gives a line of its own just before the voice changes and which, being the nearer,
+     * took the translation of the line it introduces.
+     */
+    private fun translatable(line: LyricLine): Boolean {
+        val m = LABEL.find(line.text) ?: return true
+        return m.range.last + 1 < line.text.length
+    }
+
+    /**
+     * A line a romanisation can belong to: one with letters in a script other than Latin. An
+     * English line in a Japanese song has nothing to romanise, and the nearest one took the
+     * romanisation of the Japanese line beside it - shown under the English and missing under
+     * its own line (KillKiss, One Last Kiss, 2026-10-07).
+     */
+    private fun romanisableLine(line: LyricLine): Boolean = nonLatin(line.text)
+
+    private fun nonLatin(s: String): Boolean = s.any { it.isLetter() && it.code > 0x024F }
+
+    /**
      * The same again with a romanisation beside the translation - QQ Music, NetEase and Kuwo
      * ship one for Japanese and Korean songs, as a third timed text joined by time like the
-     * translation. It is shown in the translation's place, above the translation when there is
-     * both, and goes with the translation switch.
+     * translation. Kept on the line as its own field, drawn above the translation under a
+     * switch of its own (LockLyrics.sRoma).
      */
     @JvmStatic
     fun parse(body: String, translation: String?, roma: String?): List<LyricLine> {
@@ -51,13 +71,11 @@ object LyricParse {
         if (roma.isNullOrBlank() || lines.isEmpty()) return lines
         val ro = lrc(roma)
         if (ro.isEmpty()) return lines
-        val best = assign(lines, ro)
+        val best = assign(lines, ro, ::romanisableLine)
         val out = ArrayList<LyricLine>(lines.size)
         for ((i, line) in lines.withIndex()) {
-            val r = best[i]
-            val merged = if (r == null) null else withRoma(r, line.text, line.translation)
-            out.add(if (merged == null || merged == line.translation) line
-                else withTranslation(line, merged))
+            val r = romaOf(best[i], line.text)
+            out.add(if (r == null || line.roma != null) line else withRoma(line, r))
         }
         return out
     }
@@ -67,24 +85,35 @@ object LyricParse {
      * each line taking the nearest entry. A catalogue leaves its credit lines untranslated, and
      * asked the other way round the credits 500ms before the first verse took the verse's
      * translation as their own (QQ's Lemon, 2026-09-24). One entry, one line; the closer of two
-     * claimants keeps it. See TRANSLATION_WINDOW_MS for the window.
+     * claimants keeps it. See TRANSLATION_WINDOW_MS for the window. Only lines that can carry
+     * one are claimants (translatable, romanisableLine): the others are passed over, not given it.
      */
-    private fun assign(lines: List<LyricLine>, entries: List<Pair<Int, String>>): Array<String?> {
-        val starts = IntArray(lines.size) { lines[it].start }
+    private fun assign(lines: List<LyricLine>, entries: List<Pair<Int, String>>,
+                       eligible: (LyricLine) -> Boolean = { true }): Array<String?> {
         val best = arrayOfNulls<String>(lines.size)
         val gaps = IntArray(lines.size) { Int.MAX_VALUE }
+        val open = lines.indices.filter { eligible(lines[it]) }
+        if (open.isEmpty()) return best
+        val starts = IntArray(open.size) { lines[open[it]].start }
+        // An entry that is only some line of the song again - an English line "romanised" or
+        // "translated" into itself - is no entry. Kept, it was drawn under its own line twice
+        // over (Everywhere We Go, 2026-10-07), and with that line passed over it would go to
+        // the nearest line that can take one.
+        val sung = lines.mapTo(HashSet()) { letters(it.text) }
         for ((at, text) in entries) {
-            var i = starts.binarySearch(at)
-            if (i < 0) {
-                val ins = -i - 1
-                i = when {
+            if (letters(text) in sung) continue
+            var k = starts.binarySearch(at)
+            if (k < 0) {
+                val ins = -k - 1
+                k = when {
                     ins == 0 -> 0
                     ins >= starts.size -> starts.size - 1
                     at - starts[ins - 1] <= starts[ins] - at -> ins - 1
                     else -> ins
                 }
             }
-            val gap = kotlin.math.abs(starts[i] - at)
+            val i = open[k]
+            val gap = kotlin.math.abs(starts[k] - at)
             if (gap <= TRANSLATION_WINDOW_MS && gap < gaps[i]) {
                 gaps[i] = gap
                 best[i] = text
@@ -93,15 +122,154 @@ object LyricParse {
         return best
     }
 
+    /** What borrow() took: the lines, how many of them gained each kind, and the account of it. */
+    class Lent(
+        @JvmField val lines: List<LyricLine>,
+        @JvmField val translations: Int,
+        @JvmField val romas: Int,
+        @JvmField val why: String,
+        /** The other copy is this song, whether or not it had anything to lend. */
+        @JvmField val matched: Boolean = false,
+    )
+
     /**
-     * The romanisation over the translation, as the one text the renderer draws under a line.
-     * Left out when it only repeats the line - a catalogue "romanises" an English song into
-     * itself.
+     * Another copy's translations or romanisations, hung on our own lines.
+     *
+     * The lyric on screen is the best copy there is of the words and their timing - the
+     * player's, the file's, the database's - and it is often one with no translation: Apple asks
+     * for one in the system's language and has none for most Japanese and English songs (#62),
+     * a file saved without one has none (#64), and a romanisation is rarer still. So the timing
+     * and the words stay ours, and only what was asked for moves across, each entry to the one
+     * line nearest it (assign), and only to a line without one of its own.
+     *
+     * Only from a copy of the same song: at least two lines in five of ours have to find the
+     * same words, give or take punctuation and case, near them in the other copy - which also
+     * says how far that copy is shifted against ours. A translation or a romanisation that only
+     * repeats its line is not one.
      */
-    internal fun withRoma(roma: String?, text: String, translation: String?): String? {
+    @JvmStatic
+    fun borrow(own: List<LyricLine>, other: List<LyricLine>, translations: Boolean,
+               romas: Boolean): Lent {
+        if (own.isEmpty() || other.isEmpty() || !(translations || romas)) {
+            return Lent(own, 0, 0, "nothing to borrow into or from")
+        }
+        // Where the other copy's lines sit against ours. Two releases of a song are often
+        // offset by a fraction of a second or more (another master, a longer intro), and the
+        // two copies split lines their own way - Apple's TTML against NetEase's LRC for Glee's
+        // Just Give Me a Reason found too few lines of the same words in the same place and lent
+        // nothing (2026-10-06). So each of our lines looks for the same words, or one copy's
+        // line inside the other's, within OFFSET_SEARCH_MS, and the median of those gaps is how
+        // far the other copy is shifted.
+        val gaps = ArrayList<Int>()
+        for (line in own) {
+            val k = letters(line.text)
+            if (k.length < 2) continue
+            var best = Int.MAX_VALUE
+            for (o in other) {
+                val d = o.start - line.start
+                if (kotlin.math.abs(d) <= OFFSET_SEARCH_MS && kotlin.math.abs(d) < kotlin.math.abs(best)
+                    && sameWords(k, letters(o.text))) best = d
+            }
+            if (best != Int.MAX_VALUE) gaps.add(best)
+        }
+        if (gaps.size * 5 < own.size * 2) {
+            return Lent(own, 0, 0, "only ${gaps.size} of ${own.size} lines found in the other copy")
+        }
+        gaps.sort()
+        val shift = gaps[gaps.size / 2]
+        val tr = if (!translations) null
+            else assign(own, other.mapNotNull { o -> o.translation?.let { (o.start - shift) to it } },
+                ::translatable)
+        val ro = if (!romas) null
+            else assign(own, other.mapNotNull { o -> o.roma?.let { (o.start - shift) to it } },
+                ::romanisableLine)
+        var nt = 0
+        var nr = 0
+        val out = own.mapIndexed { i, line ->
+            var l = line
+            val t = tr?.get(i)
+            if (t != null && l.translation == null && letters(t) != letters(l.text)) {
+                l = withTranslation(l, t)
+                nt++
+            }
+            val r = romaOf(ro?.get(i), l.text)
+            if (r != null && l.roma == null) {
+                l = withRoma(l, r)
+                nr++
+            }
+            l
+        }
+        return Lent(if (nt + nr == 0) own else out, nt, nr,
+            "$nt translations, $nr romanisations into ${own.size} lines, the other copy ${shift}ms off",
+            true)
+    }
+
+    /** How far apart the two copies may be for a line to count towards their offset. */
+    private const val OFFSET_SEARCH_MS = 5000
+
+    /**
+     * The same line in two copies, after letters(): the same, or one inside the other where the
+     * shorter is at least half the longer - a copy that splits a line in two still matches it.
+     */
+    private fun sameWords(a: String, b: String): Boolean {
+        if (a == b) return true
+        val short = if (a.length <= b.length) a else b
+        val long = if (a.length <= b.length) b else a
+        return short.length >= 4 && short.length * 2 >= long.length && long.contains(short)
+    }
+
+    /**
+     * Whether a lyric is in a language worth translating here: more kana, hangul and Latin
+     * letters than Han characters. A Chinese song has no translation anywhere, and asking the
+     * catalogues for one on every Chinese track would be requests for nothing.
+     */
+    @JvmStatic
+    fun foreign(lines: List<LyricLine>): Boolean {
+        var han = 0
+        var other = 0
+        for (line in lines) {
+            for (ch in line.text) {
+                when {
+                    ch.code in 0x4E00..0x9FFF -> han++
+                    ch.code in 0x3040..0x30FF || ch.code in 0xAC00..0xD7AF -> other++
+                    ch in 'a'..'z' || ch in 'A'..'Z' -> other++
+                }
+            }
+        }
+        return other > han
+    }
+
+    /**
+     * Whether a lyric is in a script a romanisation says anything about: a quarter or more of
+     * its lines in a script other than Latin. Chinese counts - a Cantonese song's jyutping is
+     * one - and an English song does not, whose "romanisation" in a catalogue is the song again;
+     * its credit lines in Chinese are fewer than that.
+     *
+     * Counted by lines, not letters: an English word is several letters and a Japanese or Korean
+     * one is one or two characters, so a song half in each read as English, and Make A Wish,
+     * Life Is Like A Boat and KillKiss never asked for the romanisation of their other half
+     * (2026-10-07).
+     */
+    @JvmStatic
+    fun romanisable(lines: List<LyricLine>): Boolean {
+        var total = 0
+        var other = 0
+        for (line in lines) {
+            if (line.text.none { it.isLetter() }) continue
+            total++
+            if (nonLatin(line.text)) other++
+        }
+        return other > 0 && other * 4 >= total
+    }
+
+    /**
+     * A romanisation fit to put under its line, or null - left out when it only repeats the
+     * line, as a catalogue "romanises" an English song into itself.
+     */
+    internal fun romaOf(roma: String?, text: String): String? {
         val r = roma?.trim()?.replace(Regex("\\s+"), " ")
-        if (r.isNullOrEmpty() || letters(r) == letters(text)) return translation
-        return if (translation.isNullOrBlank()) r else r + "\n" + translation.trim()
+        if (r.isNullOrEmpty() || letters(r) == letters(text)) return null
+        return r
     }
 
     private fun letters(s: String): String =
@@ -125,35 +293,61 @@ object LyricParse {
             val m = LRC_TIME.find(raw) ?: continue
             val text = raw.substring(m.range.last + 1).trim()
             if (text.isEmpty()) continue
-            val min = m.groupValues[1].toIntOrNull() ?: continue
-            val sec = m.groupValues[2].toIntOrNull() ?: continue
-            val frac = m.groupValues[3]
-            // One digit is tenths, two are hundredths, three are milliseconds.
-            val ms = when (frac.length) {
-                0 -> 0
-                1 -> (frac.toIntOrNull() ?: 0) * 100
-                3 -> frac.toIntOrNull() ?: 0
-                else -> (frac.toIntOrNull() ?: 0) * 10
-            }
-            out.add(Pair(min * 60000 + sec * 1000 + ms, text))
+            out.add(Pair(ms(m) ?: continue, text))
         }
         out.sortBy { it.first }
         return out
     }
 
+    /** An LRC time tag's minutes, seconds and fraction, in milliseconds. */
+    private fun ms(m: MatchResult): Int? {
+        val min = m.groupValues[1].toIntOrNull() ?: return null
+        val sec = m.groupValues[2].toIntOrNull() ?: return null
+        val frac = m.groupValues[3]
+        // One digit is tenths, two are hundredths, three are milliseconds.
+        val ms = when (frac.length) {
+            0 -> 0
+            1 -> (frac.toIntOrNull() ?: 0) * 100
+            3 -> frac.toIntOrNull() ?: 0
+            else -> (frac.toIntOrNull() ?: 0) * 10
+        }
+        return min * 60000 + sec * 1000 + ms
+    }
+
     private val LRC_TIME = Regex("^\\[(\\d{1,3}):(\\d{2})(?:[.:](\\d{1,3}))?]")
+    private val LRC_TAG = Regex("\\[(\\d{1,3}):(\\d{2})(?:[.:](\\d{1,3}))?]")
 
     /** The same line carrying a translation it did not come with. */
     private fun withTranslation(line: LyricLine, text: String): LyricLine {
-        val copy = LyricLine(line.text, text, line.start, line.end, line.opposite,
+        val copy = LyricLine(line.text, text, line.roma, line.start, line.end, line.opposite,
             line.sylStart, line.sylEnd, line.charEnd)
+        copy.bg = line.bg
+        return copy
+    }
+
+    /** The same line carrying a romanisation it did not come with. */
+    private fun withRoma(line: LyricLine, roma: String): LyricLine {
+        val copy = LyricLine(line.text, line.translation, roma, line.start, line.end,
+            line.opposite, line.sylStart, line.sylEnd, line.charEnd)
         copy.bg = line.bg
         return copy
     }
 
     @JvmStatic
     fun parse(body: String): List<LyricLine> {
-        val lyrics = AutoParser().parse(body)
+        // lyrics-core throws on lyrics it cannot make sense of - EnhancedLrcParser's
+        // rearrangeUncheckedLineTime trips SyncedLine's require() on NetEase 2057709543 (邓紫棋
+        // Pasión). Uncaught on a worker thread that is the whole of SystemUI going down, once per
+        // play of the song (2026-10-06, twice in fifteen seconds). A lyric that cannot be read is
+        // no lyric.
+        val prepared = bracketWords(body)
+        val lyrics = try {
+            AutoParser().parse(prepared.body)
+        } catch (t: Throwable) {
+            // The log is SystemUI's; on the JVM the tests run on it is not there to write to.
+            runCatching { Xp.log("[MCLyric] the parser gave up on a lyric (" + body.length + " chars): " + t) }
+            return emptyList()
+        }
         val src = lyrics.lines
         val out = ArrayList<LyricLine>(src.size)
         // Where the tail of a line may run to when the file left it without an end of its own:
@@ -207,7 +401,270 @@ object LyricParse {
             }
         }
         out.sortBy { it.start }
-        return speakers(out)
+        return speakers(withLanes(out, prepared.lanes))
+    }
+
+    /** A body made ready for the parser, and the translations taken off it by their line's start. */
+    internal class Prepared(val body: String, val lanes: List<Pair<Int, String>>)
+
+    /**
+     * Word timings written in the line's own brackets - "[00:01.000]日[00:01.100]本[00:01.200]語
+     * [00:01.500]", the form LDDC and the tools like it save - rewritten into Enhanced LRC's angle
+     * brackets before the parser sees them. lyrics-core does not read that form (#64): it took the
+     * first word for the line's time and lost it ("本語"), left a closing time on the screen
+     * ("Goodbyes[01:15.342]") and on the end of a translation, and a duet's "女：" went with the
+     * first word, so the two voices were never told apart.
+     *
+     * The same files give a translation a line of its own, timed one of two ways: at its line's
+     * start, or with the same time twice - which no sung line has - just before the next line.
+     * Either way it is taken off here and handed back to its line after parsing; left in, it was
+     * a line of its own. A file with no word timings only loses the closing times.
+     */
+    internal fun bracketWords(body: String): Prepared {
+        if (!body.contains('[')) return Prepared(body, emptyList())
+        val rows = body.split('\n').flatMap { sungAgain(it) }
+        val cut = rows.map { pieces(it) }
+        val timed = cut.any { it != null && words(it) }
+        val ahead = timed && translationsAhead(cut)
+        val out = ArrayList<String>(rows.size)
+        val lanes = ArrayList<Pair<Int, String>>()
+        // The start of the word-timed line a translation after it would belong to.
+        var owner: Int? = null
+        for ((i, raw) in rows.withIndex()) {
+            val p = cut[i]
+            // Untouched: no time, one time, or times one after another before any text - the
+            // same line sung more than once ("[00:12.00][01:30.00]...").
+            if (p == null || p.size < 2) {
+                if (p != null) owner = null
+                out.add(raw)
+                continue
+            }
+            val start = ms(p[0].first)
+            if (start == null) {
+                out.add(raw)
+                continue
+            }
+            if (words(p)) {
+                out.add(angle(p))
+                owner = start
+                continue
+            }
+            // "[t]text[t2]": a translation, or a line with its closing time.
+            val text = p[0].second.trim()
+            val end = ms(p.last().first) ?: start
+            if (ahead) {
+                // A file that writes each translation above its line: it is the next line's.
+                val next = nextWords(cut, i)
+                if (next != null && kotlin.math.abs(next - start) <= LANE_MS) {
+                    lanes.add(Pair(next, text))
+                    continue
+                }
+            }
+            val own = owner
+            val lane = !ahead && timed && own != null && (kotlin.math.abs(start - own) <= LANE_MS
+                    || (end == start && start >= own && start <= nextStart(cut, i)))
+            if (lane) {
+                lanes.add(Pair(own!!, text))
+                continue
+            }
+            if (timed && end > start) {
+                out.add(angle(p))
+                owner = start
+            } else {
+                out.add(p[0].first.value + text)
+                owner = null
+            }
+        }
+        return Prepared(originalsFirst(inOrder(out)).joinToString("\n"), lanes)
+    }
+
+    /**
+     * Whether a word-timed file writes its translations above their lines rather than below:
+     * its first translation - a row with no word timings, at the time of the line after it -
+     * comes before its first sung line. Read the usual way, every translation went to the line
+     * before its own and the first one was a line of its own (#64, 正文/翻译颠倒).
+     */
+    private fun translationsAhead(cut: List<List<Pair<MatchResult, String>>?>): Boolean {
+        for ((i, p) in cut.withIndex()) {
+            if (p == null || p.size < 2) continue
+            if (words(p)) return false
+            val start = ms(p[0].first) ?: continue
+            val next = nextWords(cut, i) ?: return false
+            return kotlin.math.abs(next - start) <= LANE_MS
+        }
+        return false
+    }
+
+    /** When the row after row i starts, if it is a word-timed one. */
+    private fun nextWords(cut: List<List<Pair<MatchResult, String>>?>, i: Int): Int? {
+        for (j in i + 1 until cut.size) {
+            val p = cut[j] ?: continue
+            return if (words(p)) ms(p[0].first) else null
+        }
+        return null
+    }
+
+    /**
+     * Two rows at one time - a line and its translation, as LRC writes them - with the line first,
+     * since the parser takes the first for the line and the second for its translation. Some
+     * files write the translation first, and the song came out in Chinese with its own words
+     * under it (#64). A row with word timings is the line wherever it is; between two without,
+     * a Japanese or Korean one is the line and a Chinese one its translation, when the file puts
+     * the Chinese first more often than not. Not English: a Chinese song translated into English
+     * is written exactly like an English song with its translation first, and is left as it is.
+     */
+    private fun originalsFirst(rows: List<String>): List<String> {
+        val at = rows.map { r -> LRC_TIME.find(r.trimStart())?.let { ms(it) } }
+        val pairs = ArrayList<Int>()
+        for (i in 0 until rows.size - 1) {
+            if (at[i] != null && at[i] == at[i + 1]) pairs.add(i)
+        }
+        if (pairs.isEmpty()) return rows
+        val out = rows.toMutableList()
+        var behind = 0
+        var ahead = 0
+        for (i in pairs) {
+            val a = script(rows[i])
+            val b = script(rows[i + 1])
+            if (a == HAN && b == KANA) ahead++
+            if (a == KANA && b == HAN) behind++
+        }
+        val swapChinese = ahead > behind
+        var i = 0
+        while (i < rows.size - 1) {
+            if (at[i] == null || at[i] != at[i + 1]) {
+                i++
+                continue
+            }
+            val wa = rows[i].contains('<')
+            val wb = rows[i + 1].contains('<')
+            val swap = if (wa != wb) wb
+                else swapChinese && script(rows[i]) == HAN && script(rows[i + 1]) == KANA
+            if (swap) {
+                out[i] = rows[i + 1]
+                out[i + 1] = rows[i]
+            }
+            i += 2
+        }
+        return out
+    }
+
+    private const val HAN = 1
+    private const val KANA = 2
+
+    /**
+     * HAN for a row in Chinese, KANA for one with any kana or hangul in it - Japanese is Han and
+     * kana both - and 0 for anything else.
+     */
+    private fun script(row: String): Int {
+        val text = row.replace(LRC_TAG, "").replace(ANGLE_TAG, "")
+        var h = 0
+        var other = 0
+        for (ch in text) {
+            when {
+                ch.code in 0x3040..0x30FF || ch.code in 0xAC00..0xD7AF -> return KANA
+                ch.code in 0x4E00..0x9FFF -> h++
+                ch.isLetter() -> other++
+            }
+        }
+        return if (h > 0 && h > other) HAN else 0
+    }
+
+    private val ANGLE_TAG = Regex("<[^>]*>")
+
+    /**
+     * A line sung more than once, written once with all its times - "[00:12.00][01:30.00]副歌",
+     * as hand-made LRC writes a chorus - as one row per time, which inOrder then puts in its
+     * place. As written, the file read as no lyric at all. The same time twice is one row. A row with word timings
+     * after its times is left as it is: those are the first time's, and no other time has any.
+     */
+    private fun sungAgain(raw: String): List<String> {
+        val tags = LRC_TAG.findAll(raw).toList()
+        if (tags.size < 2 || raw.substring(0, tags[0].range.first).isNotBlank()) return listOf(raw)
+        var n = 1
+        while (n < tags.size && raw.substring(tags[n - 1].range.last + 1, tags[n].range.first).isBlank()) n++
+        if (n < 2 || n < tags.size) return listOf(raw)
+        val text = raw.substring(tags[n - 1].range.last + 1)
+        return tags.map { it.value }.distinct().map { it + text }
+    }
+
+    /**
+     * The timed rows in time order, the rest (the tags, blank rows) ahead of them as they were.
+     * lyrics-core throws on an LRC whose rows go back in time - its rearrangeUncheckedLineTime
+     * requires the next line to start later - and a lyric it throws on is no lyric at all; a
+     * chorus written once with all its times always does, and hand-edited files often. Stable,
+     * so a translation stays after the line it shares a start with; run once bracketWords has
+     * taken off the ones timed a millisecond early, which would have gone ahead of their line.
+     * Untouched when in order.
+     */
+    private fun inOrder(rows: List<String>): List<String> {
+        val at = rows.map { r -> LRC_TIME.find(r.trimStart())?.let { ms(it) } }
+        var last = Int.MIN_VALUE
+        var sorted = true
+        for (t in at) {
+            if (t == null) continue
+            if (t < last) sorted = false
+            last = t
+        }
+        if (sorted) return rows
+        val timed = rows.indices.filter { at[it] != null }.sortedBy { at[it] }
+        return rows.indices.filter { at[it] == null }.map { rows[it] } + timed.map { rows[it] }
+    }
+
+    /**
+     * How far a translation's time may be from its line's and still be at its start: LDDC writes
+     * them a millisecond apart as often as at the same time.
+     */
+    private const val LANE_MS = 20
+
+    /**
+     * A row's times and the text after each - "[t0]a[t1]b[t2]" is (t0, "a"), (t1, "b"), (t2, "").
+     * Null for a row that does not open with a time, or opens with times one after another.
+     */
+    private fun pieces(raw: String): List<Pair<MatchResult, String>>? {
+        val tags = LRC_TAG.findAll(raw).toList()
+        if (tags.isEmpty() || raw.substring(0, tags[0].range.first).isNotBlank()) return null
+        val p = tags.mapIndexed { i, m ->
+            val end = if (i + 1 < tags.size) tags[i + 1].range.first else raw.length
+            Pair(m, raw.substring(m.range.last + 1, end))
+        }
+        return if (p[0].second.isBlank()) null else p
+    }
+
+    /** Words after the first carry times of their own. */
+    private fun words(p: List<Pair<MatchResult, String>>): Boolean =
+        p.size > 1 && p.drop(1).any { it.second.isNotBlank() }
+
+    /** The row again, every time after the first in angle brackets. */
+    private fun angle(p: List<Pair<MatchResult, String>>): String {
+        val sb = StringBuilder(p[0].first.value)
+        for ((tag, text) in p) {
+            sb.append('<').append(tag.value, 1, tag.value.length - 1).append('>').append(text)
+        }
+        return sb.toString()
+    }
+
+    /** When the next lyric row after row i starts; a translation before it can still be the last line's. */
+    private fun nextStart(cut: List<List<Pair<MatchResult, String>>?>, i: Int): Int {
+        for (j in i + 1 until cut.size) {
+            val p = cut[j] ?: continue
+            return ms(p[0].first) ?: continue
+        }
+        return Int.MAX_VALUE
+    }
+
+    /** The translations bracketWords took off, back on the lines that start where they were. */
+    private fun withLanes(lines: List<LyricLine>, lanes: List<Pair<Int, String>>): List<LyricLine> {
+        if (lanes.isEmpty()) return lines
+        val by = LinkedHashMap<Int, String>()
+        for ((at, text) in lanes) {
+            if (text.isEmpty()) continue
+            by[at] = by[at]?.let { it + "\n" + text } ?: text
+        }
+        return lines.map { line ->
+            val t = by.remove(line.start) ?: return@map line
+            withTranslation(line, line.translation?.let { it + "\n" + t } ?: t)
+        }
     }
 
     /**
@@ -241,10 +698,10 @@ object LyricParse {
         if (n == 0) return null
         for (k in chars.indices) if (chars[k] > n) chars[k] = n
         closeUntimedTail(starts, ends, line.end, nextStart)
-        // The file's own romanisation - TTML's x-roman, a KRC's language block - joins the
-        // translation the same way a separately shipped one does.
+        // The file's own romanisation - TTML's x-roman, a KRC's language block - kept the same
+        // way a separately shipped one is.
         val shown = text.substring(0, n)
-        return LyricLine(shown, withRoma(line.phonetic, shown, line.translation), line.start,
+        return LyricLine(shown, line.translation, romaOf(line.phonetic, shown), line.start,
             line.end, line.alignment == KaraokeAlignment.End, starts, ends, chars)
     }
 
@@ -368,7 +825,8 @@ object LyricParse {
         if (cut >= line.text.length) return null
         val text = line.text.substring(cut)
         val result = if (line.sylStart == null) {
-            LyricLine(text, line.translation, line.start, line.end, opposite, null, null, null)
+            LyricLine(text, line.translation, line.roma, line.start, line.end, opposite,
+                null, null, null)
         } else {
             // Syllables that lay wholly inside the prefix go with it; the rest shift left.
             val starts = ArrayList<Int>()
@@ -382,7 +840,7 @@ object LyricParse {
                 chars.add(e)
             }
             if (chars.isEmpty()) return null
-            LyricLine(text, line.translation, line.start, line.end, opposite,
+            LyricLine(text, line.translation, line.roma, line.start, line.end, opposite,
                 starts.toIntArray(), ends.toIntArray(), chars.toIntArray())
         }
         result.bg = line.bg

@@ -384,16 +384,23 @@ internal object NumState {
 
     /**
      * The stack's own "N个通知" line (NotificationNumStateView) sits inside the island's pill:
-     * hidden while the island stands for it. transitionAlpha, which the stack's own fade of it
-     * (doNumStateViewAlphaAnimation, on alpha) leaves alone.
+     * hidden while the island stands for it. On its children's transitionAlpha (the zen mark, the
+     * divider, the count), which nothing of SystemUI's writes: the line's own transitionAlpha is
+     * the keyguard's fade (scaleAndAlpha, NotificationNumStateViewBinder), and showing the line
+     * by setting that to 1 put "勿扰" over the bouncer, where the keyguard had faded it out (#42).
      */
     fun hideCount(hide: Boolean) {
-        val v = countView() ?: return
+        val v = countView() as? ViewGroup ?: return
         val want = if (hide) 0f else 1f
-        if (v.transitionAlpha != want) {
-            v.transitionAlpha = want
-            trace(if (hide) "count hidden" else "count shown")
+        var changed = false
+        for (k in 0 until v.childCount) {
+            val c = v.getChildAt(k)
+            if (c.transitionAlpha != want) {
+                c.transitionAlpha = want
+                changed = true
+            }
         }
+        if (changed) trace(if (hide) "count hidden" else "count shown")
     }
 
     private fun countView(): View? {

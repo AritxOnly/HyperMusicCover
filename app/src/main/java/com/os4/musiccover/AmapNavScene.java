@@ -30,6 +30,11 @@ final class AmapNavScene extends LiveAlertScene {
 
     static final AmapNavScene INSTANCE = new AmapNavScene();
 
+    @Override
+    public boolean isNavigation() {
+        return true;
+    }
+
     private AmapNavScene() {
         super(ID, PKG, "com.autonavi.minimap.immersenavi.AMapImmerseNaviService", "536879184");
     }
@@ -56,6 +61,15 @@ final class AmapNavScene extends LiveAlertScene {
     private long mSentAt;
     private final Handler mMain = new Handler(Looper.getMainLooper());
     private final Runnable mFlush = this::flushOverview;
+
+    /**
+     * 高德's islands, but not the trip's own (AmapTransitIsland.ID): a tap on that one opens no
+     * page while the trip's page is off, rather than this map in its place.
+     */
+    @Override
+    public boolean servesKey(String key) {
+        return !AmapTransitScene.isTripKey(key);
+    }
 
     /** ColorOS's host grows the map in from 1.1 (a6.l, type 1). */
     @Override
@@ -134,7 +148,7 @@ final class AmapNavScene extends LiveAlertScene {
         try {
             ProbeGuard.send(ctx, new Intent(AMAP_PROBE).setPackage(PKG).putExtra("ask", true));
         } catch (Throwable t) {
-            Xp.log("MCImmersive: " + ID + ": ask failed: " + t);
+            Xp.w("MCImmersive: " + ID + ": ask failed: " + t);
         }
     }
 }

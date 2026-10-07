@@ -10,6 +10,12 @@ public final class LyricLine {
     final String text;
     /** Null when the file has none for this line. */
     final String translation;
+    /**
+     * How the line is said in Latin letters - romaji, jyutping, a Korean romanisation - or null.
+     * Kept apart from the translation because it has a switch of its own (LockLyrics.sRoma);
+     * drawn over it when both are on (under()).
+     */
+    final String roma;
     final int start;
     /** Not final: a background vocal hung under this line can outlast it, and extends it. */
     int end;
@@ -32,9 +38,15 @@ public final class LyricLine {
 
     public LyricLine(String text, String translation, int start, int end, boolean opposite,
                      int[] sylStart, int[] sylEnd, int[] charEnd) {
+        this(text, translation, null, start, end, opposite, sylStart, sylEnd, charEnd);
+    }
+
+    public LyricLine(String text, String translation, String roma, int start, int end,
+                     boolean opposite, int[] sylStart, int[] sylEnd, int[] charEnd) {
         this.text = text;
         this.translation = translation == null || translation.trim().isEmpty()
                 ? null : translation.trim();
+        this.roma = roma == null || roma.trim().isEmpty() ? null : roma.trim();
         this.start = start;
         // A database file is edited by hand; a line that ends before it starts is clamped here
         // rather than trusted into a negative duration later.
@@ -80,5 +92,16 @@ public final class LyricLine {
 
     boolean hasWords() {
         return sylStart != null;
+    }
+
+    /**
+     * The text drawn under the line for the switches in mode (LockLyrics.below()): the
+     * romanisation over the translation, either alone, or null for nothing.
+     */
+    String under(int mode) {
+        String r = (mode & LockLyrics.BELOW_ROMA) != 0 ? roma : null;
+        String t = (mode & LockLyrics.BELOW_TRANS) != 0 ? translation : null;
+        if (r == null) return t;
+        return t == null ? r : r + "\n" + t;
     }
 }

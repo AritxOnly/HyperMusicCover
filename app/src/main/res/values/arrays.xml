@@ -6,5 +6,7 @@
         <item>com.miui.aod</item>
         <item>miui.systemui.plugin</item>
         <item>com.apple.android.music</item>
+        <item>com.autonavi.minimap</item>
+        <item>com.miui.personalassistant</item>
     </string-array>
 </resources>

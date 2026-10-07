@@ -39,6 +39,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
+import com.os4.musiccover.R
 import com.os4.musiccover.ui.util.isInDarkTheme
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
@@ -65,10 +66,18 @@ import kotlin.math.pow
  * full-screen cover sits, and how small the clock goes. They are read every frame, so a slider
  * moves the picture while it plays.
  */
+/**
+ * The picture's box, the camera fill inside it, and what that leaves empty under the phone. The
+ * pager centres the title under the phone rather than under the box, so it is handed the air.
+ */
+private val PICTURE_H = 200.dp
+private const val PICTURE_FILL = 0.92f
+private val PICTURE_AIR = PICTURE_H * (1f - PICTURE_FILL) / 2f
+
 @Composable
 fun CoverDemo(coverStyle: Int, bias: Float, clockSize: Float, modifier: Modifier = Modifier) {
     val look by rememberUpdatedState(Look(coverStyle, bias.coerceIn(0f, 1f), clockSize))
-    DemoPager(COVER_PAGES, modifier) { page, playing, done ->
+    DemoPager(COVER_PAGES, modifier, pictureAir = PICTURE_AIR) { page, playing, done ->
         val pal = skeuoPalette(isInDarkTheme())
         val measurer = rememberTextMeasurer()
         val clockSp = with(LocalDensity.current) { CLOCK_UNITS.toSp() }
@@ -83,25 +92,26 @@ fun CoverDemo(coverStyle: Int, bias: Float, clockSize: Float, modifier: Modifier
             }
             done()
         }
-        Canvas(Modifier.fillMaxWidth().height(200.dp).clipToBounds()) {
+        Canvas(Modifier.fillMaxWidth().height(PICTURE_H).clipToBounds()) {
             drawCover(scene, look, pal, measurer, clockSp)
         }
     }
 }
 
 /*
- * What each page says is what the module does, and no more:
+ * What each page plays is what the module does, and no more - its title names it and the motion
+ * is the rest:
  * - the cover follows the media card, not the play button (Main.onMediaUpdate): the pill tapped
  *   opens into the card and the cover comes with it (Main.miniPlayerEnterCover); the card swiped
  *   down goes back into the pill and the cover goes with it;
  * - the two-finger tap is LockLyrics.toggleByTap - lyrics and cover, swapped;
  * - the AOD keeps the cover's small clock and the lyrics only in the full-screen AOD
- *   (ClockCollapse.aodHeld), which is an OEM setting, so the page says so.
+ *   (ClockCollapse.aodHeld), which is an OEM setting, so the page shows it.
  */
 private val COVER_PAGES = listOf(
-    DemoText("封面接管锁屏", "点按胶囊展开成媒体卡片，专辑封面随之接管锁屏，时钟缩小让出位置；卡片下滑收回胶囊，封面退出。"),
-    DemoText("锁屏歌词", "有歌词的歌曲在封面上逐字唱出。双指单击锁屏，在歌词和封面之间切换。"),
-    DemoText("息屏保持", "开启全屏息屏显示时，息屏后仍保留封面的小时钟和歌词，亮屏接着唱。"),
+    DemoText(R.string.demo_cover_takeover_title),
+    DemoText(R.string.demo_cover_lyrics_title),
+    DemoText(R.string.demo_cover_aod_title),
 )
 
 private class Look(val style: Int, val bias: Float, val clockSize: Float)
@@ -359,7 +369,7 @@ private fun flightBox(small: Rect2, big: Rect2, progress: Float): Rect2 {
 
 private fun DrawScope.drawCover(sc: CoverScene, look: Look, pal: SkeuoPalette, measurer: TextMeasurer,
                                 clockSp: TextUnit) {
-    val (s, o) = sc.cam.view(size.width, size.height, fill = 0.92f)
+    val (s, o) = sc.cam.view(size.width, size.height, fill = PICTURE_FILL)
     val map = { x: Float, y: Float -> Offset(o.x + x * s, o.y + y * s) }
     val c = sc.cover.value.coerceIn(0f, 1.05f)
     val cc = c.coerceAtMost(1f)

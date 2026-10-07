@@ -902,6 +902,7 @@ public class Main extends XposedModule {
         try {
             Xp.hookAll(owner, method, chain -> {
                 LockLyrics.lockScreenLeaving(tag);
+                main().post(ImmersiveHost::onLockScreenLeaving);
                 main().post(kickLyrics);
                 main().postDelayed(kickLyrics, 160L);
                 return chain.proceed();
@@ -909,7 +910,7 @@ public class Main extends XposedModule {
             LockLyrics.armed("+" + tag);
         } catch (Throwable t) {
             LockLyrics.armed("!" + tag);
-            Xp.log(TAG + "leaving hook " + tag + " failed: " + t);
+            Xp.w(TAG + "leaving hook " + tag + " failed: " + t);
         }
     }
 
@@ -957,6 +958,11 @@ public class Main extends XposedModule {
             AmapImmerse.handle(param.getDefaultClassLoader());
             return;
         }
+        // 小爱建议, for its subway ride-code card on the island. See MetroCodeIsland.
+        if (MetroCodeIsland.PKG.equals(pkg)) {
+            MetroCodeIsland.INSTANCE.install(param.getDefaultClassLoader());
+            return;
+        }
         if (!"com.android.systemui".equals(pkg)) return;
 
         final ClassLoader cl = param.getDefaultClassLoader();
@@ -970,6 +976,15 @@ public class Main extends XposedModule {
         PassBlurScaleFix.install();
         // The mini player hangs off the shortcut row, not the clock container.
         MiniPlayerRuntime.install(cl);
+        // The clock's colour extraction once it is still, not on every step (PaletteThrottle).
+        PaletteThrottle.INSTANCE.install(cl);
+        // 勿扰 and charging drawn after the date, out from under the pill (DateStatus).
+        DateStatus.INSTANCE.install(cl);
+        // 高德's ride card is a focus notification of its own only once the cloud list that
+        // decides who may have one answers for it (AmapFocus).
+        AmapFocus.install(cl);
+        // A ride code opened or a card's fare taken, for the trip card's 到站 (RideCodeExit).
+        RideCodeExit.INSTANCE.install(cl);
 
         try {
             sContainerCls = Xp.findClass(CLS_CONTAINER, cl);
@@ -1004,7 +1019,7 @@ public class Main extends XposedModule {
                 try {
                     registerReceiver(sContainer.getContext().getApplicationContext());
                 } catch (Throwable t) {
-                    Xp.log(TAG + "registerReceiver failed: " + t);
+                    Xp.w(TAG + "registerReceiver failed: " + t);
                 }
                 // An immersive page's slot, if a rebuilt keyguard came with a new window.
                 try {
@@ -1019,7 +1034,7 @@ public class Main extends XposedModule {
                 try {
                     LyriconSource.attach(sContainer.getContext().getApplicationContext());
                 } catch (Throwable t) {
-                    Xp.log(TAG + "Lyricon attach failed: " + t);
+                    Xp.w(TAG + "Lyricon attach failed: " + t);
                 }
                 // The keyguard is rebuilt on some transitions, taking our cover with it, so
                 // re-attach rather than assume the view is still in the tree.
@@ -1067,7 +1082,7 @@ public class Main extends XposedModule {
                         try {
                             LockLyrics.refresh();
                         } catch (Throwable t) {
-                            Xp.log(TAG + "lyrics refresh failed: " + t);
+                            Xp.w(TAG + "lyrics refresh failed: " + t);
                         }
                     }
                 });
@@ -1095,7 +1110,7 @@ public class Main extends XposedModule {
                 return result;
             });
         } catch (Throwable t) {
-            Xp.log(TAG + "onDetachedFromWindow hook failed: " + t);
+            Xp.w(TAG + "onDetachedFromWindow hook failed: " + t);
         }
 
         // The lyrics' HDR highlight no longer has a hook here: it needs a colour mode, a colour
@@ -1164,7 +1179,7 @@ public class Main extends XposedModule {
                 return result;
             });
         } catch (Throwable t) {
-            Xp.log(TAG + "KeyguardService sleep/wake hooks failed, the clock cuts to and from "
+            Xp.w(TAG + "KeyguardService sleep/wake hooks failed, the clock cuts to and from "
                     + "the AOD: " + t);
         }
 
@@ -1197,7 +1212,7 @@ public class Main extends XposedModule {
         } catch (Throwable t) {
             // Independently, like every other hook here: without it a track change simply waits
             // for the player, which is what it did before.
-            Xp.log(TAG + "transport control hook failed, a skip is only noticed when the player "
+            Xp.w(TAG + "transport control hook failed, a skip is only noticed when the player "
                     + "reports it: " + t);
         }
 
@@ -1241,7 +1256,7 @@ public class Main extends XposedModule {
                 return result;
             });
         } catch (Throwable t) {
-            Xp.log(TAG + "doAnimationToAod hook failed, AOD falls back to screen off: " + t);
+            Xp.w(TAG + "doAnimationToAod hook failed, AOD falls back to screen off: " + t);
         }
 
         // The system does re-show the cut-out - verified: it came back right after we restored
@@ -1268,7 +1283,7 @@ public class Main extends XposedModule {
             });
             Xp.log(TAG + "depth ownership hooked");
         } catch (Throwable t) {
-            Xp.log(TAG + "depth ownership hook failed: " + t);
+            Xp.w(TAG + "depth ownership hook failed: " + t);
         }
 
         // What the OEM itself wants of its cut-out view while we hold it hidden. See sDeductedRef.
@@ -1284,7 +1299,7 @@ public class Main extends XposedModule {
             });
             Xp.log(TAG + "cut-out visibility watched");
         } catch (Throwable t) {
-            Xp.log(TAG + "cut-out visibility hook failed: " + t);
+            Xp.w(TAG + "cut-out visibility hook failed: " + t);
         }
 
         // The full-screen AOD's shrink, and the one view that must not take it.
@@ -1315,7 +1330,7 @@ public class Main extends XposedModule {
             });
             Xp.log(TAG + "AOD shrink hooked");
         } catch (Throwable t) {
-            Xp.log(TAG + "AOD shrink hook failed (the video cover may pull in from the edges"
+            Xp.w(TAG + "AOD shrink hook failed (the video cover may pull in from the edges"
                     + " into full-screen AOD): " + t);
         }
 
@@ -1345,7 +1360,7 @@ public class Main extends XposedModule {
             });
             Xp.log(TAG + "wallpaperBlack hooked");
         } catch (Throwable t) {
-            Xp.log(TAG + "wallpaperBlack hook failed (the cover may sit bright in AOD): " + t);
+            Xp.w(TAG + "wallpaperBlack hook failed (the cover may sit bright in AOD): " + t);
         }
 
         // The fingerprint ring, when the user has asked for it to go. Two hooks, because the
@@ -1373,7 +1388,8 @@ public class Main extends XposedModule {
                 // draw(int resId) is the frame. Any other overload is not ours to touch, which
                 // the argument check below says without having to name the signature.
                 if (hideFpNow() && args.length == 1 && args[0] instanceof Integer
-                        && isFodRing((Integer) args[0])) {
+                        && isFodRing((Integer) args[0])
+                        && fodForKeyguard(fodViewOf(chain.getThisObject()))) {
                     // Substituting the drawable rather than skipping the draw: the animation
                     // keeps its own timing and its own lifecycle, it just paints nothing. A
                     // skipped draw would leave whatever the OEM expects to be on that surface.
@@ -1383,7 +1399,7 @@ public class Main extends XposedModule {
             });
             Xp.log(TAG + "fingerprint animation hooked");
         } catch (Throwable t) {
-            Xp.log(TAG + "fingerprint animation hook failed, the ring will still pulse: " + t);
+            Xp.w(TAG + "fingerprint animation hook failed, the ring will still pulse: " + t);
         }
 
         try {
@@ -1396,7 +1412,6 @@ public class Main extends XposedModule {
                     // this is the one chance to dim it before it is ever seen.
                     peekHideFp();
                     sFodIcons.put(v, Boolean.TRUE);
-                    v.setAlpha(hideFpNow() ? 0f : 1f);
                 } catch (Throwable ignored) {
                     // A view we cannot dim is a visible print, not a broken keyguard.
                 }
@@ -1410,7 +1425,7 @@ public class Main extends XposedModule {
                 try {
                     Xp.hookAll(iconCls, name, chain -> {
                         peekHideFp();
-                        if (hideFpNow()) return null;
+                        if (hideFpNow() && fodForKeyguard(chain.getThisObject())) return null;
                         return chain.proceed();
                     });
                     break;
@@ -1420,7 +1435,7 @@ public class Main extends XposedModule {
             }
             Xp.log(TAG + "fingerprint icon hooked");
         } catch (Throwable t) {
-            Xp.log(TAG + "fingerprint icon hook failed, the static print will stay: " + t);
+            Xp.w(TAG + "fingerprint icon hook failed, the static print will stay: " + t);
         }
 
         // The view the print is actually painted on. Its own hook because it is its own class
@@ -1435,7 +1450,7 @@ public class Main extends XposedModule {
                         peekHideFp();
                         // Painting nothing, rather than dimming: the alpha on this view is the
                         // OEM's to animate, and a frame it never paints cannot be animated back.
-                        if (hideFpNow()) return null;
+                        if (hideFpNow() && fodForKeyguard(chain.getThisObject())) return null;
                         return chain.proceed();
                     });
                     hooked++;
@@ -1445,7 +1460,7 @@ public class Main extends XposedModule {
             }
             Xp.log(TAG + "fingerprint print view hooked, " + hooked + " of its paint methods");
         } catch (Throwable t) {
-            Xp.log(TAG + "fingerprint print view hook failed: " + t);
+            Xp.w(TAG + "fingerprint print view hook failed: " + t);
         }
 
         // Whether the notifications keep clear of that icon. Installed whatever the setting is,
@@ -1493,7 +1508,7 @@ public class Main extends XposedModule {
                         + " in " + (android.os.SystemClock.uptimeMillis() - t0) + "ms");
             }
         } catch (Throwable t) {
-            Xp.log(TAG + "fingerprint avoidance hook failed: " + t);
+            Xp.w(TAG + "fingerprint avoidance hook failed: " + t);
         }
 
         // MIUI's own answer to "what kind of wallpaper is this", which beats every heuristic
@@ -1510,7 +1525,7 @@ public class Main extends XposedModule {
             });
             Xp.log(TAG + "keyguard wallpaper manager hooked");
         } catch (Throwable t) {
-            Xp.log(TAG + "keyguard wallpaper manager hook failed, falling back to "
+            Xp.w(TAG + "keyguard wallpaper manager hook failed, falling back to "
                     + "MIUI's files for the wallpaper type: " + t);
         }
 
@@ -1528,7 +1543,7 @@ public class Main extends XposedModule {
             });
             Xp.log(TAG + "media card hooked");
         } catch (Throwable t) {
-            Xp.log(TAG + "media card hook failed: " + t);
+            Xp.w(TAG + "media card hook failed: " + t);
         }
 
         // A tap on the cover puts the wallpaper back.
@@ -1618,7 +1633,7 @@ public class Main extends XposedModule {
             });
             Xp.log(TAG + "lock screen tap hooked");
         } catch (Throwable t) {
-            Xp.log(TAG + "lock screen tap hook failed: " + t);
+            Xp.w(TAG + "lock screen tap hook failed: " + t);
         }
 
         // The charging animation going up and coming down, recorded rather than guessed at.
@@ -1645,7 +1660,7 @@ public class Main extends XposedModule {
             });
             Xp.log(TAG + "charging animation hooked");
         } catch (Throwable t) {
-            Xp.log(TAG + "charging animation hook failed: " + t);
+            Xp.w(TAG + "charging animation hook failed: " + t);
         }
 
         // The notification shade's cover background. Its hooks and logic are ShadeLayer's own.
@@ -1700,7 +1715,7 @@ public class Main extends XposedModule {
                 return chain.proceed(args);
             });
         } catch (Throwable t) {
-            Xp.log(TAG + "notifStateChange hook failed: " + t);
+            Xp.w(TAG + "notifStateChange hook failed: " + t);
         }
 
         // The OEM squeezes the clock through these four setters on TimeView. Scaling
@@ -1799,10 +1814,10 @@ public class Main extends XposedModule {
                     return chain.proceed();
                 });
             } catch (Throwable t) {
-                Xp.log(TAG + "setClockPalette hook failed: " + t);
+                Xp.w(TAG + "setClockPalette hook failed: " + t);
             }
         } catch (Throwable t) {
-            Xp.log(TAG + "TimeView hook failed: " + t);
+            Xp.w(TAG + "TimeView hook failed: " + t);
         }
 
         // The date line above the clock is deliberately left to the OEM. On the glass styles it
@@ -1839,7 +1854,7 @@ public class Main extends XposedModule {
                 return result;
             });
         } catch (Throwable t) {
-            Xp.log(TAG + "interactor hook failed: " + t);
+            Xp.w(TAG + "interactor hook failed: " + t);
         }
     }
 
@@ -1887,7 +1902,7 @@ public class Main extends XposedModule {
             }, f, Context.RECEIVER_EXPORTED);
             Xp.log(TAG + "listening for the dialled code " + LauncherIcon.SECRET_CODE);
         } catch (Throwable t) {
-            Xp.log(TAG + "secret code receiver failed: " + t);
+            Xp.w(TAG + "secret code receiver failed: " + t);
         }
     }
 
@@ -1945,6 +1960,8 @@ public class Main extends XposedModule {
                     // to look the way they always have on a file that predates it.
                     + "\nlyrictrans=" + (LockLyrics.sTrans ? 1 : 0)
                     + "\nlyrichideaod=" + (LockLyrics.sHideInAod ? 1 : 0)
+                    // Off when absent, which is what every file from before it had.
+                    + "\nlyricroma=" + (LockLyrics.sRoma ? 1 : 0)
                     // 0 left, 1 centre, 2 right, and left when the key is absent: a file from
                     // before this setting is one where the lyrics always sat left.
                     + "\nlyricalign=" + LockLyrics.sAlign
@@ -1956,6 +1973,8 @@ public class Main extends XposedModule {
                     // is not.
                     + "\nsawlyric=" + (LockLyrics.sSawSessionLyric ? 1 : 0)
                     + "\nfpavoid=" + sFpAvoid
+                    // On when absent: the trip's page and island shipped before their switch.
+                    + "\ntransit=" + (AmapTransitScene.sOn ? 1 : 0)
                     + "\nminicfg=" + android.util.Base64.encodeToString(
                             MiniPlayerRuntime.configJson(sAppCtx).getBytes(java.nio.charset.StandardCharsets.UTF_8),
                             android.util.Base64.NO_WRAP)
@@ -1967,7 +1986,7 @@ public class Main extends XposedModule {
             af.finishWrite(f);
         } catch (Throwable t) {
             if (f != null) af.failWrite(f);
-            Xp.log(TAG + "saveState failed: " + t);
+            Xp.w(TAG + "saveState failed: " + t);
         }
     }
 
@@ -2054,6 +2073,7 @@ public class Main extends XposedModule {
                         else if ("lyrichdr".equals(k)) LockLyrics.sHdr = "1".equals(v);
                         else if ("lyrictrans".equals(k)) LockLyrics.sTrans = "1".equals(v);
                         else if ("lyrichideaod".equals(k)) LockLyrics.sHideInAod = "1".equals(v);
+                        else if ("lyricroma".equals(k)) LockLyrics.sRoma = "1".equals(v);
                         // Clamped in the setter; absent or unreadable means left, see saveState.
                         else if ("lyricalign".equals(k)) LockLyrics.setAlign(Integer.parseInt(v));
                         // The dp lyricoff and lyricgap from before the shares are dropped: what
@@ -2064,6 +2084,7 @@ public class Main extends XposedModule {
                             LockLyrics.sSawSessionLyric = "1".equals(v);
                         }
                         else if ("fpavoid".equals(k)) sFpAvoid = Integer.parseInt(v);
+                        else if ("transit".equals(k)) AmapTransitScene.sOn = "1".equals(v);
                         else if ("minicfg".equals(k)) MiniPlayerRuntime.restoreLegacyConfig(sAppCtx,
                                 new String(android.util.Base64.decode(v, android.util.Base64.DEFAULT),
                                         java.nio.charset.StandardCharsets.UTF_8));
@@ -2089,7 +2110,7 @@ public class Main extends XposedModule {
                 }
             }
         } catch (Throwable t) {
-            Xp.log(TAG + "loadState failed: " + t);
+            Xp.w(TAG + "loadState failed: " + t);
             return;
         } finally {
             sLoading = false;
@@ -2123,7 +2144,7 @@ public class Main extends XposedModule {
                 if (!ProbeGuard.admit(this, i)) return;
                 String op = i.getStringExtra("op");
                 if (op == null) op = "info";
-                Xp.log(TAG + "recv op=" + op + " extras=" + i.getExtras());
+                Xp.d(TAG + "recv op=" + op + " extras=" + i.getExtras());
                 // An op answering later, through goAsync: the receipt is its to send.
                 boolean async = false;
                 boolean failed = false;
@@ -2185,6 +2206,11 @@ public class Main extends XposedModule {
                         recolorClock();
                     } else if ("gdata".equals(op)) {
                         pokeGlassData(i.getIntExtra("idx", -1), i.getFloatExtra("v", 0f));
+                    } else if ("transit".equals(op)) {
+                        // 高德's bus and subway navigation, from AmapTransitShare in its process -
+                        // or by hand: --es json '<intentEntity>', --ez demo true, --es do end.
+                        setResultData(AmapTransitScene.INSTANCE.command(i.getStringExtra("json"),
+                                i.getStringExtra("do"), i.getBooleanExtra("demo", false)));
                     } else if ("immersive".equals(op) || "navmap".equals(op)) {
                         // The immersive pages: --es id <scene> --es do state|open|close|arm|disarm.
                         // navmap is 高德's old spelling (start / stop), kept for a 高德 process
@@ -2358,6 +2384,9 @@ public class Main extends XposedModule {
                         saveState();
                     } else if ("lyrichideaod".equals(op)) {
                         LockLyrics.sHideInAod = i.getBooleanExtra("on", !LockLyrics.sHideInAod);
+                    } else if ("lyricroma".equals(op)) {
+                        LockLyrics.sRoma = i.getBooleanExtra("on", !LockLyrics.sRoma);
+                        Xp.log(TAG + "lyrics romanisations: " + LockLyrics.sRoma);
                         LockLyrics.refresh();
                         saveState();
                     } else if ("lyricstyle".equals(op)) {
@@ -2434,8 +2463,6 @@ public class Main extends XposedModule {
                         // ImmersiveHost, whose page closing onto the cover waits for this.
                         CoverCardLayer.releaseHeld();
                         ImmersiveHost.coverShown();
-                    } else if ("bouncer".equals(op)) {
-                        setResultData(sBouncerTrace.toString());
                     } else if ("cardstate".equals(op)) {
                         // The square card's playback scale, next to what the session says - for
                         // "the card stayed small", where the log is not there to read.
@@ -2490,7 +2517,7 @@ public class Main extends XposedModule {
                                 try {
                                     describeLocal();
                                 } catch (Throwable t) {
-                                    Xp.log(TAG + "local probe failed: " + t);
+                                    Xp.w(TAG + "local probe failed: " + t);
                                 }
                             }
 
@@ -2504,7 +2531,7 @@ public class Main extends XposedModule {
                                     os.close();
                                     lf.setReadable(true, false);
                                 } catch (Throwable t) {
-                                    Xp.log(TAG + "local write failed: " + t);
+                                    Xp.w(TAG + "local write failed: " + t);
                                 }
                             }
                         }, "MCLocalProbe").start();
@@ -2538,7 +2565,7 @@ public class Main extends XposedModule {
                                 try {
                                     describeNcm();
                                 } catch (Throwable t) {
-                                    Xp.log(TAG + "ncm probe failed: " + t);
+                                    Xp.w(TAG + "ncm probe failed: " + t);
                                 }
                             }
 
@@ -2561,7 +2588,7 @@ public class Main extends XposedModule {
                                     os.close();
                                     out.setReadable(true, false);
                                 } catch (Throwable t) {
-                                    Xp.log(TAG + "ncm write failed: " + t);
+                                    Xp.w(TAG + "ncm write failed: " + t);
                                 }
                             }
                         }, "MCNcmProbe").start();
@@ -2587,15 +2614,14 @@ public class Main extends XposedModule {
                         HyperTweaks.sBarGlow = i.getBooleanExtra("on", !HyperTweaks.sBarGlow);
                         saveState();
                         // The card on screen was built before this switch was read, so it is
-                        // upgraded in place - its constructor is long past and the mode it read
-                        // there is a final field. Turning the switch off cannot undo that on this
-                        // card: it applies to the next one the OEM builds.
+                        // changed in place - lit as applyBarGlow lights a new one, or put back to
+                        // the flat bar it was built as (HyperTweaks.clearBarGlow).
                         View bar = findLockScreenView("media_progress_bar");
-                        String r = bar == null ? "no card up" : HyperTweaks.applyBarGlow(bar);
+                        String r = bar == null ? "no card up" : HyperTweaks.sBarGlow
+                                ? HyperTweaks.applyBarGlow(bar) : HyperTweaks.clearBarGlow(bar);
                         Xp.log(TAG + "media bar glow " + (HyperTweaks.sBarGlow ? "on" : "off")
                                 + " - " + r);
-                        setResultData((HyperTweaks.sBarGlow ? "on " : "off ") + r
-                                + (HyperTweaks.sBarGlow ? "" : " (the card up keeps its glow)"));
+                        setResultData((HyperTweaks.sBarGlow ? "on " : "off ") + r);
                     } else if ("hidefp".equals(op)) {
                         sHideFp = i.getBooleanExtra("on", !sHideFp);
                         saveState();
@@ -2642,6 +2668,10 @@ public class Main extends XposedModule {
                         Xp.log(TAG + "cover fade mode = " + CoverPush.fadeModeName()
                                 + " (0 off, 1 hold for the wallpaper window, 2 stretch by the"
                                 + " last measured gap " + CoverPush.sCoverFadeGapMs + "ms)");
+                    } else if ("blurshown".equals(op)) {
+                        // From WallpaperProbe: the still cover's frosting is on its way in, and
+                        // the lyrics held back for it can come in with it.
+                        LockLyrics.onBlurShown(i.getLongExtra("blurseq", 0L));
                     } else if ("videoreloading".equals(op)) {
                         CoverPush.noteVideoReloading();
                     } else if ("videoreload".equals(op)) {
@@ -2771,6 +2801,15 @@ public class Main extends XposedModule {
                     } else if ("minicfg".equals(op)) {
                         MiniPlayerRuntime.applyConfig(c, i.getStringExtra("json"));
                         saveState();
+                    } else if ("transitcfg".equals(op)) {
+                        // 「高德公交地铁」: --ez on true|false from the app; without it, 高德
+                        // asking as it starts (AmapImmerse), and told what it is.
+                        if (i.hasExtra("on")) {
+                            AmapTransitScene.INSTANCE.setOn(c, i.getBooleanExtra("on", true));
+                            saveState();
+                        } else {
+                            AmapTransitScene.INSTANCE.tellAmap(c);
+                        }
                     } else if ("query".equals(op)) {
                         // Answered through the ordered broadcast's result extras: the app is a
                         // separate process and this is the only channel it already has. A reply
@@ -2829,6 +2868,7 @@ public class Main extends XposedModule {
                         out.putBoolean("lyrichdr", LockLyrics.sHdr);
                         out.putBoolean("lyrictrans", LockLyrics.sTrans);
                         out.putBoolean("lyrichideaod", LockLyrics.sHideInAod);
+                        out.putBoolean("lyricroma", LockLyrics.sRoma);
                         out.putInt("lyricalign", LockLyrics.sAlign);
                         out.putFloat("lyricfill", LockLyrics.sStyle.fill);
                         out.putFloat("lyricpos", LockLyrics.sStyle.pos);
@@ -2840,6 +2880,7 @@ public class Main extends XposedModule {
                         out.putBoolean("sessionlyric", LockLyrics.sSawSessionLyric
                                 || LyricSource.hasLyricInfo(sWatched));
                         out.putInt("fpavoid", sFpAvoid);
+                        out.putBoolean("transit", AmapTransitScene.sOn);
                         // Everything the app's preview needs to be to scale. It draws a lock
                         // screen it cannot see, and every one of these is device-specific, so
                         // they are measured here rather than written down twice.
@@ -2902,42 +2943,21 @@ public class Main extends XposedModule {
                             setResultData("mini not written: " + t + "\n"
                                     + all.substring(0, Math.min(all.length(), 1500)));
                         }
-                    } else if ("edge".equals(op)) {
-                        // The pill's and the discs' clips, outlines and material, and the rim as
-                        // the window's pixels hold it (EdgeProbe, EdgeWatch). The pixels come a
-                        // frame later, so this one answers from the copy's callback; the app's
-                        // "copy diagnostics" row asks the same.
-                        // It must finish whatever happens: an ordered broadcast left open here
-                        // times out as SystemUI's ANR. So once, on the answer, a throw, or 3s.
-                        final PendingResult pending = goAsync();
-                        async = true;
-                        final java.util.concurrent.atomic.AtomicBoolean answered =
-                                new java.util.concurrent.atomic.AtomicBoolean();
-                        final java.util.function.Consumer<String> answer = report -> {
-                            if (!answered.compareAndSet(false, true)) return;
-                            pending.setResultData(report);
-                            pending.setResultCode(OP_ACK);
-                            pending.finish();
-                        };
-                        new Handler(Looper.getMainLooper()).postDelayed(
-                                () -> answer.accept("edge: no answer in 3s"), 3000);
-                        try {
-                            // --ez png true keeps the crop the rim was read from, for
-                            // checking EdgeProbe's numbers against the pixels themselves.
-                            java.io.File png = i.getBooleanExtra("png", false)
-                                    ? new java.io.File(c.getFilesDir(), "edge.png") : null;
-                            MiniPlayerRuntime.edgeReport(c, png, report -> {
-                                answer.accept(report);
-                                return kotlin.Unit.INSTANCE;
-                            });
-                        } catch (Throwable t) {
-                            answer.accept("edge failed: " + Log.getStackTraceString(t));
-                        }
+                    } else if ("datestatus".equals(op)) {
+                        setResultData(DateStatus.INSTANCE.describe());
+                    } else if ("palette".equals(op)) {
+                        setResultData(PaletteThrottle.INSTANCE.describe());
                     } else if ("rowtree".equals(op)) {
                         String key = i.getStringExtra("key");
                         setResultData(MiniPlayerRuntime.rowTree(key == null ? "" : key));
                     } else if ("fold".equals(op)) {
                         setResultData(describeFold());
+                    } else if ("fod".equals(op)) {
+                        try {
+                            setResultData(MiniPlayerRuntime.fingerprintProbe(i.getStringExtra("rect")));
+                        } catch (Throwable t) {
+                            setResultData("fod failed: " + t);
+                        }
                     } else if ("numstate".equals(op)) {
                         setResultData(NumStateProbe.run(c, i));
                     } else if ("keepawake".equals(op)) {
@@ -2989,7 +3009,7 @@ public class Main extends XposedModule {
                     }
                 } catch (Throwable t) {
                     failed = true;
-                    Xp.log(TAG + "op failed: " + Log.getStackTraceString(t));
+                    Xp.w(TAG + "op failed: " + Log.getStackTraceString(t));
                 }
                 // The receipt. A setting sent while SystemUI is down, or before this receiver
                 // exists, goes nowhere and the broadcast still comes back - only with the code it
@@ -3014,10 +3034,12 @@ public class Main extends XposedModule {
         try {
             ProbeGuard.send(ctx, CoverPush.wallpaperIntent("hello"));
         } catch (Throwable t) {
-            Xp.log(TAG + "hello to the wallpaper process failed: " + t);
+            Xp.w(TAG + "hello to the wallpaper process failed: " + t);
         }
         loadState();
         onMiniBackdropSettingChanged(MiniPlayerRuntime.sinkWithExpandedBackground(ctx));
+        // 高德 running already has the 「高德公交地铁」 switch's default until it is told.
+        AmapTransitScene.INSTANCE.tellAmap(ctx);
         // Again at startup, not only when the switch is touched: the flag the always-on display
         // reads is written by this process, and a phone that was rebooted with the switch on has
         // nothing in it otherwise.
@@ -3083,7 +3105,7 @@ public class Main extends XposedModule {
                     if (Intent.ACTION_USER_PRESENT.equals(a)) ImmersiveHost.onUnlocked();
                     else if (Intent.ACTION_SCREEN_OFF.equals(a)) ImmersiveHost.onScreenOff();
                 } catch (Throwable t) {
-                    Xp.log(TAG + "immersive lifecycle failed: " + t);
+                    Xp.w(TAG + "immersive lifecycle failed: " + t);
                 }
                 if (Intent.ACTION_SCREEN_OFF.equals(a)) CoverMorphLayer.cancel();
                 if (Intent.ACTION_SCREEN_ON.equals(a)) {
@@ -3210,7 +3232,7 @@ public class Main extends XposedModule {
                 sSelfDriving = false;
             }
         } catch (Throwable t) {
-            Xp.log(TAG + "applyY failed: " + Log.getStackTraceString(t));
+            Xp.w(TAG + "applyY failed: " + Log.getStackTraceString(t));
         }
     }
 
@@ -3254,7 +3276,7 @@ public class Main extends XposedModule {
                             + " textSizePx=" + Xp.getObjectField(t, "textSizePx")
                             + " -> glyphs " + Math.round(b.width()) + "x" + Math.round(b.height()));
                 } catch (Throwable e) {
-                    Xp.log(TAG + "setClockParams failed: " + Log.getStackTraceString(e));
+                    Xp.w(TAG + "setClockParams failed: " + Log.getStackTraceString(e));
                 }
             }
         });
@@ -3350,7 +3372,7 @@ public class Main extends XposedModule {
                 if (ms.length() > 0) Xp.log(TAG + "  " + c.getSimpleName() + " methods: " + ms);
             }
         } catch (Throwable t) {
-            Xp.log(TAG + "dumpClockStyleInfo failed: " + Log.getStackTraceString(t));
+            Xp.w(TAG + "dumpClockStyleInfo failed: " + Log.getStackTraceString(t));
         }
     }
 
@@ -3430,7 +3452,7 @@ public class Main extends XposedModule {
                                 + geomOf(clockTarget(root)));
                     }
                 } catch (Throwable t) {
-                    Xp.log(TAG + "geom failed: " + t);
+                    Xp.w(TAG + "geom failed: " + t);
                 }
             }
         });
@@ -4937,7 +4959,7 @@ public class Main extends XposedModule {
                     + " getNotificationClockTop=" + Xp.callMethod(v, "getNotificationClockTop")
                     + " hold=" + sHoldY + " lastSystem=" + r1(sLastSystemY));
         } catch (Throwable t) {
-            Xp.log(TAG + "notif probe failed: " + t);
+            Xp.w(TAG + "notif probe failed: " + t);
         }
     }
 
@@ -5209,7 +5231,7 @@ public class Main extends XposedModule {
             }
             return best;
         } catch (Throwable t) {
-            Xp.log(TAG + "getActiveSessions failed: " + t);
+            Xp.w(TAG + "getActiveSessions failed: " + t);
             return null;
         }
     }
@@ -5322,7 +5344,6 @@ public class Main extends XposedModule {
             return requested;
         }
         float out = Float.isNaN(top) || top <= requested ? requested : top;
-        traceRoom(requested, top, out);
         ClockMove.noteRoom(requested, top, out);
         return out;
     }
@@ -5445,32 +5466,6 @@ public class Main extends XposedModule {
         }
     };
 
-    /** The last clock y's asked and given, for `op mini`. */
-    private static final java.util.ArrayDeque<String> sRoomTrace = new java.util.ArrayDeque<>();
-    private static String sRoomLast = "";
-
-    private static void traceRoom(float requested, float top, float out) {
-        String src;
-        try {
-            src = MiniPlayerRuntime.stackContentSource();
-        } catch (Throwable t) {
-            src = "?";
-        }
-        String line = r1(requested) + ">" + r1(out) + "(top " + r1(top) + " " + src + ")";
-        if (line.equals(sRoomLast)) return;
-        sRoomLast = line;
-        synchronized (sRoomTrace) {
-            sRoomTrace.addLast(android.os.SystemClock.uptimeMillis() % 100000 + " " + line);
-            while (sRoomTrace.size() > 120) sRoomTrace.removeFirst();
-        }
-    }
-
-    static String roomTrace() {
-        synchronized (sRoomTrace) {
-            return "hold=" + sHoldY + " last=" + r1(sLastSystemY) + " " + String.join(" ; ", sRoomTrace);
-        }
-    }
-
     /**
      * The stack's rows have moved since the clock was last told: the OEM's own notification-Y
      * flow is sent its value again, nudged a hair so it is a change, and the clock animates to
@@ -5500,7 +5495,6 @@ public class Main extends XposedModule {
             Xp.callMethod(flow, "setValue", next);
             ClockMove.noteReassert(y, true);
         } catch (Throwable t) {
-            traceRoom(Float.NaN, Float.NaN, Float.NaN);
             ClockMove.noteReassert(Float.NaN, false);
         }
     }
@@ -5617,7 +5611,7 @@ public class Main extends XposedModule {
                     f.close();
                     Xp.log(TAG + "shot art " + raw.getWidth() + "x" + raw.getHeight());
                 } catch (Throwable t) {
-                    Xp.log(TAG + "art dump failed: " + t);
+                    Xp.w(TAG + "art dump failed: " + t);
                 }
             }
         }
@@ -5843,7 +5837,7 @@ public class Main extends XposedModule {
             b.recycle();
             return bos.toByteArray();
         } catch (Throwable t) {
-            Xp.log(TAG + "clock capture failed: " + t);
+            Xp.w(TAG + "clock capture failed: " + t);
             return null;
         }
     }
@@ -5939,7 +5933,7 @@ public class Main extends XposedModule {
             o.close();
             Xp.log(TAG + "shot " + name + " " + png.length + "B -> " + f);
         } catch (Throwable t) {
-            Xp.log(TAG + "shot dump failed: " + t);
+            Xp.w(TAG + "shot dump failed: " + t);
         }
     }
 
@@ -5970,7 +5964,7 @@ public class Main extends XposedModule {
             if (img != null) img.setVisibility(View.INVISIBLE);
             return shoot(card, CARD_SHOT_W);
         } catch (Throwable t) {
-            Xp.log(TAG + "card capture failed: " + t);
+            Xp.w(TAG + "card capture failed: " + t);
             return null;
         } finally {
             if (img != null) img.setVisibility(wasVisible);
@@ -6011,7 +6005,7 @@ public class Main extends XposedModule {
             b.compress(Bitmap.CompressFormat.PNG, 100, bos);
             return bos.toByteArray();
         } catch (Throwable t) {
-            Xp.log(TAG + "view capture failed: " + t);
+            Xp.w(TAG + "view capture failed: " + t);
             return null;
         } finally {
             if (b != null) b.recycle();
@@ -6185,7 +6179,7 @@ public class Main extends XposedModule {
                     t.apply();
                     Xp.log(TAG + "aod dim re-asserted " + black + " (+" + at + "ms)");
                 } catch (Throwable t2) {
-                    Xp.log(TAG + "aod dim re-assert failed: " + t2);
+                    Xp.w(TAG + "aod dim re-assert failed: " + t2);
                 }
             }, at);
         }
@@ -6220,7 +6214,7 @@ public class Main extends XposedModule {
             }
             Xp.log(TAG + "vtree done, " + sVtreeLines + " views");
         } catch (Throwable t) {
-            Xp.log(TAG + "vtree failed: " + t);
+            Xp.w(TAG + "vtree failed: " + t);
         }
     }
 
@@ -6553,6 +6547,15 @@ public class Main extends XposedModule {
         return Looper.myLooper() == Looper.getMainLooper() && coverMorphEligible();
     }
 
+    /** Each part of miniPlayerMorphAllowed, for a morph it refused. */
+    static String miniPlayerMorphWhy() {
+        View c = sContainer;
+        return "main=" + (Looper.myLooper() == Looper.getMainLooper())
+                + " clock=" + (c == null ? "null" : c.isAttachedToWindow() + "/" + c.isShown())
+                + " screen=" + sScreenOn + " kg=" + keyguardShowing()
+                + " bouncer=" + bouncerUp() + " cc=" + controlCenterUp();
+    }
+
     /**
      * The lock screen's own media presentation holds: the card is up, no cover scene, the
      * keyguard up. Awake or dozing, pad or no pad - those only stop the pill taking touches.
@@ -6599,6 +6602,34 @@ public class Main extends XposedModule {
     }
 
     static boolean miniPlayerControlCenterUp() { return miniControlCenterUp(); }
+
+    private static java.lang.ref.WeakReference<View> sCentreView;
+    private static long sCentreLookedAt;
+
+    /**
+     * Whether the control centre is up, read off its window view every time it is asked - the
+     * view held once found, so a frame costs one isShown(). For a fade that has to follow the
+     * centre closing: the 150ms answer miniControlCenterUp keeps for the mini player brought the
+     * lyrics back that much late (#52). The lookup itself is the whole-tree search, so a miss is
+     * not repeated for 500ms.
+     */
+    static boolean controlCenterShown() {
+        View v = sCentreView == null ? null : sCentreView.get();
+        if (v == null || !v.isAttachedToWindow()) {
+            long now = android.os.SystemClock.uptimeMillis();
+            if (now - sCentreLookedAt < 500L) return false;
+            sCentreLookedAt = now;
+            v = null;
+            View cc = findSysuiView("control_center_container");
+            View content = cc instanceof ViewGroup ? findByName(cc, "content_container") : null;
+            if (content instanceof ViewGroup && ((ViewGroup) content).getChildCount() > 0) {
+                v = ((ViewGroup) content).getChildAt(0);
+            }
+            sCentreView = v == null ? null : new java.lang.ref.WeakReference<>(v);
+            if (v == null) return false;
+        }
+        return v.isShown();
+    }
 
     private static long sMiniCentreCheckedAt;
     private static boolean sMiniCentreUp;
@@ -6651,6 +6682,11 @@ public class Main extends XposedModule {
     /** An island opened from the cover: the cover goes, its card coming down into the row. */
     static void miniPlayerLeaveCover() {
         if (!sCoverMode) return;
+        // Left the way a swipe down leaves it, and remembered the same way: the exit below holds
+        // the cover off (sTapSuppressed) so a track change does not put it back over the page,
+        // and without this the swipe up on the pill went to the plain card - the card up, the
+        // cover still held off, no picture behind it (#63).
+        MiniPlayerRuntime.rememberScene();
         LockLyrics.notePopTarget(MiniPlayerRuntime.musicIslandHomeOnScreen());
         exitFromTap("island opened from the cover");
     }
@@ -6959,7 +6995,7 @@ public class Main extends XposedModule {
                 }
             }
         } catch (Throwable t) {
-            Xp.log(TAG + "dex walk for the avoid combine failed: " + t);
+            Xp.w(TAG + "dex walk for the avoid combine failed: " + t);
         }
         for (String n : names) {
             try {
@@ -7061,7 +7097,7 @@ public class Main extends XposedModule {
                 }
             }
         } catch (Throwable t) {
-            Xp.log(TAG + "reading the fingerprint setting early failed: " + t);
+            Xp.w(TAG + "reading the fingerprint setting early failed: " + t);
         }
     }
 
@@ -7129,16 +7165,82 @@ public class Main extends XposedModule {
      */
     private static void applyHideFp() {
         adoptFodIcons();
-        float alpha = hideFpNow() ? 0f : 1f;
         java.util.List<View> views;
         synchronized (sFodIcons) {
             views = new java.util.ArrayList<>(sFodIcons.keySet());
         }
+        // Redrawn, not dimmed: whether a frame is painted is decided per draw and per surface
+        // (fodForKeyguard). An alpha on the view hid the print in an app's own prompt as well.
         for (View v : views) {
             try {
-                v.setAlpha(alpha);
+                v.invalidate();
             } catch (Throwable ignored) {
             }
+        }
+    }
+
+    /**
+     * Whether the under-screen print is showing for the lock screen or the always-on display, as
+     * opposed to an app's own fingerprint prompt - a payment, a password manager. The same views
+     * draw all three, so hiding them outright hid the print where an app asked for it too.
+     *
+     * Read the way HyperTweak reads it (TakeKazeX/HyperTweak, HideFingerprintIcon, GPL-3.0): the
+     * gxzw views keep mDozing and mKeyguardAuthen - MiuiGxzwIconView on itself, the animation view
+     * on its parent MiuiGxzwAnimViewInternal - and neither true is an app's prompt. A build
+     * without the fields falls back to whether the keyguard is up.
+     */
+    private static boolean fodForKeyguard(Object start) {
+        Boolean dozing = null, authen = null;
+        Object cur = start;
+        for (int depth = 0; cur != null && depth < 8; depth++) {
+            if (dozing == null) dozing = fodFlag(cur, "mDozing");
+            if (authen == null) authen = fodFlag(cur, "mKeyguardAuthen");
+            if (dozing != null && authen != null) break;
+            cur = cur instanceof View ? ((View) cur).getParent() : null;
+        }
+        if (dozing == null && authen == null) return keyguardShowing();
+        return Boolean.TRUE.equals(dozing) || Boolean.TRUE.equals(authen);
+    }
+
+    /** MiuiGxzwFrameAnimation's view, which carries the state its frames are drawn for. */
+    private static Object fodViewOf(Object frameAnimation) {
+        try {
+            return Xp.getObjectField(frameAnimation, "mMiuiGxzwAnimationView");
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /** Per class and name: the Field, or NO_FIELD - looked up once, since a miss throws. */
+    private static final java.util.Map<String, Object> sFodFields =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    private static final Object NO_FIELD = new Object();
+
+    /** A boolean field on the object or its superclasses, or null where there is none. */
+    private static Boolean fodFlag(Object o, String name) {
+        String key = o.getClass().getName() + "#" + name;
+        Object f = sFodFields.get(key);
+        if (f == null) {
+            f = NO_FIELD;
+            for (Class<?> c = o.getClass(); c != null && c != Object.class; c = c.getSuperclass()) {
+                try {
+                    java.lang.reflect.Field d = c.getDeclaredField(name);
+                    if (d.getType() == boolean.class) {
+                        d.setAccessible(true);
+                        f = d;
+                    }
+                    break;
+                } catch (NoSuchFieldException ignored) {
+                    // Further up.
+                }
+            }
+            sFodFields.put(key, f);
+        }
+        if (!(f instanceof java.lang.reflect.Field)) return null;
+        try {
+            return ((java.lang.reflect.Field) f).getBoolean(o);
+        } catch (Throwable t) {
+            return null;
         }
     }
 
@@ -7687,7 +7789,7 @@ public class Main extends XposedModule {
             Xp.log(TAG + "title tap -> " + (playing ? "pause" : "play")
                     + " on " + c.getPackageName());
         } catch (Throwable t) {
-            Xp.log(TAG + "title tap failed: " + t);
+            Xp.w(TAG + "title tap failed: " + t);
         }
     }
 
@@ -8314,7 +8416,6 @@ public class Main extends XposedModule {
         if (!bouncerShown()) {
             sSecurityView = null;
             sBouncerSince = 0L;
-            noteBouncer(0f, 0f);
             return 0f;
         }
         long now = android.os.SystemClock.uptimeMillis();
@@ -8323,7 +8424,6 @@ public class Main extends XposedModule {
         // to 0 and fades it in (measured: shown, 1.0, 1.0, then 0 at +15ms and up over ~70ms).
         // Followed as fast as the blur now follows, that was a flash of blur at the start.
         if (now - sBouncerSince < BOUNCER_SETTLE_MS) {
-            noteBouncer(0f, -1f);
             return 0f;
         }
         View b = sBouncerView;
@@ -8342,7 +8442,6 @@ public class Main extends XposedModule {
             }
         }
         level = Math.max(0f, Math.min(1f, level));
-        noteBouncer(level, b.getAlpha());
         return level;
     }
 
@@ -8369,26 +8468,6 @@ public class Main extends XposedModule {
             }
         }
         return null;
-    }
-
-    /** The last few changes of what bouncerLevel() read, for `op bouncer`. */
-    private static final StringBuilder sBouncerTrace = new StringBuilder();
-    private static int sBouncerTraceLines;
-    private static String sBouncerLast = "";
-
-    private static void noteBouncer(float level, float own) {
-        String now = String.format(java.util.Locale.ROOT, "lvl=%.2f own=%.2f sec=%s", level, own,
-                sSecurityView == null ? "-" : sSecurityView.getClass().getSimpleName());
-        if (now.equals(sBouncerLast)) return;
-        sBouncerLast = now;
-        if (sBouncerTraceLines >= 80) {
-            int cut = sBouncerTrace.indexOf("\n");
-            if (cut >= 0) sBouncerTrace.delete(0, cut + 1);
-        } else {
-            sBouncerTraceLines++;
-        }
-        sBouncerTrace.append(android.os.SystemClock.uptimeMillis()).append(' ').append(now)
-                .append('\n');
     }
 
     /**
@@ -8487,7 +8566,7 @@ public class Main extends XposedModule {
                 while (sChargeTrail.size() > 8) sChargeTrail.removeFirst();
             }
         } catch (Throwable t) {
-            Xp.log(TAG + "charge trail failed: " + t);
+            Xp.w(TAG + "charge trail failed: " + t);
         }
     }
 
@@ -8596,7 +8675,9 @@ public class Main extends XposedModule {
     private static void exitFromTapNow(String why) {
         int from = LockLyrics.wantsAttached()
                 ? CoverMorphRoute.LYRICS : CoverMorphRoute.COVER;
-        if (MiniPlayerRuntime.prepareSceneExit()) {
+        boolean pillMorph = MiniPlayerRuntime.prepareSceneExit();
+        if (!pillMorph) MiniPlayerRuntime.noteTouch("cover exit without the pill's morph: " + why);
+        if (pillMorph) {
             beginMiniMorph(false, from == CoverMorphRoute.COVER);
         } else if (CoverMorphRoute.shouldMorph(from, CoverMorphRoute.NORMAL)) {
             beginMorph(false);
@@ -8757,7 +8838,7 @@ public class Main extends XposedModule {
                     Xp.log(TAG + "cover attached, layer "
                             + layer.getWidth() + "x" + layer.getHeight());
                 } catch (Throwable t) {
-                    Xp.log(TAG + "attachCover failed: " + Log.getStackTraceString(t));
+                    Xp.w(TAG + "attachCover failed: " + Log.getStackTraceString(t));
                 }
             }
         });
@@ -8874,6 +8955,8 @@ public class Main extends XposedModule {
                 sCardToken = null;
             }
             sCardKey = cardKey(mediaData);
+            // The card's title may be one the session callback has not shown us yet.
+            TrackName.note(sWatched);
         } else {
             sCardToken = null;
             sCardKey = "";
@@ -8999,7 +9082,7 @@ public class Main extends XposedModule {
                     : (MediaSessionManager) ctx.getSystemService(Context.MEDIA_SESSION_SERVICE);
             return msm == null ? null : msm.getActiveSessions(null);
         } catch (Throwable t) {
-            Xp.log(TAG + "active session read failed: " + t);
+            Xp.w(TAG + "active session read failed: " + t);
             return null;
         }
     }
@@ -9191,7 +9274,7 @@ public class Main extends XposedModule {
                 Xp.log(TAG + "active-session listener registered");
             }
         } catch (Throwable t) {
-            Xp.log(TAG + "session listener failed: " + Log.getStackTraceString(t));
+            Xp.w(TAG + "session listener failed: " + Log.getStackTraceString(t));
         }
         rebindSession();
     }
@@ -9221,9 +9304,11 @@ public class Main extends XposedModule {
                 sMediaCb = new MediaController.Callback() {
                     @Override
                     public void onMetadataChanged(MediaMetadata md) {
+                        MediaController w = sWatched;
+                        // Before anything compares a track key against this title.
+                        if (w != null) TrackName.note(w.getPackageName(), md);
                         // Every track change re-reads the state rather than trusting that the
                         // last callback of a skip was the one that says where it ended up.
-                        MediaController w = sWatched;
                         if (w != null) updateCoverCardPlayback(w.getPlaybackState());
                         if (sCoverWanted) attachCover();
                         onMediaUpdate();
@@ -9245,7 +9330,7 @@ public class Main extends XposedModule {
                     c.registerCallback(sMediaCb, main());
                     Xp.log(TAG + "following " + c.getPackageName());
                 } catch (Throwable t) {
-                    Xp.log(TAG + "registerCallback failed: " + t);
+                    Xp.w(TAG + "registerCallback failed: " + t);
                 }
             } else {
                 Xp.log(TAG + "no active media session");
@@ -9310,12 +9395,17 @@ public class Main extends XposedModule {
      *
      * A key too short to carry a title answers no, which leaves the plain comparison the callers
      * have already made in charge.
+     *
+     * Two titles can still be one track: Salt, 汽水 and QQ sing into TITLE, so their title moves
+     * with every line. Those are the same track when TrackName saw both titles published on the
+     * same song - and then the artist is not asked either, since 汽水 respells it as it goes.
      */
     static boolean sameTrack(String a, String b) {
         String pa = keyField(a, 0), pb = keyField(b, 0);
         String ta = keyField(a, 1), tb = keyField(b, 1);
         if (pa.isEmpty() || !pa.equals(pb)) return false;
-        if (ta.isEmpty() || !ta.equals(tb)) return false;
+        if (ta.isEmpty() || tb.isEmpty()) return false;
+        if (!ta.equals(tb)) return TrackName.sameSong(pa, ta, tb);
         String aa = keyField(a, 2), ab = keyField(b, 2);
         return aa.equals(ab) || aa.startsWith(ab) || ab.startsWith(aa);
     }
@@ -10001,7 +10091,7 @@ public class Main extends XposedModule {
                                : sVideoWpOwed ? ", live wallpaper owed back"
                                : ", live wallpaper restored"));
                 } catch (Throwable t) {
-                    Xp.log(TAG + "detachCover failed: " + t);
+                    Xp.w(TAG + "detachCover failed: " + t);
                 }
             }
         });
@@ -10399,7 +10489,7 @@ public class Main extends XposedModule {
                     + "px, band " + top + ".." + bottom);
         } catch (Throwable t) {
             sCoverTint = 0;
-            Xp.log(TAG + "cover tint failed: " + t);
+            Xp.w(TAG + "cover tint failed: " + t);
         }
     }
 
@@ -10446,7 +10536,7 @@ public class Main extends XposedModule {
                             // one IllegalArgumentException per frame, which is how it was found.
                         }
                     } catch (Throwable t) {
-                        Xp.log(TAG + "recolor failed: " + t);
+                        Xp.w(TAG + "recolor failed: " + t);
                     }
                 }
             }
@@ -10686,6 +10776,36 @@ public class Main extends XposedModule {
         return 0.2126f * r + 0.7152f * g + 0.0722f * b;
     }
 
+    /** Redraws the glass glyphs under `root`, so their next setMiGlass carries the scale now. */
+    static void invalidateGlass(View root) {
+        if (root == null) return;
+        if (declaresGlass(root)) {
+            root.invalidate();
+            return;
+        }
+        if (root instanceof ViewGroup) {
+            ViewGroup g = (ViewGroup) root;
+            for (int i = 0; i < g.getChildCount(); i++) invalidateGlass(g.getChildAt(i));
+        }
+    }
+
+    /** TimeView.GLASS_EDGE_PX_INDEX: the glass edge band's width, in pixels (default 30). */
+    private static final int GLASS_EDGE_PX = 19;
+
+    /**
+     * How big a view is drawn against its own size: every ancestor's scale multiplied in, the
+     * collapse's time_group and the keyguard's zoom among them. The mean of the two axes, since
+     * the collapse may scale the width a little differently from the height.
+     */
+    private static float drawnScale(View v) {
+        float sx = 1f, sy = 1f;
+        for (View p = v; p != null; p = p.getParent() instanceof View ? (View) p.getParent() : null) {
+            sx *= p.getScaleX();
+            sy *= p.getScaleY();
+        }
+        return (float) Math.sqrt(Math.abs(sx * sy));
+    }
+
     private static void armMiGlassGuard() {
         if (sMiGlassGuardArmed) return;
         sMiGlassGuardArmed = true;
@@ -10724,18 +10844,41 @@ public class Main extends XposedModule {
                         args[0] = neutral;
                     }
                 }
+                // The glass edge as wide on screen as the glyph it is the edge of (#39). The
+                // collapsed clock is the OEM's full-size clock scaled down on its time_group, and
+                // TimeView strokes its glyph with glassData[GLASS_EDGE_PX_INDEX] in its own
+                // coordinates - scaled with it - while the same number reaches the glass shader as
+                // screen pixels, which are not. At the small clock's 10-30% the strokes are a few
+                // pixels thick against a 30px edge band, the whole glyph is edge, and it refracts
+                // like a chrome bevel: the background through it lands far from where it is
+                // ("柔光玻璃背景显示异常"). The shader's copy is scaled by what the glyph is drawn
+                // at; the field, which the stroke reads, is left as the OEM has it.
+                //
+                // What shows through the glass is not fixed by this: it is sampled where the glyph
+                // would be at full size, before the collapse's scale and lift, and nothing here
+                // moves the sampling. Filling the glyph solid to hide it was tried and was too
+                // bright (user, 2026-10-06).
+                if ((sCoverMode || ClockCollapse.active()) && args[0] instanceof float[]) {
+                    float[] a = (float[]) args[0];
+                    float k = drawnScale((View) self);
+                    if (a.length > GLASS_EDGE_PX && k > 0f && k < 0.995f) {
+                        float[] scaled = a.clone();
+                        scaled[GLASS_EDGE_PX] = a[GLASS_EDGE_PX] * k;
+                        args[0] = scaled;
+                    }
+                }
                 int hits = ++sMiGlassGuardHits;
                 // The first few fires prove which view carries the clock's glass and that the
                 // field is there to hand back; the rest are counted rather than spammed.
                 if (hits <= 5 || hits % 50 == 0) {
-                    Xp.log(TAG + "setMiGlass guard fired (" + hits + ") on "
+                    Xp.d(TAG + "setMiGlass guard fired (" + hits + ") on "
                             + viewIdOf((View) self) + " restored=" + restored);
                 }
                 return chain.proceed(args);
             });
             Xp.log(TAG + "HyperLight setMiGlass guard armed");
         } catch (Throwable t) {
-            Xp.log(TAG + "HyperLight setMiGlass guard unavailable: " + t);
+            Xp.w(TAG + "HyperLight setMiGlass guard unavailable: " + t);
         }
     }
 
@@ -10973,7 +11116,7 @@ public class Main extends XposedModule {
                             Xp.callMethod(t, "setMiGlassEffectEnable", on);
                             t.invalidate();
                         } catch (Throwable e) {
-                            Xp.log(TAG + "setGlass " + id + " failed: " + e);
+                            Xp.w(TAG + "setGlass " + id + " failed: " + e);
                         }
                     }
                 }
@@ -11008,7 +11151,7 @@ public class Main extends XposedModule {
                     }
                     if (n == 0) Xp.log(TAG + idName + " not found in either clock root");
                 } catch (Throwable e) {
-                    Xp.log(TAG + "groupScale failed: " + Log.getStackTraceString(e));
+                    Xp.w(TAG + "groupScale failed: " + Log.getStackTraceString(e));
                 }
             }
         });
@@ -11140,13 +11283,13 @@ public class Main extends XposedModule {
         try {
             Xp.log(TAG + "getClockBottom()=" + Xp.callMethod(v, "getClockBottom"));
         } catch (Throwable t) {
-            Xp.log(TAG + "getClockBottom failed: " + t);
+            Xp.w(TAG + "getClockBottom failed: " + t);
         }
         try {
             Xp.log(TAG + "getNotificationClockTop()="
                     + Xp.callMethod(v, "getNotificationClockTop"));
         } catch (Throwable t) {
-            Xp.log(TAG + "getNotificationClockTop failed: " + t);
+            Xp.w(TAG + "getNotificationClockTop failed: " + t);
         }
         logViewById(v, "mi_media_controls");
         logViewById(v, "album_art_image");
@@ -11173,11 +11316,11 @@ public class Main extends XposedModule {
                     Object cfg = Xp.getObjectField(anim, f);
                     Xp.log(TAG + f + " = " + describe(cfg));
                 } catch (Throwable t) {
-                    Xp.log(TAG + f + " unavailable: " + t);
+                    Xp.w(TAG + f + " unavailable: " + t);
                 }
             }
         } catch (Throwable t) {
-            Xp.log(TAG + "dumpAnimConfigs failed: " + Log.getStackTraceString(t));
+            Xp.w(TAG + "dumpAnimConfigs failed: " + Log.getStackTraceString(t));
         }
     }
 
@@ -11253,7 +11396,7 @@ public class Main extends XposedModule {
             Rect r = new Rect(loc[0], loc[1], loc[0] + found.getWidth(), loc[1] + found.getHeight());
             Xp.log(TAG + idName + ": " + r + " vis=" + found.getVisibility());
         } catch (Throwable t) {
-            Xp.log(TAG + idName + " lookup failed: " + t);
+            Xp.w(TAG + idName + " lookup failed: " + t);
         }
     }
 }

@@ -147,7 +147,13 @@ final class OnlineLyrics {
         return null;
     }
 
-    private static Found ask(Src src, NcmLyrics.Query q) {
+    /** Where a catalogue's answer is said to be from, as LyricSource numbers its sources. */
+    static int sourceOf(Src src) {
+        return new Found(src, null, null, null, null, false).source();
+    }
+
+    /** One catalogue's answer for the song, or null. */
+    static Found ask(Src src, NcmLyrics.Query q) {
         try {
             switch (src) {
                 case QQ: {
@@ -175,7 +181,7 @@ final class OnlineLyrics {
                     return null;
             }
         } catch (Throwable t) {
-            Xp.log("[MCLyric] " + src + " failed: " + t);
+            Xp.w("[MCLyric] " + src + " failed: " + t);
             return null;
         }
     }

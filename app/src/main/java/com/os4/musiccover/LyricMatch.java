@@ -87,11 +87,22 @@ final class LyricMatch {
         final String album;
         final long durationMs;
         final List<String> features;
+        /** Credited names, not counting the aliases added to artists. */
+        private final int credits;
 
         Wanted(NcmLyrics.Query q) {
             title = clean(q.title);
             artists = new ArrayList<>();
-            for (String a : splitArtists(q.artist)) artists.add(clean(a));
+            int n = 0;
+            for (String a : splitArtists(q.artist)) {
+                if (!clean(a).isEmpty()) n++;
+                artists.add(clean(a));
+                // Either of QQ's two names for a singer is them: NetEase credits あいみょん,
+                // QQ 爱缪 (TrackName.aliased).
+                String[] alias = TrackName.aliased(a);
+                if (alias != null) artists.add(clean(alias[1]));
+            }
+            credits = n;
             album = normalizeAlbum(q.album);
             durationMs = q.durationMs;
             features = features(q.title);
@@ -99,9 +110,7 @@ final class LyricMatch {
 
         /** Two or more credited names: "A / B" gets a second, album-keyed search. */
         boolean multiCredit() {
-            int n = 0;
-            for (String a : artists) if (!a.isEmpty()) n++;
-            return n >= 2;
+            return credits >= 2;
         }
     }
 

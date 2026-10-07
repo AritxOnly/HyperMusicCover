@@ -314,13 +314,13 @@ final class LyricView extends View {
     private int buildGen;
     /** The lines and width a layout is on its way for, or -1 with none in the air. */
     private int wantVersion = -1, wantWidth = -1;
-    /** The translation switch the layout in the air is for; -1 above means none is. */
-    private boolean wantTrans;
+    /** The translation and romanisation switches the layout in the air is for (LockLyrics.below()). */
+    private int wantTrans;
     /** The alignment pref the layout in the air is for; only meaningful with a version above. */
     private int wantAlign;
     private LyricStyle wantStyle;
-    /** The translation switch the layout now in use was made under. */
-    private boolean builtTrans = true;
+    /** The translation and romanisation switches the layout now in use was made under. */
+    private int builtTrans = LockLyrics.BELOW_TRANS;
     /** The alignment pref the layout now in use was made under; see LockLyrics.sAlign. */
     private int builtAlign = LockLyrics.ALIGN_LEFT;
     /** Diagnostics: how long the last layout took on its thread. */
@@ -553,7 +553,7 @@ final class LyricView extends View {
                 // row out from under every line, so it is asked for the same way a new lyric set
                 // is. Compared against what the layout in use was built with, not the field, or
                 // the request would still look outstanding the moment it landed.
-                || LockLyrics.sTrans != builtTrans
+                || LockLyrics.below() != builtTrans
                 // The alignment is in the layout too, and asked for the same way: against what
                 // the layout in use was built with, not against the field.
                 || LockLyrics.sAlign != builtAlign
@@ -596,7 +596,11 @@ final class LyricView extends View {
         // of it, `show` only carries the card's progress and the clock's alpha, so it goes
         // straight there instead of easing.
         if (popMode != POP_OUT) {
-            float tauShow = showTo < show ? TAU_HIDE : popMode == POP_IN ? TAU_POP_SHOW : TAU_SHOW;
+            // Back from under the control centre: as quick as the way out, not the slow
+            // arrival a song's first lines get (#52, "淡入回来太慢了").
+            if (centreHeld && showTo <= show) centreHeld = showTo == 0f;
+            float tauShow = showTo < show ? TAU_HIDE : popMode == POP_IN ? TAU_POP_SHOW
+                    : centreHeld ? TAU_HIDE : TAU_SHOW;
             float s = approach(show, showTo, dtTo, tauShow);
             if (Math.abs(s - showTo) < 0.004f) s = showTo;
             if (s != show) {
@@ -626,6 +630,11 @@ final class LyricView extends View {
             return changed;
         }
         if (lines.isEmpty()) return changed;
+        // Borrowed translations fading in: a frame each until they are all the way in.
+        if (transRevealAt != 0L) {
+            if (now - transRevealAt >= TRANS_REVEAL_MS) transRevealAt = 0L;
+            changed = true;
+        }
 
         // The position moves on every step while playing, and that alone is NOT a change: it
         // used to be, so every pre-draw invalidated, which drew the next frame, whose pre-draw
@@ -880,11 +889,23 @@ final class LyricView extends View {
      */
     private float showTarget() {
         if (!LockLyrics.wantsShown() || !bandOk || lines.isEmpty()) return 0f;
+        // With the HDR highlight the lyrics are a window of their own above the shade window,
+        // and the control centre pulled over the lock screen is drawn in the shade window - so
+        // its blur, which takes what is under it, can never reach them: they stood sharp over
+        // it (#52). They make way for it instead, and come back as it goes. Without the
+        // highlight they are in the keyguard's tree and blurred with it, as before.
+        if (LyricWindow.owns(this) && Main.controlCenterShown()) {
+            centreHeld = true;
+            return 0f;
+        }
         float v = clamp01(Main.cardProgress());
         View c = Main.sContainer;
         if (c != null) v *= clamp01(c.getAlpha());
         return v;
     }
+
+    /** The lyrics went out for the control centre and have not come all the way back yet. */
+    private boolean centreHeld;
 
     /** keyguard_info_layer, the view the full AOD dims - the one the lyrics take their alpha from. */
     private View dimSource;
@@ -1462,7 +1483,7 @@ final class LyricView extends View {
     private boolean layOut() {
         final int v = LockLyrics.version();
         final int width = getWidth();
-        final boolean transOn = LockLyrics.sTrans;
+        final int transOn = LockLyrics.below();
         final int alignOn = LockLyrics.sAlign;
         final LyricStyle style = LockLyrics.sStyle;
         final List<LyricLine> ls = LockLyrics.lines();
@@ -1511,7 +1532,7 @@ final class LyricView extends View {
                         // Stale by the time it landed, or asked for and then frozen by the lyrics
                         // being switched off: the next step asks again when it is due.
                         if (v != LockLyrics.version() || width != getWidth()
-                                || transOn != LockLyrics.sTrans
+                                || transOn != LockLyrics.below()
                                 || alignOn != LockLyrics.sAlign
                                 || !style.sameLayout(LockLyrics.sStyle)
                                 || !LockLyrics.wantsAttached()) {
@@ -1531,8 +1552,8 @@ final class LyricView extends View {
     private static final class Built {
         int version, width, w;
         LyricStyle style;
-        /** The translation switch this layout was made under; see LockLyrics.sTrans. */
-        boolean transOn;
+        /** The translation and romanisation switches this layout was made under; see LockLyrics.below(). */
+        int transOn;
         /** The alignment pref this layout was made under; see LockLyrics.sAlign. */
         int align;
         List<LyricLine> lines;
@@ -1557,7 +1578,7 @@ final class LyricView extends View {
 
     /** Touches nothing of the view's but its constants, so it can run off the UI thread. */
     private Built build(int v, int width, List<LyricLine> ls, TextPaint p, TextPaint bp,
-                        TextPaint tp, boolean transOn, int alignOn, LyricStyle style,
+                        TextPaint tp, int transOn, int alignOn, LyricStyle style,
                         float buildTextPx, float buildSidePx) {
         long t0 = SystemClock.uptimeMillis();
         Built b = new Built();
@@ -1612,9 +1633,9 @@ final class LyricView extends View {
             // Left out of the layout entirely when the switch is off, rather than laid out and
             // skipped in the draw: the rows it would have taken are most of a line's height, and
             // a gap there would leave every line floating with a hole under it.
-            if (l.translation != null && transOn) {
-                b.trans[i] = StaticLayout.Builder.obtain(l.translation, 0, l.translation.length(),
-                                tp, w)
+            String under = l.under(transOn);
+            if (under != null) {
+                b.trans[i] = StaticLayout.Builder.obtain(under, 0, under.length(), tp, w)
                         .setAlignment(align)
                         .setIncludePad(false)
                         .build();
@@ -1630,6 +1651,11 @@ final class LyricView extends View {
 
     /** Puts a finished layout in, and starts every line's animated state over. UI thread. */
     private void apply(Built b) {
+        // The same lines with translations borrowed after they went up (LyricSource
+        // .borrowTranslations): nothing to start over, so the lines carry on where they are.
+        boolean reveal = gainsTranslations(lines, b.lines) && b.width == layoutWidth
+                && b.align == builtAlign && focus >= 0 && scroll.length == b.lines.size();
+        float[] oldBase = base;
         applyPaintStyle(b.style);
         version = b.version;
         builtTrans = b.transOn;
@@ -1649,6 +1675,12 @@ final class LyricView extends View {
         charX = b.charX;
         dotsTop = b.dotsTop;
         blurBmp = new Bitmap[n][BLUR_MAX_ROWS];
+        if (reveal) {
+            revealTranslations(oldBase);
+            Xp.log(TAG + "translations borrowed into " + n + " lines, sliding them in");
+            return;
+        }
+        transRevealAt = 0L;
         scroll = new float[n];
         vel = new float[n];
         aim = new float[n];
@@ -1666,6 +1698,69 @@ final class LyricView extends View {
             Xp.log(TAG + "view laid out " + n + " lines at width " + b.w + " in " + b.tookMs
                     + "ms");
         }
+    }
+
+    /**
+     * When translations arrived under lines already on screen, for their fade; 0 for none.
+     * See revealTranslations.
+     */
+    private long transRevealAt;
+    private static final long TRANS_REVEAL_MS = 450L;
+
+    /** Whether `next` is `now` again, the same words at the same times, with translations added. */
+    private static boolean gainsTranslations(List<LyricLine> now, List<LyricLine> next) {
+        if (now.isEmpty() || now.size() != next.size()) return false;
+        boolean gained = false;
+        for (int i = 0; i < now.size(); i++) {
+            LyricLine a = now.get(i), b = next.get(i);
+            if (a.start != b.start || !a.text.equals(b.text)) return false;
+            if (a.translation != null && !a.translation.equals(b.translation)) return false;
+            if (a.roma != null && !a.roma.equals(b.roma)) return false;
+            if (a.translation == null && b.translation != null) gained = true;
+            if (a.roma == null && b.roma != null) gained = true;
+        }
+        return gained;
+    }
+
+    /**
+     * Translations borrowed for the lines already up, slid in rather than cut in (#62).
+     *
+     * The new layout is taller wherever a translation went in, so every line's place moves. Each
+     * line is held where it was drawn - its scroll moved by exactly as much as its place did -
+     * and then handed the new target the way a line change hands it over: the slow spring, the
+     * ripple from the first line on screen. The translations fade in under them meanwhile.
+     */
+    private void revealTranslations(float[] oldBase) {
+        int n = lines.size();
+        long now = now();
+        if (dotsFor >= 0 && Float.isNaN(dotsTop[dotsFor])) dotsFor = -1;
+        float to = dotsFor >= 0 ? dotsTop[dotsFor] : base[focus];
+        springK = K_SLOW;
+        springC = C_SLOW;
+        float anchor = anchorY();
+        float delay = 0f;
+        for (int i = 0; i < n; i++) {
+            float d = base[i] - oldBase[i];
+            scroll[i] += d;
+            aim[i] += d;
+            nextAim[i] = to;
+            aimAt[i] = now + Math.round(delay);
+            float y = anchor + base[i] - to;
+            if (y + height[i] >= bandTop && y <= bandBottom) delay += RIPPLE_MS;
+        }
+        transRevealAt = now;
+        prewarmBlur();
+        invalidate();
+        kick();
+    }
+
+    /** How far in the borrowed translations have faded, 1 once they have or when none were. */
+    private float transReveal() {
+        if (transRevealAt == 0L) return 1f;
+        float p = (now() - transRevealAt) / (float) TRANS_REVEAL_MS;
+        if (p >= 1f) return 1f;
+        float q = 1f - Math.max(0f, p);
+        return 1f - q * q * q;
     }
 
     private static android.os.Handler sLayoutHandler;
@@ -2160,11 +2255,11 @@ final class LyricView extends View {
                 c.restoreToCount(save);
                 below += bgGap + bl.getHeight();
             }
-            if (l.translation != null && LockLyrics.sTrans) {
+            String under = l.under(LockLyrics.below());
+            if (under != null) {
                 tp.setAlpha(Math.round(255f * TRANS_ALPHA));
                 tp.setMaskFilter(mf);
-                StaticLayout t = StaticLayout.Builder.obtain(l.translation, 0,
-                                l.translation.length(), tp, width)
+                StaticLayout t = StaticLayout.Builder.obtain(under, 0, under.length(), tp, width)
                         .setAlignment(align)
                         .setIncludePad(false)
                         .build();
@@ -2248,7 +2343,7 @@ final class LyricView extends View {
         if (t == null) return;
         int save = c.save();
         c.translate(0f, transTop(i));
-        t.getPaint().setColor(ink(a * TRANS_ALPHA, 0f));
+        t.getPaint().setColor(ink(a * TRANS_ALPHA * transReveal(), 0f));
         t.draw(c);
         t.getPaint().setColor(0xFFFFFFFF);
         c.restoreToCount(save);

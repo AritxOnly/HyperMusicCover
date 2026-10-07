@@ -29,6 +29,17 @@ object MiniPlayerConfig {
     const val MAX_HEIGHT_DP = 72f
     const val DEFAULT_HEIGHT_DP = 54f
 
+    /** 屏幕常亮 while a navigation page is up behind the lock screen (ImmersiveHost.holdScreen, #63). */
+    const val NAV_KEEP_ON = "navKeepOn"
+
+    /** 勿扰, charging and the like drawn after the date, clear of the pill (DateStatus). */
+    const val STATUS_AT_DATE = "statusAtDate"
+
+    /** The row lifted off a low under-display fingerprint sensor (MiniPlayerRuntime.fingerprintArea, #66). */
+    const val FOD_LIFT = "fodLift"
+
+    private val switches = setOf(ENABLED, ADAPTIVE_WIDTH, NAV_KEEP_ON, STATUS_AT_DATE, FOD_LIFT)
+
     private val defaults = linkedMapOf<String, Any>(
         ENABLED to false,
         WIDTH to 221f,
@@ -42,6 +53,9 @@ object MiniPlayerConfig {
         SINK_WITH_EXPANDED_BACKGROUND to false,
         GROUP_NOTIFICATIONS_BY_APP to false,
         STYLE to STYLE_ROW,
+        NAV_KEEP_ON to false,
+        STATUS_AT_DATE to true,
+        FOD_LIFT to true,
     )
 
     @JvmStatic fun defaultJson(): String = normalizedJson(null)
@@ -70,7 +84,7 @@ object MiniPlayerConfig {
             } else if (key == ENABLED || key == ADAPTIVE_WIDTH ||
                 key == HIDE_AOD_SHORTCUTS || key == MARQUEE || key == NOTIFICATION_MATERIAL ||
                 key == MEDIA_COLLAPSED_DEFAULT || key == SINK_WITH_EXPANDED_BACKGROUND ||
-                key == GROUP_NOTIFICATIONS_BY_APP) {
+                key == GROUP_NOTIFICATIONS_BY_APP || key in switches) {
                 runCatching { input.getBoolean(key) }.getOrDefault(fallback)
             } else {
                 fallback

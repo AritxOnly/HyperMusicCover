@@ -20,6 +20,7 @@
     <string name="restart_menu">Restart</string>
     <string name="restart_systemui">Restart System UI</string>
     <string name="restart_wallpaper">Restart wallpaper</string>
+    <string name="restart_confirm_summary">Restart now?</string>
 
     <string name="tab_home">Home</string>
     <string name="tab_settings">Settings</string>
@@ -51,6 +52,11 @@
     <string name="export_settings_summary">Save current settings as JSON file</string>
     <string name="import_settings">Import Settings</string>
     <string name="import_settings_summary">Import settings from JSON file</string>
+    <string name="settings_debug">Debugging</string>
+    <string name="log_level">Log level</string>
+    <string name="log_level_summary">Switch to Verbose and reproduce the problem before reporting it</string>
+    <string name="log_level_normal">Normal</string>
+    <string name="log_level_verbose">Verbose</string>
     <string name="import_success">Import successful, restarting app</string>
     <string name="import_failed">Import failed, invalid file format</string>
     <string name="export_success">Export successful</string>
@@ -98,11 +104,12 @@
     <string name="home_status_active">Module active</string>
     <string name="home_status_inactive">Module not active</string>
     <string name="home_status_inactive_hint">Enable it in LSPosed and restart System UI</string>
+    <string name="home_stale_title">Module updated</string>
+    <string name="home_stale_summary">%1$d processes are still running the old version. Tap to restart them</string>
     <string name="home_device_name">Device name</string>
     <string name="home_device_model">Model</string>
     <string name="home_hyperos_version">HyperOS</string>
     <string name="home_android_version">Android</string>
-    <string name="home_module_version">Module version</string>
     <string name="home_unknown">Unknown</string>
     <string name="home_loading">Loading…</string>
     <string name="donate_title">Donate</string>
@@ -118,6 +125,7 @@
     <string name="donate_save_failed">Could not save</string>
     <string name="card_section">Media card</string>
     <string name="card_title_tap">Tap the title to pause</string>
+    <string name="media_bar_glow">Progress bar glow</string>
     <string name="lyrics_two_finger_tap">Two-finger tap the cover to switch to the lyrics</string>
     <!-- Three states rather than two; see the default strings for what they mean. -->
     <string name="lyrics_provider_title_missing">No lyric module installed</string>
@@ -140,6 +148,7 @@
     <string name="lyrics_trans">Show translations</string>
     <string name="lyrics_hide_aod">Hide lyrics in AOD</string>
     <string name="lyrics_hide_aod_summary">Hide scrolling lyrics in full-screen AOD and show them again on wake</string>
+    <string name="lyrics_roma">Show romanisations</string>
     <string name="lyrics_align">Lyric alignment</string>
     <string name="lyrics_align_left">Left</string>
     <string name="lyrics_align_center">Center</string>
@@ -166,6 +175,7 @@
     <string name="update_failed">Update failed: %1$s</string>
     <string name="update_status_title">Update</string>
     <string name="update_no_installer">No app on this device can install an APK - install it from a file manager</string>
+    <string name="update_saved_to_downloads">Nothing could open the package, so it was saved as Download/%1$s - install it from a file manager</string>
     <string name="update_confirm">Update</string>
     <string name="update_not_ours">The download was not signed by this project; discarded</string>
     <string name="update_latest">Already on the latest version</string>
@@ -180,11 +190,38 @@
     <string name="features_shade_title">Shade and control centre (experimental)</string>
     <string name="features_shade_summary">Flowing light</string>
     <string name="features_mini_title">Lock screen super island</string>
-    <string name="features_mini_summary">Media controls, gestures, size and material</string>
+    <string name="features_mini_summary">Music, notifications and navigation</string>
+    <string name="features_transit_title">Amap bus &amp; subway</string>
+    <string name="features_transit_summary">Stop-by-stop island</string>
+    <string name="transit_enabled">Enable Amap bus &amp; subway</string>
 
     <string name="shade_enabled">Enable flowing light</string>
     <string name="shade_section_behaviour">Behaviour</string>
     <string name="shade_mode">When it applies</string>
     <string name="shade_mode_restore">System default</string>
     <string name="shade_mode_keep">Keep the album cover</string>
+
+    <!-- The islands' page, which the features page opens. -->
+    <string name="mini_page_title">Lock screen super island</string>
+    <string name="mini_enabled">Enable the lock screen super island</string>
+    <string name="mini_enabled_waiting">Waiting for the SystemUI module to answer</string>
+    <string name="mini_widen">Widen when a shortcut is off</string>
+    <string name="mini_widen_summary">Takes the flashlight or camera space when it is off</string>
+    <string name="mini_nav_keep_on">Keep the screen on while navigating</string>
+    <string name="mini_status_at_date">Status after the date</string>
+    <string name="mini_status_at_date_summary">Keeps Do Not Disturb and charging clear of the pill</string>
+    <string name="mini_fod_lift">Clear of the fingerprint sensor</string>
+    <string name="mini_fod_lift_summary">On phones with a low optical sensor, lifts the pill above it</string>
+    <string name="mini_nav_keep_on_summary">While an Amap navigation or transit page is up</string>
+
+    <!-- What the two demonstrations are called, page by page; see the default strings for the rule. -->
+    <string name="demo_cover_takeover_title">The cover takes the lock screen</string>
+    <string name="demo_cover_lyrics_title">Lyrics on the lock screen</string>
+    <string name="demo_cover_aod_title">Kept on the always-on display</string>
+    <string name="demo_island_switch_title">Switching and interrupting</string>
+    <string name="demo_island_immersive_title">Immersive pages</string>
+    <string name="demo_island_stack_title">The stack island</string>
+    <string name="demo_transit_island_title">The super island when unlocked</string>
+    <string name="demo_transit_ride_title">Stop by stop</string>
+    <string name="demo_transit_alert_title">Transfers and arrival</string>
 </resources>

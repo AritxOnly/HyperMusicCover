@@ -276,7 +276,7 @@ final class CoverCardLayer extends View implements Choreographer.FrameCallback {
                                 / (float) Main.screenWidth())));
                 aodBackdrop = CoverCompose.cardBackground(readable, backdropW, backdropH);
             } catch (Throwable t) {
-                Xp.log("[MCCard] AOD backdrop preparation failed: " + t);
+                Xp.w("[MCCard] AOD backdrop preparation failed: " + t);
             }
             final Prepared p = new Prepared(art, aodBackdrop, generation);
             art = null;
@@ -301,7 +301,7 @@ final class CoverCardLayer extends View implements Choreographer.FrameCallback {
                 }
             });
         } catch (Throwable t) {
-            Xp.log("[MCCard] artwork preparation failed: " + t);
+            Xp.w("[MCCard] artwork preparation failed: " + t);
         } finally {
             if (readable != null && readable != source) readable.recycle();
             if (art != null) art.recycle();

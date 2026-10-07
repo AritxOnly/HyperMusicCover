@@ -19,6 +19,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.os4.musiccover.ui.screen.features.IslandDemo
 import com.os4.musiccover.ui.screen.features.ValueSlider
@@ -84,7 +85,8 @@ private fun MiniPlayerPage(blur: Boolean, refreshKey: Int, onBack: () -> Unit) {
         ModuleBridge.setMiniConfig(context, configText)
     }
 
-    PageScaffold(title = "锁屏超级岛", isBlurEnabled = blur, onBack = onBack) {
+    PageScaffold(title = stringResource(R.string.mini_page_title), isBlurEnabled = blur,
+        onBack = onBack) {
         item {
             // What the islands do, played on a drawn phone, before the switches that turn them on.
             Card(Modifier.padding(horizontal = 12.dp).padding(top = 12.dp)) {
@@ -162,6 +164,21 @@ private fun MiniPlayerPage(blur: Boolean, refreshKey: Int, onBack: () -> Unit) {
                         checked = config.optBoolean(MiniPlayerConfig.MARQUEE, true),
                         enabled = ready && config.optBoolean(MiniPlayerConfig.ENABLED),
                         onCheckedChange = { push(MiniPlayerConfig.MARQUEE, it) })
+                    SwitchPreference(title = stringResource(R.string.mini_nav_keep_on),
+                        summary = stringResource(R.string.mini_nav_keep_on_summary),
+                        checked = config.optBoolean(MiniPlayerConfig.NAV_KEEP_ON),
+                        enabled = alive && config.optBoolean(MiniPlayerConfig.ENABLED),
+                        onCheckedChange = { push(MiniPlayerConfig.NAV_KEEP_ON, it) })
+                    SwitchPreference(title = stringResource(R.string.mini_status_at_date),
+                        summary = stringResource(R.string.mini_status_at_date_summary),
+                        checked = config.optBoolean(MiniPlayerConfig.STATUS_AT_DATE),
+                        enabled = alive && config.optBoolean(MiniPlayerConfig.ENABLED),
+                        onCheckedChange = { push(MiniPlayerConfig.STATUS_AT_DATE, it) })
+                    SwitchPreference(title = stringResource(R.string.mini_fod_lift),
+                        summary = stringResource(R.string.mini_fod_lift_summary),
+                        checked = config.optBoolean(MiniPlayerConfig.FOD_LIFT),
+                        enabled = alive && config.optBoolean(MiniPlayerConfig.ENABLED),
+                        onCheckedChange = { push(MiniPlayerConfig.FOD_LIFT, it) })
                 }
             }
         }

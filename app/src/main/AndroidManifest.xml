@@ -8,11 +8,14 @@
         International, which is all openQqGroup ever aims at.
     -->
     <!--
-        The self-updater. INTERNET is install-time and never prompted. There is deliberately no
-        REQUEST_INSTALL_PACKAGES: this app does not install anything itself any more, it hands the
-        downloaded APK to an installer app, and the permission that matters is that app's.
+        The self-updater. INTERNET is install-time and never prompted. The APK is handed to an
+        installer app rather than installed here, but REQUEST_INSTALL_PACKAGES is still declared:
+        the system's own installer refuses a request from an app that does not declare it (AOSP
+        InstallStart, "needs to declare permission"), and without it there is no 安装未知应用
+        switch for this app for the user to turn on. It grants nothing until they do.
     -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <queries>
         <!-- Whether a lyric provider module is installed, for the notice on the lyrics page.
@@ -127,6 +130,12 @@
             android:name=".MiniPlayerActivity"
             android:exported="false"
             android:label="@string/features_mini_title"
+            android:theme="@style/Theme.HyperMusicCover" />
+
+        <activity
+            android:name=".TransitActivity"
+            android:exported="false"
+            android:label="@string/features_transit_title"
             android:theme="@style/Theme.HyperMusicCover" />
 
         <!-- The theme settings, opened from the settings page's interface section. Declared like

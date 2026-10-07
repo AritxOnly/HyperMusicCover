@@ -254,6 +254,25 @@ final class ClockCollapse {
     }
 
     /**
+     * contentBottomOnScreen(), counting only the signature bars that are showing: one a style
+     * carries but has hidden still has its height, and taken whole it put the bottom some 150px
+     * below a small clock with nothing under it. For laying out against the clock as it looks.
+     */
+    static float contentBottomShown() {
+        float ink = inkBottomOnScreen();
+        if (Float.isNaN(ink)) return Float.NaN;
+        float bottom = ink;
+        Live m = LIVE;
+        for (int i = 0; i < m.sigN; i++) {
+            Sig s = m.sig[i];
+            if (s.v == null || !s.v.isShown() || s.v.getAlpha() <= 0.01f) continue;
+            float b = ink + s.gap + s.v.getHeight();
+            if (b > bottom) bottom = b;
+        }
+        return bottom;
+    }
+
+    /**
      * contentBottomOnScreen(), but where it is actually drawn right now: the ink box and the
      * signature bars mapped through every view's own transform up to the window.
      *
@@ -340,6 +359,27 @@ final class ClockCollapse {
     static boolean aodFullScreen() {
         return sAodFullScreen;
     }
+
+    /**
+     * The glyphs redrawn when the scale has moved far enough that their glass edge would show it.
+     *
+     * The edge's width reaches the shader from TimeView.onDraw, scaled there to what the glyph is
+     * drawn at (Main.armMiGlassGuard, #39) - but a scale set on the time_group is a RenderNode
+     * property and redraws nothing under it, so a clock that settled without one more draw kept
+     * the edge it last drew with. A few percent of scale is not visible in the edge; per frame it
+     * would be three glyph paths rebuilt for nothing.
+     */
+    private static void glassFollowsScale(View g, float scale) {
+        Float last = sGlassScale.get(g);
+        float was = last == null ? 1f : last;
+        if (Math.abs(scale - was) <= 0.03f * Math.max(scale, was)) return;
+        sGlassScale.put(g, scale);
+        Main.invalidateGlass(g);
+    }
+
+    /** The scale each time_group's glyphs last redrew their glass at. A tag key would be this
+     * module's resource id inside SystemUI's tree, where it could be one of SystemUI's own. */
+    private static final java.util.Map<View, Float> sGlassScale = new java.util.WeakHashMap<>();
 
     /** Anything of ours on the clock that belongs to the lock screen being up. */
     static boolean active() {
@@ -1533,7 +1573,7 @@ final class ClockCollapse {
             try {
                 frame();
             } catch (Throwable t) {
-                Xp.log(TAG + "clock: frame failed: " + t);
+                Xp.w(TAG + "clock: frame failed: " + t);
             }
             if (sFrame != null) {
                 long d = System.nanoTime() - t0;
@@ -1589,7 +1629,7 @@ final class ClockCollapse {
         try {
             frame();
         } catch (Throwable t) {
-            Xp.log(TAG + "clock: re-place failed: " + t);
+            Xp.w(TAG + "clock: re-place failed: " + t);
         } finally {
             sRedoing = false;
         }
@@ -2029,6 +2069,7 @@ final class ClockCollapse {
             if (g.getPivotY() != m.box.top) g.setPivotY(m.box.top);
             if (g.getScaleX() != scaleX) g.setScaleX(scaleX);
             if (g.getScaleY() != scale) g.setScaleY(scale);
+            glassFollowsScale(g, scale);
             float ty = top - (parentTop(g) + g.getTop() + m.box.top);
             if (Math.abs(g.getTranslationY() - ty) >= 0.25f) g.setTranslationY(ty);
         }

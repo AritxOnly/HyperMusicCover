@@ -26,12 +26,15 @@ object SettingsBackup {
     private const val KEY_CARD_TITLE_TAP = "cardTitleTap"
     private const val KEY_HIDE_FINGERPRINT = "hideFingerprint"
     private const val KEY_FORCE_COLON = "forceClockColon"
+    private const val KEY_MEDIA_BAR_GLOW = "mediaBarGlow"
     private const val KEY_LYRICS_KEEP_ON = "lyricsKeepOn"
     private const val KEY_LYRICS_HDR = "lyricsHdr"
     private const val KEY_LYRICS_TRANS = "lyricsTranslation"
     private const val KEY_LYRICS_HIDE_AOD = "lyricsHideAod"
+    private const val KEY_LYRICS_ROMA = "lyricsRomanisation"
     private const val KEY_LYRICS_ALIGN = "lyricsAlignment"
     private const val KEY_FP_AVOID = "fingerprintAvoid"
+    private const val KEY_TRANSIT = "amapTransit"
     /** The whole notification-shade page, as one object keyed the way the module names them. */
     private const val KEY_SHADE = "shade"
     private const val KEY_MINI = "lockscreenMiniPlayer"
@@ -56,12 +59,15 @@ object SettingsBackup {
             json.put(KEY_CARD_TITLE_TAP, module.mcTitleTap)
             json.put(KEY_HIDE_FINGERPRINT, module.hideFingerprint)
             json.put(KEY_FORCE_COLON, module.forceColon)
+            json.put(KEY_MEDIA_BAR_GLOW, module.mediaBarGlow)
             json.put(KEY_LYRICS_KEEP_ON, module.lyricsKeepOn)
             json.put(KEY_LYRICS_HDR, module.lyricsHdr)
             json.put(KEY_LYRICS_TRANS, module.lyricsTrans)
             json.put(KEY_LYRICS_HIDE_AOD, module.lyricsHideAod)
+            json.put(KEY_LYRICS_ROMA, module.lyricsRoma)
             json.put(KEY_LYRICS_ALIGN, module.lyricsAlign)
             json.put(KEY_FP_AVOID, module.fpAvoid)
+            json.put(KEY_TRANSIT, module.transit)
             // Written whole rather than key by key, because the map is built from the module's
             // own list of keys - this file has no idea what is in it, which is the point.
             if (module.shade.isNotEmpty()) {
@@ -98,6 +104,9 @@ object SettingsBackup {
             if (obj.has(KEY_FORCE_COLON)) {
                 ModuleBridge.setForceColon(context, obj.getBoolean(KEY_FORCE_COLON))
             }
+            if (obj.has(KEY_MEDIA_BAR_GLOW)) {
+                ModuleBridge.setMediaBarGlow(context, obj.getBoolean(KEY_MEDIA_BAR_GLOW))
+            }
             if (obj.has(KEY_LYRICS_HDR)) {
                 ModuleBridge.setLyricsHdr(context, obj.getBoolean(KEY_LYRICS_HDR))
             }
@@ -110,11 +119,17 @@ object SettingsBackup {
             if (obj.has(KEY_LYRICS_HIDE_AOD)) {
                 ModuleBridge.setLyricsHideAod(context, obj.getBoolean(KEY_LYRICS_HIDE_AOD))
             }
+            if (obj.has(KEY_LYRICS_ROMA)) {
+                ModuleBridge.setLyricsRoma(context, obj.getBoolean(KEY_LYRICS_ROMA))
+            }
             if (obj.has(KEY_LYRICS_ALIGN)) {
                 ModuleBridge.setLyricsAlign(context, obj.getInt(KEY_LYRICS_ALIGN))
             }
             if (obj.has(KEY_FP_AVOID)) {
                 ModuleBridge.setFingerprintAvoid(context, obj.getInt(KEY_FP_AVOID))
+            }
+            if (obj.has(KEY_TRANSIT)) {
+                ModuleBridge.setTransit(context, obj.getBoolean(KEY_TRANSIT))
             }
             // EVERY key in the object, not a chosen few. A restore that puts back some of the
             // shade page and leaves the rest at whatever this device happened to have is worse

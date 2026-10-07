@@ -198,7 +198,7 @@ final class LyricWindow {
             try {
                 WindowManager.LayoutParams.class.getMethod("setTrustedOverlay").invoke(lp);
             } catch (Throwable t) {
-                Xp.log(TAG + "setTrustedOverlay unavailable: " + t);
+                Xp.w(TAG + "setTrustedOverlay unavailable: " + t);
             }
             // Coming up in the middle of a held note: the window is in HDR from its first frame
             // rather than a frame later. The glow needs the canvas' extended range, not a mode of
@@ -240,7 +240,7 @@ final class LyricWindow {
             if (wm != null) wm.removeView(v);
             Xp.log(TAG + "window removed");
         } catch (Throwable t) {
-            Xp.log(TAG + "window remove failed: " + t);
+            Xp.w(TAG + "window remove failed: " + t);
         }
     }
 
@@ -257,7 +257,7 @@ final class LyricWindow {
             sWm.updateViewLayout(sView, sLp);
             Xp.log(TAG + "HDR " + (on ? "on" : "off"));
         } catch (Throwable t) {
-            Xp.log(TAG + "HDR update failed: " + t);
+            Xp.w(TAG + "HDR update failed: " + t);
         }
     }
 

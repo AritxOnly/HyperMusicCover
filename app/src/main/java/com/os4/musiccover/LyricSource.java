@@ -7,6 +7,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ExecutorService;
@@ -154,6 +155,9 @@ final class LyricSource {
      * there when the provider module was quick and gone for the whole song when it was not.
      * So ARTIST's tail and the album are asked too, and agreement with any of the three is
      * agreement - a rejection now needs every field the session published to disagree.
+     * ARTIST is read every way a player spells a song into it (TrackName.splits): Salt's
+     * "歌手 - 歌名", 汽水's "歌名 — 歌手" and QQ's "歌名-歌手", which is how QQ's payload came to be
+     * refused on every sung line (#47).
      */
     static String infoFor(MediaController c) {
         String info = lyricInfoOf(c);
@@ -170,7 +174,8 @@ final class LyricSource {
         if (a.isEmpty() || b.isEmpty() || a.contains(b) || b.contains(a)) {
             return info;
         }
-        if (agrees(a, artistTailOf(c)) || agrees(a, metaOf(c, MediaMetadata.METADATA_KEY_ALBUM))) {
+        if (TrackName.songIn(a, metaOf(c, MediaMetadata.METADATA_KEY_ARTIST))
+                || agrees(a, metaOf(c, MediaMetadata.METADATA_KEY_ALBUM))) {
             return info;
         }
         Xp.log("[MCLyric] the session's lyricInfo is still \"" + theirs
@@ -190,26 +195,6 @@ final class LyricSource {
         }
         String s = other.trim().toLowerCase();
         return !s.isEmpty() && (name.contains(s) || s.contains(name));
-    }
-
-    /**
-     * The song's name out of ARTIST, for the players that put it there.
-     *
-     * Split on the first " - ", the same way NcmLyrics.build() does and for the same reason: a
-     * dash inside the song's own name comes after the one that separates it from the artist.
-     * Null when ARTIST is an ordinary artist name, which is every other player.
-     */
-    private static String artistTailOf(MediaController c) {
-        String artist = metaOf(c, MediaMetadata.METADATA_KEY_ARTIST);
-        if (artist == null) {
-            return null;
-        }
-        int dash = artist.indexOf(" - ");
-        if (dash <= 0) {
-            return null;
-        }
-        String tail = artist.substring(dash + 3).trim();
-        return tail.isEmpty() ? null : tail;
     }
 
     /** Which song the payload says it is for, or null when it does not say. */
@@ -498,23 +483,52 @@ final class LyricSource {
         return dirForPackage(c == null ? "" : c.getPackageName());
     }
 
+    /**
+     * The players that play from a catalogue: what they play is that catalogue's recording, so a
+     * file on this phone is not read for them even when it has the better lyric - only when
+     * nothing else had one at all (a song uploaded to a cloud drive, say). Every player not
+     * here is taken to play files and is read the other way round, the file first. Listed this
+     * way because these are the few, and the file players many. Mi Music and the other phone
+     * makers' players play both and count as these.
+     */
+    private static final String[] STREAMING = {
+            "com.tencent.qqmusic", "com.netease.cloudmusic", "com.kugou", "cn.kuwo",
+            "com.luna.music", "cn.wenyu.bodian", "cmccwm.mobilemusic", "com.apple.android.music",
+            "com.spotify.music", "com.google.android.apps.youtube.music",
+            "com.google.android.youtube", "tv.danmaku.bili", "com.bilibili", "com.miui.player",
+            "com.huawei.music", "com.heytap.music", "com.android.bbkmusic", "com.amazon.mp3",
+            "deezer.android.app", "com.aspiro.tidal", "com.soundcloud.android",
+    };
+
+    static boolean streaming(String pkg) {
+        if (pkg == null) return false;
+        if (pkg.contains("meilox")) return true;
+        for (String p : STREAMING) {
+            if (pkg.startsWith(p)) return true;
+        }
+        return false;
+    }
+
     /** The same by package name, for a caller holding a queue rather than a session. */
     static String dirForPackage(String pkg) {
         if (pkg == null) {
             return null;
         }
-        if (pkg.contains("apple")) {
+        // By the package itself, not by a word in it: "apple" was found in any package that
+        // had it, and a player's ids looked up in another platform's directory come back as a
+        // well-formed lyric of some other song (see below).
+        if (pkg.startsWith("com.apple.android.music")) {
             return "am-lyrics";
         }
-        if (pkg.contains("spotify")) {
+        if (pkg.startsWith("com.spotify.music")) {
             return "spotify-lyrics";
         }
-        if (pkg.contains("qqmusic")) {
+        if (pkg.startsWith("com.tencent.qqmusic")) {
             return "qq-lyrics";
         }
         // MeiLoX is a NetEase client under its own name and publishes NetEase ids - measured,
         // not assumed: MEDIA_ID 2717588324 with cover art from p2.music.126.net.
-        if (pkg.contains("netease") || pkg.contains("cloudmusic") || pkg.contains("meilox")) {
+        if (pkg.startsWith("com.netease.cloudmusic") || pkg.contains("meilox")) {
             return "ncm-lyrics";
         }
         // Everyone else: no directory, so the database is not asked at all.
@@ -764,34 +778,29 @@ final class LyricSource {
             @Override
             public void run() {
                 Rows r = new Rows();
-                // Five sources, best first, each one asked only because the one before it came
-                // up empty. Every step falls through rather than stopping, which is the whole
-                // shape of this: a source that is present but useless - a provider module that
-                // wrote a lyricInfo it could not fill, an id the database does not have - used
-                // to end the search, and the song played on with nothing on screen while a
+                // A player of files is playing a file on this phone, and its lyric is the one
+                // the person keeps with it: read first, and kept over whatever the session or a
+                // module has, word-timed or not (#64 - a module's lyric was taking Salt's place).
+                // A streaming player's song is its catalogue's recording, which a file of the
+                // same name need not be; it reads the file only once everything else is empty.
+                boolean files = !streaming(pkg);
+                if (files) {
+                    local(ctx, controller, r);
+                }
+                // The sources after it, best first, each one asked only because the one before
+                // it came up empty. Every step falls through rather than stopping, which is the
+                // whole shape of this: a source that is present but useless - a provider module
+                // that wrote a lyricInfo it could not fill, an id the database does not have -
+                // used to end the search, and the song played on with nothing on screen while a
                 // perfectly good answer sat one step further down.
-                if (info != null) {
+                if (r.lines.isEmpty() && info != null) {
                     session(info, r);
                 }
                 // The bridge, when the session had nothing. Same standing as the session's own
                 // payload and for the same reason - both are the player's lyric, handed over by
-                // whoever managed to reach it - so it is asked here rather than below the file,
-                // and what it brings is word-timed often enough to keep the file out.
+                // whoever managed to reach it.
                 if (r.lines.isEmpty()) {
                     lyricon(controller, r);
-                }
-                // The file's own lyric, which outranks what the session is carrying - with one
-                // exception, and the exception is the reason the session is read first at all.
-                //
-                // For music on this phone the file is the authority: its lyric is the one the
-                // person keeps with it, and reading it cannot land on the wrong song. What the
-                // session has is usually that same lyric relayed by a provider module, so
-                // preferring the file costs nothing and stops depending on the module. But a
-                // module that has word timings publishes them in rawLyric, and no .lrc or tag
-                // has ever carried any - so when the session's answer is word-timed it is the
-                // better of two readings of the same words, and it keeps the screen.
-                if (!words(r.lines)) {
-                    local(ctx, controller, r);
                 }
                 if (r.lines.isEmpty() && (id != null || q != null)) {
                     race(gen, pkg, ctx, id, dir, q, r);
@@ -806,12 +815,258 @@ final class LyricSource {
                 // would otherwise show nothing at all.
                 if (r.lines.isEmpty() && q != null && !instrumental) {
                     web(pkg, q, r);
-                    dropPlaceholder(r);
+                    instrumental = dropPlaceholder(r);
+                }
+                // The file, for a streaming player, when nothing else had the song - and not
+                // when a catalogue placed it and said it has no words.
+                if (r.lines.isEmpty() && !files && !instrumental) {
+                    local(ctx, controller, r);
                 }
                 Xp.log("[MCLyric] " + pkg + " -> " + r.why);
                 onMain(cb, r.lines, r.why, r.source);
+                // Extra to the answer already sent, so nothing in it is worth a thread - and an
+                // uncaught throw on this one takes SystemUI with it.
+                try {
+                    borrow(gen, pkg, ctx, id, dir, q, r, cb);
+                } catch (Throwable t) {
+                    Xp.w("[MCLyric] borrowing a translation failed: " + t);
+                }
             }
         }, "MCLyricSource").start();
+    }
+
+    /**
+     * A lyric with no translation or no romanisation, given one out of another copy of the song -
+     * delivered as a second answer to the same lookup, once the first is already on screen.
+     *
+     * Whatever answered keeps its words and timing - the player's, the file's, the database's,
+     * a catalogue's - and only the translations and romanisations are taken from the other copy
+     * (LyricParse.borrow). Apple Music's lyric has no translation for most Japanese and English
+     * songs (#62); a file saved without one has none, nor does KuGou for many Japanese songs,
+     * and a romanisation is missing more often than not (#64). A translation is asked for when
+     * its switch is on, no line has one and the words are not Chinese; a romanisation when its
+     * switch is on, no line has one and the words are not in Latin letters - Chinese included,
+     * for a Cantonese song's jyutping. Never from the source that answered: it has just said it
+     * has none. Nothing is sent when nothing is found, and a newer lookup ends it like any other.
+     */
+    private static void borrow(int gen, String pkg, android.content.Context ctx, String id,
+                               String dir, NcmLyrics.Query q, Rows r, Callback cb) {
+        if (r.lines.isEmpty() || (id == null && q == null) || superseded(gen)) return;
+        boolean hasTrans = false;
+        boolean hasRoma = false;
+        for (LyricLine l : r.lines) {
+            hasTrans |= l.translation != null;
+            hasRoma |= l.roma != null;
+        }
+        boolean[] want = {
+                LockLyrics.sTrans && !hasTrans && LyricParse.foreign(r.lines),
+                LockLyrics.sRoma && !hasRoma && LyricParse.romanisable(r.lines),
+        };
+        if (!want[0] && !want[1]) return;
+        final int own = r.source;
+        // The lenders in the order their copies are preferred: the database and the hub (by id,
+        // hand-checked), the first two catalogues - all at once - then one search by a sung line,
+        // and only then the slow catalogues one after another. In the other order a song the
+        // line search finds at once waited out the slow route first - 11s for TIMELESS POWER
+        // (2026-10-06).
+        List<Lender> first = new ArrayList<>();
+        if (id != null && own != SRC_DATABASE) first.add(Lender.database(gen, id, dir));
+        if (id != null && own != SRC_HUB && TtmlHub.kindOf(dir) != null) {
+            first.add(Lender.hub(ctx, id, dir));
+        }
+        List<OnlineLyrics.Src> rest = new ArrayList<>();
+        if (q != null) {
+            // Not LrcLib: a plain LRC, never with a translation or a romanisation in it.
+            for (OnlineLyrics.Src s : OnlineLyrics.order(pkg)) {
+                if (OnlineLyrics.sourceOf(s) != own && s != OnlineLyrics.Src.LRCLIB) rest.add(s);
+            }
+            for (int i = 0; i < 2 && !rest.isEmpty(); i++) {
+                first.add(Lender.catalogue(rest.remove(0), q));
+            }
+        }
+        Borrowed b = new Borrowed(r.lines);
+        lendAll(gen, first, b, want);
+        // The rest only for a song none of those placed. One that placed it and had nothing to
+        // lend is a song with none to be had: the catalogues after it are no likelier to.
+        if ((want[0] || want[1]) && !b.placed) {
+            // By name the song was not there, or not this song: Apple renames Japanese songs
+            // into romaji and Chinese for its storefront here. Its own words are in hand, so they
+            // are asked instead (NcmLyrics.byLyric) - the line of ours most worth searching for.
+            String line = own == SRC_NETEASE ? null : searchLine(r.lines);
+            if (line != null && !superseded(gen)) {
+                NcmLyrics.Found f = NcmLyrics.byLyric(line, q == null ? 0L : q.durationMs);
+                if (f != null) {
+                    b.lend(LyricParse.parse(f.body, f.translation, f.roma),
+                            "NetEase " + f.id + " found by the line \"" + line + "\"", want);
+                }
+            }
+        }
+        for (int i = 0; i < rest.size() && (want[0] || want[1]) && !b.placed
+                && !superseded(gen); i++) {
+            Lender l = Lender.catalogue(rest.get(i), q);
+            l.run();
+            b.lend(l.lines, l.why, want);
+        }
+        if (superseded(gen)) return;
+        if (b.lines == r.lines) {
+            Xp.log("[MCLyric] " + pkg + ": nothing to borrow: " + b.why);
+            return;
+        }
+        String why = r.why + " + " + b.why;
+        Xp.log("[MCLyric] " + pkg + " -> " + why);
+        onMain(cb, b.lines, why, r.source);
+    }
+
+    /** The lines as borrowing has left them so far, and the account of what each lender gave. */
+    private static final class Borrowed {
+        List<LyricLine> lines;
+        String why = null;
+        /** Some lender had this song, whether or not it had what was wanted. */
+        boolean placed;
+
+        Borrowed(List<LyricLine> lines) {
+            this.lines = lines;
+        }
+
+        /** What `other` has of what is still wanted, taken; want is crossed off as it is. */
+        void lend(List<LyricLine> other, String from, boolean[] want) {
+            if (other == null || other.isEmpty() || !(want[0] || want[1])) return;
+            LyricParse.Lent l = LyricParse.borrow(lines, other, want[0], want[1]);
+            placed |= l.matched;
+            String got = l.translations > 0 && l.romas > 0 ? "translation and romanisation"
+                    : l.translations > 0 ? "translation" : l.romas > 0 ? "romanisation" : null;
+            why = join(why, got == null ? "not from " + from + " (" + l.why + ")"
+                    : got + " from " + from + " (" + l.why + ")");
+            if (got == null) return;
+            lines = l.lines;
+            if (l.translations > 0) want[0] = false;
+            if (l.romas > 0) want[1] = false;
+        }
+    }
+
+    /**
+     * The first lenders, all asked at once and lent from in their order: each is waited for
+     * while it is the best one left, so a slow database still beats a quick catalogue, and the
+     * wait ends as soon as nothing more is wanted.
+     */
+    private static void lendAll(int gen, final List<Lender> lenders, Borrowed b, boolean[] want) {
+        if (lenders.isEmpty()) return;
+        final BlockingQueue<Integer> done = new LinkedBlockingQueue<>();
+        for (int i = 0; i < lenders.size(); i++) {
+            final int slot = i;
+            new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        lenders.get(slot).run();
+                    } finally {
+                        done.offer(slot);
+                    }
+                }
+            }, "MCLyricLend").start();
+        }
+        boolean[] finished = new boolean[lenders.size()];
+        int next = 0;
+        long deadline = android.os.SystemClock.uptimeMillis() + RACE_BUDGET_MS;
+        while (next < lenders.size() && (want[0] || want[1])) {
+            if (finished[next]) {
+                if (superseded(gen)) return;
+                Lender l = lenders.get(next++);
+                b.lend(l.lines, l.why, want);
+                continue;
+            }
+            long left = deadline - android.os.SystemClock.uptimeMillis();
+            Integer slot = null;
+            try {
+                if (left > 0) slot = done.poll(left, TimeUnit.MILLISECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            if (slot == null) {
+                // Out of time for the one in line: the ones after it that did answer still lend.
+                for (int i = next + 1; i < lenders.size(); i++) {
+                    if (finished[i] && (want[0] || want[1])) {
+                        b.lend(lenders.get(i).lines, lenders.get(i).why, want);
+                    }
+                }
+                return;
+            }
+            finished[slot] = true;
+        }
+    }
+
+    /** One copy of the song to borrow from, fetched when run. */
+    private abstract static class Lender {
+        List<LyricLine> lines;
+        String why = "nothing";
+
+        abstract void fetch();
+
+        final void run() {
+            try {
+                fetch();
+            } catch (Throwable t) {
+                why = "error: " + t;
+            }
+        }
+
+        static Lender database(final int gen, final String id, final String dir) {
+            return new Lender() {
+                @Override
+                void fetch() {
+                    Rows r = new Rows();
+                    LyricSource.database(gen, id, dir, r);
+                    lines = r.lines;
+                    why = r.why;
+                }
+            };
+        }
+
+        static Lender hub(final android.content.Context ctx, final String id, final String dir) {
+            return new Lender() {
+                @Override
+                void fetch() {
+                    Rows r = new Rows();
+                    LyricSource.hub(ctx, id, dir, r);
+                    lines = r.lines;
+                    why = r.why;
+                }
+            };
+        }
+
+        static Lender catalogue(final OnlineLyrics.Src src, final NcmLyrics.Query q) {
+            return new Lender() {
+                @Override
+                void fetch() {
+                    OnlineLyrics.Found f = OnlineLyrics.ask(src, q);
+                    why = f == null ? "no match on " + src : f.who() + " " + f.id;
+                    lines = f == null ? null : LyricParse.parse(f.body, f.translation, f.roma);
+                }
+            };
+        }
+    }
+
+    /**
+     * The line of a lyric most worth searching the words for: the longest of its first two
+     * thirds, where the verses are rather than the credits or the repeated chorus at the end,
+     * and at least eight letters long, or null.
+     */
+    private static String searchLine(List<LyricLine> lines) {
+        String best = null;
+        int bestLen = 7;
+        int end = Math.max(1, lines.size() * 2 / 3);
+        for (int i = 0; i < end && i < lines.size(); i++) {
+            String t = lines.get(i).text.trim();
+            int len = 0;
+            for (int k = 0; k < t.length(); k++) {
+                if (Character.isLetterOrDigit(t.charAt(k))) len++;
+            }
+            if (len > bestLen) {
+                bestLen = len;
+                best = t;
+            }
+        }
+        return best;
     }
 
     /** Lines and the one-line account of where they came from, filled in by one source. */
@@ -1021,7 +1276,7 @@ final class LyricSource {
             r.why = r.lines.size() + " lines from the session's own lyricInfo (" + used
                     + (tr != null ? " + translation" : "") + ")";
         } catch (Throwable t) {
-            Xp.log("[MCLyric] lyricInfo parse failed: " + t);
+            Xp.w("[MCLyric] lyricInfo parse failed: " + t);
             r.lines = java.util.Collections.emptyList();
             r.why = "lyricInfo parse error";
         }
@@ -1050,29 +1305,16 @@ final class LyricSource {
             r.source = SRC_LYRICON;
             r.why = lines.size() + " lines from the Lyricon bridge";
         } catch (Throwable t) {
-            Xp.log("[MCLyric] the Lyricon bridge failed: " + t);
+            Xp.w("[MCLyric] the Lyricon bridge failed: " + t);
             r.why = join(before, "Lyricon error");
         }
-    }
-
-    /** Whether a set of rows carries word timings, which is what the session route can add. */
-    private static boolean words(List<LyricLine> lines) {
-        for (LyricLine l : lines) {
-            if (l.hasWords()) {
-                return true;
-            }
-        }
-        return false;
     }
 
     /**
      * The lyric shipped with the file being played, when the session is playing a file.
      *
-     * Replaces whatever the session gave us rather than falling through to it, because when both
-     * have something they have the same words and only one of them was read off the disk this
-     * song is playing from. A miss - a streaming player, a file with no lyric, a name that could
-     * not be matched - leaves r exactly as it was, so the session's answer stands and the
-     * catalogues below are still reached by a song that has neither.
+     * A miss - a file with no lyric, a name that could not be matched - leaves r exactly as it
+     * was, so the sources after it are still reached by a song that has none.
      */
     private static void local(android.content.Context ctx, MediaController c, Rows r) {
         String before = r.why;
@@ -1090,7 +1332,7 @@ final class LyricSource {
             r.source = SRC_LOCAL;
             r.why = lines.size() + " lines from " + f.how;
         } catch (Throwable t) {
-            Xp.log("[MCLyric] local lyric failed: " + t);
+            Xp.w("[MCLyric] local lyric failed: " + t);
         }
     }
 
@@ -1122,7 +1364,7 @@ final class LyricSource {
                     : r.lines.size() + " lines from " + dir;
             if (!r.lines.isEmpty()) r.source = SRC_DATABASE;
         } catch (Throwable t) {
-            Xp.log("[MCLyric] database lookup failed: " + t);
+            Xp.w("[MCLyric] database lookup failed: " + t);
             r.why = join(before, "database error");
         }
     }
@@ -1140,7 +1382,7 @@ final class LyricSource {
                     : r.lines.size() + " lines from the TTML Hub";
             if (!r.lines.isEmpty()) r.source = SRC_HUB;
         } catch (Throwable t) {
-            Xp.log("[MCLyric] TTML Hub lookup failed: " + t);
+            Xp.w("[MCLyric] TTML Hub lookup failed: " + t);
             r.why = "TTML Hub error";
         }
     }
@@ -1160,7 +1402,7 @@ final class LyricSource {
             }
             take(f, r, before);
         } catch (Throwable t) {
-            Xp.log("[MCLyric] the by-name lookup failed: " + t);
+            Xp.w("[MCLyric] the by-name lookup failed: " + t);
             r.why = join(before, "by-name error");
         }
     }
@@ -1176,7 +1418,7 @@ final class LyricSource {
             }
             take(f, r, before);
         } catch (Throwable t) {
-            Xp.log("[MCLyric] the second net failed: " + t);
+            Xp.w("[MCLyric] the second net failed: " + t);
             r.why = join(before, "second net error");
         }
     }
@@ -1335,7 +1577,7 @@ final class LyricSource {
                     + "ms (" + dir + "/" + id + ")");
             return new Answer(FOUND, body);
         } catch (Throwable t) {
-            Xp.log("[MCLyric] " + mirror[0] + " failed after "
+            Xp.w("[MCLyric] " + mirror[0] + " failed after "
                     + (android.os.SystemClock.uptimeMillis() - started) + "ms: " + t);
             return new Answer(UNREACHABLE, null);
         } finally {

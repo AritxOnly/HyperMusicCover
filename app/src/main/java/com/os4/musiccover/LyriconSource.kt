@@ -275,10 +275,16 @@ object LyriconSource {
         return out
     }
 
-    /** Whether the bridge's song is this track: a title that agrees, and an artist that does not disagree. */
+    /**
+     * Whether the bridge's song is this track: a title that agrees, and an artist that does not
+     * disagree - or, on the players that sing into TITLE, the song and singer ARTIST spells
+     * (TrackName.splits). Held against the title alone, 汽水's song was refused from its first
+     * sung line on, and the lookup went to the catalogues with the line as the song's name (#56).
+     */
     private fun isTrack(song: Song, title: String?, artist: String?): Boolean {
-        if (song.name.isNullOrBlank() || title.isNullOrBlank()) return false
-        return names(song.name, title) && names(song.artist, artist)
+        if (song.name.isNullOrBlank()) return false
+        if (!title.isNullOrBlank() && names(song.name, title) && names(song.artist, artist)) return true
+        return TrackName.pairIn(song.name, song.artist, artist)
     }
 
     /** Whether two names agree, or say nothing. A blank on either side is not a contradiction. */
@@ -325,14 +331,15 @@ object LyriconSource {
                 val s = starts.toIntArray()
                 val e = ends.toIntArray()
                 LyricParse.closeUntimedTail(s, e, line.end.toInt(), nextStart)
-                built = LyricLine(sb.substring(0, n), line.translation, line.begin.toInt(),
+                built = LyricLine(sb.substring(0, n), line.translation,
+                    LyricParse.romaOf(line.roma, sb.substring(0, n)), line.begin.toInt(),
                     line.end.toInt(), line.isAlignedRight, s, e, chars.toIntArray())
             }
         }
         if (built == null) {
             if (text.isEmpty()) return null
-            built = LyricLine(text, line.translation, line.begin.toInt(), line.end.toInt(),
-                line.isAlignedRight, null, null, null)
+            built = LyricLine(text, line.translation, LyricParse.romaOf(line.roma, text),
+                line.begin.toInt(), line.end.toInt(), line.isAlignedRight, null, null, null)
         }
         // The background vocal, which the renderer hangs under the line rather than beside it.
         val second = line.secondary?.trim()

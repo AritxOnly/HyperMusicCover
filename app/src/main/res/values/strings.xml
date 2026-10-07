@@ -20,6 +20,7 @@
     <string name="restart_menu">重启</string>
     <string name="restart_systemui">重启系统界面</string>
     <string name="restart_wallpaper">重启壁纸</string>
+    <string name="restart_confirm_summary">确认重启吗？</string>
 
     <string name="tab_home">主页</string>
     <string name="tab_settings">设置</string>
@@ -51,6 +52,11 @@
     <string name="export_settings_summary">将当前设置保存为 JSON 文件</string>
     <string name="import_settings">导入设置</string>
     <string name="import_settings_summary">从 JSON 文件导入设置</string>
+    <string name="settings_debug">调试</string>
+    <string name="log_level">日志等级</string>
+    <string name="log_level_summary">反馈问题前切到「详细」，再复现一次</string>
+    <string name="log_level_normal">普通</string>
+    <string name="log_level_verbose">详细</string>
     <string name="import_success">导入成功，即将重启应用</string>
     <string name="import_failed">导入失败，文件格式不正确</string>
     <string name="export_success">导出成功</string>
@@ -98,11 +104,12 @@
     <string name="home_status_active">模块已激活</string>
     <string name="home_status_inactive">模块未激活</string>
     <string name="home_status_inactive_hint">请在 LSPosed 中启用并重启系统界面</string>
+    <string name="home_stale_title">模块已更新</string>
+    <string name="home_stale_summary">%1$d 个进程还在运行旧版本，点按重启生效</string>
     <string name="home_device_name">设备名称</string>
     <string name="home_device_model">设备型号</string>
     <string name="home_hyperos_version">HyperOS 版本</string>
     <string name="home_android_version">Android 版本</string>
-    <string name="home_module_version">模块版本</string>
     <string name="home_unknown">未知</string>
     <string name="home_loading">加载中…</string>
     <string name="donate_title">捐赠支持</string>
@@ -118,6 +125,7 @@
     <string name="donate_save_failed">保存失败</string>
     <string name="card_section">媒体卡片</string>
     <string name="card_title_tap">点击歌名暂停播放</string>
+    <string name="media_bar_glow">进度条光效</string>
     <string name="lyrics_two_finger_tap">双指单击封面切换歌词</string>
     <!-- The provider module, in three states rather than two. "Installed" is not the question
          that matters - LyricInfo is an LSPosed module, and one that is installed but not enabled,
@@ -146,6 +154,7 @@
     <string name="lyrics_trans">显示翻译</string>
     <string name="lyrics_hide_aod">息屏时隐藏歌词</string>
     <string name="lyrics_hide_aod_summary">全屏息屏显示时隐藏滚动歌词，点亮后继续显示</string>
+    <string name="lyrics_roma">显示罗马音</string>
     <string name="lyrics_align">歌词对齐方式</string>
     <string name="lyrics_align_left">居左</string>
     <string name="lyrics_align_center">居中</string>
@@ -174,6 +183,7 @@
     <string name="update_failed">更新失败：%1$s</string>
     <string name="update_status_title">更新</string>
     <string name="update_no_installer">没有找到可以安装 APK 的应用，请在文件管理器里手动安装</string>
+    <string name="update_saved_to_downloads">没有应用能直接打开安装包，已保存到「下载/%1$s」，请在文件管理器里安装</string>
     <string name="update_confirm">更新</string>
     <string name="update_not_ours">更新包的签名不是本项目的，已丢弃</string>
     <string name="update_latest">已经是最新版本</string>
@@ -188,11 +198,44 @@
     <string name="features_shade_title">通控中心（实验性功能）</string>
     <string name="features_shade_summary">动态流光</string>
     <string name="features_mini_title">锁屏超级岛</string>
-    <string name="features_mini_summary">媒体控制、手势、尺寸与材质</string>
+    <string name="features_mini_summary">音乐、通知与导航</string>
+    <string name="features_transit_title">高德公交地铁</string>
+    <string name="features_transit_summary">逐站超级岛</string>
+
+    <!-- The bus and subway trip's page, which the features page opens: one switch. -->
+    <string name="transit_enabled">启用高德公交地铁</string>
 
     <string name="shade_enabled">启用流光效果</string>
     <string name="shade_section_behaviour">行为</string>
     <string name="shade_mode">生效范围</string>
     <string name="shade_mode_restore">系统默认</string>
     <string name="shade_mode_keep">保持音乐封面</string>
+
+    <!-- The islands' page, which the features page opens. The two rows here are the only settings
+         it has left; everything else about the pill is fixed. -->
+    <string name="mini_page_title">锁屏超级岛</string>
+    <string name="mini_enabled">启用锁屏超级岛</string>
+    <string name="mini_enabled_waiting">等待 SystemUI 模块响应</string>
+    <string name="mini_widen">快捷方式关闭时加宽</string>
+    <string name="mini_widen_summary">手电筒或相机关闭后占用空位</string>
+    <string name="mini_nav_keep_on">导航时屏幕常亮</string>
+    <string name="mini_status_at_date">状态显示在日期后面</string>
+    <string name="mini_status_at_date_summary">勿扰、充电不再被胶囊挡住</string>
+    <string name="mini_fod_lift">避开屏下指纹</string>
+    <string name="mini_fod_lift_summary">光学短焦指纹位置较低的机型，把胶囊抬到指纹区上方</string>
+    <string name="mini_nav_keep_on_summary">显示高德导航或公交页面时</string>
+
+    <!-- What the two demonstrations are called, page by page. Only the title: the page under it
+         plays what the module does, and the sentence that used to sit below the title said the
+         same thing in words (user, 2026-10-05). A page that is renamed must still describe the
+         behaviour its motion in CoverDemo or IslandDemo shows. -->
+    <string name="demo_cover_takeover_title">封面接管锁屏</string>
+    <string name="demo_cover_lyrics_title">锁屏歌词</string>
+    <string name="demo_cover_aod_title">息屏保持</string>
+    <string name="demo_island_switch_title">切换与打断</string>
+    <string name="demo_island_immersive_title">沉浸页面</string>
+    <string name="demo_island_stack_title">聚合岛</string>
+    <string name="demo_transit_island_title">解锁后的超级岛</string>
+    <string name="demo_transit_ride_title">逐站提醒</string>
+    <string name="demo_transit_alert_title">换乘与到站</string>
 </resources>

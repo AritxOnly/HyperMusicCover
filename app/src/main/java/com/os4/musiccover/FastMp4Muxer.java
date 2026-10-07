@@ -467,7 +467,7 @@ public class FastMp4Muxer {
             return true;
 
         } catch (Throwable t) {
-            Xp.log(TAG + "injectGpmdTrack failed: " + t);
+            Xp.w(TAG + "injectGpmdTrack failed: " + t);
             return false;
         }
     }

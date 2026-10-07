@@ -21,6 +21,8 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.os4.musiccover.LauncherIcon
 import com.os4.musiccover.LocaleHelper
+import com.os4.musiccover.LogLevel
+import com.os4.musiccover.LsposedService
 import com.os4.musiccover.R
 import com.os4.musiccover.SettingsBackup
 import com.os4.musiccover.ThemeActivity
@@ -151,6 +153,31 @@ fun SettingsPageView(
                             activity?.recreate()
                         },
                         onExpandedChange = { langExpanded = it }
+                    )
+                }
+
+                // For the user filing a report rather than for everyday use, so it comes after
+                // everything that changes the app and before the data rows only for grouping's
+                // sake. Every process the module is in follows it at once (LsposedService).
+                SmallTitle(text = stringResource(R.string.settings_debug))
+                Card(
+                    modifier = Modifier.padding(horizontal = 12.dp).padding(bottom = 12.dp)
+                ) {
+                    val levelNames = listOf(
+                        stringResource(R.string.log_level_normal),
+                        stringResource(R.string.log_level_verbose),
+                    )
+                    val levelValues = listOf(LogLevel.NORMAL, LogLevel.VERBOSE)
+                    var level by remember { mutableStateOf(LsposedService.logLevel(context)) }
+                    WindowDropdownPreference(
+                        title = stringResource(R.string.log_level),
+                        summary = stringResource(R.string.log_level_summary),
+                        items = levelNames,
+                        selectedIndex = levelValues.indexOf(level).coerceAtLeast(0),
+                        onSelectedIndexChange = {
+                            level = levelValues[it]
+                            LsposedService.setLogLevel(context, level)
+                        },
                     )
                 }
 

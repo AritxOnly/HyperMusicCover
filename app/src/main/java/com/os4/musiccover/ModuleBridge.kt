@@ -113,6 +113,8 @@ object ModuleBridge {
         val aodSmall: Boolean = true,
         /** Draw the big clock's colon on the styles that drop it. */
         val forceColon: Boolean = false,
+        /** Light the media card's progress bar the way the island's is lit (#49). On by default. */
+        val mediaBarGlow: Boolean = true,
         /**
          * Lock screen lyrics, between the collapsed clock and the card. On, and not a setting:
          * the two-finger tap on the lock screen is what asks for the cover instead.
@@ -125,6 +127,8 @@ object ModuleBridge {
         /** Draw each line's translation under it. On unless the user turns it off. */
         val lyricsTrans: Boolean = true,
         val lyricsHideAod: Boolean = false,
+        /** Draw each line's romanisation under it, over the translation. Off by default. */
+        val lyricsRoma: Boolean = false,
         /** Where the lines settle in their column: 0 left, 1 centre, 2 right. */
         val lyricsAlign: Int = 0,
         /** The lyric band's height as a share of the room between the clock and the card. */
@@ -161,6 +165,8 @@ object ModuleBridge {
         val lyriconInstalled: Boolean = false,
         /** 0 system default, 1 never avoid the fingerprint icon, 2 always avoid it. */
         val fpAvoid: Int = 0,
+        /** 「高德公交地铁」: the trip's island and lock screen page (AmapTransitScene.sOn). */
+        val transit: Boolean = true,
         /**
          * The notification-shade settings, keyed exactly as the module's own CFG_KEYS.
          *
@@ -321,6 +327,21 @@ object ModuleBridge {
     /** Whether the module that last answered acknowledges ops. Learned from [query]. */
     @Volatile private var moduleAcks = false
 
+    /** The last answer [query] gave, good or bad, and null until someone asks in this process. */
+    @Volatile private var lastQuery: State? = null
+
+    /**
+     * The last answer any page got, or null while nobody has asked yet.
+     *
+     * A page the pager throws away and builds again (MainActivity's beyondViewportPageCount keeps
+     * one page either side, so the home page dies whenever the user is two tabs away) has nothing
+     * of its own to draw until a fresh answer lands - and the state it would otherwise start from
+     * says the module is dead, which is a red card for as long as the broadcast takes. KernelSU
+     * holds the same answer in a ViewModel its home page cannot take down with it (HomeViewModel);
+     * this is that idea without a ViewModel, in the one object every page already asks.
+     */
+    fun lastAnswer(): State? = lastQuery
+
     /** When SystemUI was last restarted from here, or seen to go; see [queryAlive]. */
     @Volatile private var restartingSince = 0L
 
@@ -417,6 +438,9 @@ object ModuleBridge {
     fun setForceColon(context: Context, on: Boolean) =
         send(context, "colon") { putExtra("on", on) }
 
+    fun setMediaBarGlow(context: Context, on: Boolean) =
+        send(context, "seekglow") { putExtra("on", on) }
+
     /** The lyrics are always on now; this is how they are turned off for a session. */
     fun setLyrics(context: Context, on: Boolean) =
         send(context, "lyrics") { putExtra("on", on) }
@@ -432,6 +456,8 @@ object ModuleBridge {
 
     fun setLyricsHideAod(context: Context, on: Boolean) =
         send(context, "lyrichideaod") { putExtra("on", on) }
+    fun setLyricsRoma(context: Context, on: Boolean) =
+        send(context, "lyricroma") { putExtra("on", on) }
 
     fun setLyricsAlign(context: Context, mode: Int) =
         send(context, "lyricalign") { putExtra("v", mode) }
@@ -450,6 +476,10 @@ object ModuleBridge {
 
     fun setFingerprintAvoid(context: Context, mode: Int) =
         send(context, "fpavoid") { putExtra("mode", mode) }
+
+    /** 「高德公交地铁」. SystemUI holds it and tells 高德, whose process posts the island. */
+    fun setTransit(context: Context, on: Boolean) =
+        send(context, "transitcfg") { putExtra("on", on) }
 
     /**
      * One shade setting, by the module's own key.
@@ -486,14 +516,15 @@ object ModuleBridge {
             }
         }
         if (wasSendingMini || sendSeq != before) b = ask(context, "query")
-        val state = fromBundle(b)
-        if (!state.alive) return state
+        var state = fromBundle(b)
+        if (!state.alive) return state.also { lastQuery = it }
         moduleAcks = b?.getBoolean("acks", false) == true
         // Whatever was set while it was away goes first, and the answer is asked for again so
         // the page shows those settings rather than the values they replaced.
         if (pending.isNotEmpty() && flush(context.applicationContext)) {
-            return fromBundle(ask(context, "query"))
+            state = fromBundle(ask(context, "query"))
         }
+        lastQuery = state
         return state
     }
 
@@ -681,13 +712,6 @@ object ModuleBridge {
     private class Reply(val code: Int, val extras: Bundle?, val data: String? = null)
 
     /**
-     * The module's `op edge` report as text: the islands' outlines, material and rim pixels,
-     * for a tester to paste into an issue. Null when the module did not answer.
-     */
-    suspend fun edgeReport(context: Context): String? =
-        broadcast(context.applicationContext, intent("edge"), timeoutMs = 5000L)?.data
-
-    /**
      * The ordered broadcast under both [ask] and [send]. It comes back even when no receiver is
      * registered - with the 0 it was sent with and no extras - so null here means only that the
      * timeout ran out first.
@@ -758,12 +782,14 @@ object ModuleBridge {
             hideFingerprint = b.getBoolean("hidefp", false),
             aodSmall = b.getBoolean("aodsmall", true),
             forceColon = b.getBoolean("colon", false),
+            mediaBarGlow = b.getBoolean("seekglow", true),
             lyrics = b.getBoolean("lyrics", true),
             lyricsKeepOn = b.getBoolean("lyrickeep", false),
             lyricsHdr = b.getBoolean("lyrichdr", false),
             // Defaults the other way: this one is on for anyone whose module predates the key.
             lyricsTrans = b.getBoolean("lyrictrans", true),
             lyricsHideAod = b.getBoolean("lyrichideaod", false),
+            lyricsRoma = b.getBoolean("lyricroma", false),
             lyricsAlign = b.getInt("lyricalign", 0),
             lyricFill = b.getFloat("lyricfill", 1f),
             lyricPos = b.getFloat("lyricpos", 0.5f),
@@ -774,6 +800,7 @@ object ModuleBridge {
             lyricSource = b.getString("lyricsrc") ?: "none",
             lyriconInstalled = b.getBoolean("lyricon", false),
             fpAvoid = b.getInt("fpavoid", 0),
+            transit = b.getBoolean("transit", true),
             shade = b.keySet()
                 .filter { it.startsWith("shade_") }
                 .associate { it.removePrefix("shade_") to b.getInt(it, 0) },
@@ -817,10 +844,17 @@ object ModuleBridge {
     fun restartWallpaper(): Boolean = kill("com.miui.miwallpaper")
 
     /**
-     * Every process the module is scoped to, in one go.
+     * Every process the module is loaded into, in one go.
      *
-     * Read from the scope list the module ships rather than hard-coded, so this keeps meaning
-     * "everything the module touches" if that list ever grows.
+     * Asked of LSPosed first (LsposedService.runningTargets): the packages the user actually
+     * enabled, their sub-processes included, and nothing that is not running - a player or 高德
+     * the module is not enabled in is left alone.
+     *
+     * Without the service, the scope the APK ships, from META-INF/xposed/scope.list - the list
+     * LSPosed itself installs the module by. It was read from the legacy `xposedscope` array, which
+     * nothing kept in step: 高德 and 小爱建议 were added to scope.list only, so their processes went
+     * on running the old module after an update (2026-10-07). The array is the last fallback, and
+     * ScopeListTest holds the two equal.
      *
      * A package's own name is not enough any more. The lock screen editor runs as
      * `com.miui.aod:keyguardeditor`, and `pidof` matches a process name exactly - so the entry
@@ -829,11 +863,21 @@ object ModuleBridge {
      */
     fun restartScope(context: Context): Boolean {
         restartingSince = SystemClock.elapsedRealtime()
-        val scoped = context.resources.getStringArray(R.array.xposedscope)
+        val running = LsposedService.runningTargets()
+        if (!running.isNullOrEmpty()) return running.map { killPid(it.pid) }.all { it }
+        val scoped = shippedScope() ?: context.resources.getStringArray(R.array.xposedscope).toList()
         var all = true
         for (pkg in scoped) if (!killTree(pkg)) all = false
         return all
     }
+
+    /** The packages in the APK's own scope.list, one a line; null when it cannot be read. */
+    private fun shippedScope(): List<String>? = runCatching {
+        ModuleBridge::class.java.classLoader!!.getResourceAsStream("META-INF/xposed/scope.list")
+            .bufferedReader().useLines { lines ->
+                lines.map { it.trim() }.filter { it.isNotEmpty() && !it.startsWith("#") }.toList()
+            }
+    }.getOrNull()?.takeIf { it.isNotEmpty() }
 
     /**
      * The package's process and every `package:name` process under it.
@@ -848,6 +892,12 @@ object ModuleBridge {
             arrayOf("su", "-c", "pkill -f '^$pkg(\$|:)' ; true"),
         )
         p.waitFor() == 0
+    } catch (_: Throwable) {
+        false
+    }
+
+    private fun killPid(pid: Int): Boolean = try {
+        Runtime.getRuntime().exec(arrayOf("su", "-c", "kill $pid")).waitFor() == 0
     } catch (_: Throwable) {
         false
     }
