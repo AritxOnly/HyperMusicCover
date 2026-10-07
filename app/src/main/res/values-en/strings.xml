@@ -225,6 +225,8 @@
     <string name="mini_marquee_summary">Scroll titles and subtitles that do not fit. When off, shorten them with an ellipsis</string>
     <string name="mini_widen">Widen when a shortcut is off</string>
     <string name="mini_widen_summary">Takes the flashlight or camera space when it is off</string>
+    <string name="mini_normals_in_stack">Keep ordinary notifications off islands</string>
+    <string name="mini_normals_in_stack_summary">Keep messages in the system notification list. Music, navigation and timers still appear as islands. Turn off to include ordinary notifications in islands</string>
     <string name="mini_nav_keep_on">Keep the screen on while navigating</string>
     <string name="mini_status_at_date">Status after the date</string>
     <string name="mini_status_at_date_summary">Keeps Do Not Disturb and charging clear of the pill</string>

@@ -235,6 +235,8 @@
     <string name="mini_marquee_summary">标题或副标题显示不全时自动滚动；关闭后用省略号截断</string>
     <string name="mini_widen">快捷方式关闭时加宽</string>
     <string name="mini_widen_summary">手电筒或相机关闭后占用空位</string>
+    <string name="mini_normals_in_stack">普通通知不上岛</string>
+    <string name="mini_normals_in_stack_summary">消息通知留在系统通知列表，音乐、导航、倒计时等照常上岛；关闭后普通通知也会合并到锁屏岛</string>
     <string name="mini_nav_keep_on">导航时屏幕常亮</string>
     <string name="mini_status_at_date">状态显示在日期后面</string>
     <string name="mini_status_at_date_summary">勿扰、充电不再被胶囊挡住</string>

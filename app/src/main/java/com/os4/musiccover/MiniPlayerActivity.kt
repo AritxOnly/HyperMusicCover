@@ -118,6 +118,7 @@ private fun MiniPlayerPage(blur: Boolean, refreshKey: Int, onBack: () -> Unit) {
                         summary = stringResource(R.string.mini_group_by_app_summary),
                         checked = config.optBoolean(MiniPlayerConfig.GROUP_NOTIFICATIONS_BY_APP),
                         enabled = ready && config.optBoolean(MiniPlayerConfig.ENABLED) &&
+                            !config.optBoolean(MiniPlayerConfig.NORMALS_IN_STACK, true) &&
                             config.optInt(MiniPlayerConfig.STYLE) == MiniPlayerConfig.STYLE_STACK,
                         onCheckedChange = { push(MiniPlayerConfig.GROUP_NOTIFICATIONS_BY_APP, it) })
                     SwitchPreference(title = stringResource(R.string.mini_media_collapsed),
@@ -164,6 +165,11 @@ private fun MiniPlayerPage(blur: Boolean, refreshKey: Int, onBack: () -> Unit) {
                         checked = config.optBoolean(MiniPlayerConfig.MARQUEE, true),
                         enabled = ready && config.optBoolean(MiniPlayerConfig.ENABLED),
                         onCheckedChange = { push(MiniPlayerConfig.MARQUEE, it) })
+                    SwitchPreference(title = stringResource(R.string.mini_normals_in_stack),
+                        summary = stringResource(R.string.mini_normals_in_stack_summary),
+                        checked = config.optBoolean(MiniPlayerConfig.NORMALS_IN_STACK, true),
+                        enabled = ready && config.optBoolean(MiniPlayerConfig.ENABLED),
+                        onCheckedChange = { push(MiniPlayerConfig.NORMALS_IN_STACK, it) })
                     SwitchPreference(title = stringResource(R.string.mini_nav_keep_on),
                         summary = stringResource(R.string.mini_nav_keep_on_summary),
                         checked = config.optBoolean(MiniPlayerConfig.NAV_KEEP_ON),

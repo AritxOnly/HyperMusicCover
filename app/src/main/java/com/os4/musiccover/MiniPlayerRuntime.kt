@@ -100,7 +100,9 @@ object MiniPlayerRuntime {
 
     private fun syncNotificationGrouping(context: Context) {
         val config = JSONObject(configJson(context))
+        LockIslands.setNormalsInStack(config.optBoolean(MiniPlayerConfig.NORMALS_IN_STACK, true))
         LockIslands.setGroupByApp(config.optBoolean(MiniPlayerConfig.ENABLED) &&
+            !config.optBoolean(MiniPlayerConfig.NORMALS_IN_STACK, true) &&
             config.optInt(MiniPlayerConfig.STYLE) == MiniPlayerConfig.STYLE_STACK &&
             config.optBoolean(MiniPlayerConfig.GROUP_NOTIFICATIONS_BY_APP))
     }

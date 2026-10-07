@@ -282,7 +282,7 @@ internal object LockIslands {
         groupByApp = value
         stackOut = false
         released.removeAll(::isAppGroup)
-        if (NumState.available) NumState.setFolding(!value && active)
+        if (NumState.available) NumState.setFolding(nativeStack && active)
         if (value) buildAppGroups(stackFrom) else {
             appGroupNotes = emptyMap()
             appGroupFrom = emptyMap()
@@ -295,15 +295,19 @@ internal object LockIslands {
     /** The stack island tapped open: all of its notifications back in the stack, new ones too. */
     private var stackOut = false
 
-    /**
-     * For NumStateProbe: ordinary notifications left in the stack instead of the stack island,
-     * so the stack's own "N notifications" state can be looked at with them in it. Not saved.
-     */
-    @Volatile private var probeNormalsInStack = false
+    /** Persisted by MiniPlayerConfig; the probe may override it until settings are reread. */
+    @Volatile private var normalsInStack = true
 
-    @JvmStatic fun setProbeNormalsInStack(on: Boolean) {
-        probeNormalsInStack = on
-        invalidate("probe: ordinary notifications ${if (on) "in the stack" else "in the island"}")
+    @JvmStatic fun setNormalsInStack(on: Boolean) {
+        if (normalsInStack == on) return
+        normalsInStack = on
+        stackOut = false
+        released.removeAll(::isAppGroup)
+        // Restore the OEM fold and count with its ordinary rows. Keeping our forced fold
+        // after removing the aggregate island would leave those rows hidden.
+        NumState.setFolding(nativeStack && active)
+        publish()
+        invalidate("ordinary notifications ${if (on) "in the stack" else "in the island"}")
     }
 
     /**
@@ -316,7 +320,7 @@ internal object LockIslands {
      *
      * Only with NumState's hooks in; without them, the old way.
      */
-    private val nativeStack get() = NumState.available && !groupByApp
+    private val nativeStack get() = NumState.available && !groupByApp && !normalsInStack
 
     /** For the controller: the stack island opens as the stack's list (openStack), no flight. */
     fun foldsNatively(): Boolean = nativeStack
@@ -425,7 +429,7 @@ internal object LockIslands {
     /** For `op mini`: what the filter has, and whether the stack is leaving it out. */
     fun describe(): String = "islands active=$active cover=$cover filter=${filter?.get() != null} " +
         "released=${released.size} stack=${stackMembers.size}${if (stackOut) "/out" else ""}" +
-        " appGroups=$groupByApp notes=" + notes.joinToString(",") {
+        " normalsInStack=$normalsInStack appGroups=$groupByApp notes=" + notes.joinToString(",") {
             (if (it.focus) "F:" else "") + (if (it.redacted) "R:" else "") + it.pkg +
                 (if (!it.focus || it.redacted) "<${it.iconFrom}>" else "") +
                 "[${it.property}/${it.priority}${if (it.order) "/o" else ""} " +
@@ -672,7 +676,7 @@ internal object LockIslands {
         }
         lockedRun = true
         val note = read(entry, redacted(filterObject, entry)) ?: return false
-        if (!note.focus && probeNormalsInStack) return false
+        if (!note.focus && normalsInStack) return false
         // Folded natively, an ordinary notification is read for the stack island and left in
         // the stack: the stack's own fold hides it.
         if (!note.focus && nativeStack) {
@@ -895,7 +899,8 @@ internal object LockIslands {
         val stack = stackNote?.takeIf { !stackOut }
         // Spread out, the count stays hidden too: the row folding back comes into its place.
         if (nativeStack) NumState.hideCount(spreading || active && stack != null)
-        val ordinary = if (groupByApp) appGroupNotes.values.filter { it.key !in released }
+        val ordinary = if (normalsInStack) emptyList()
+            else if (groupByApp) appGroupNotes.values.filter { it.key !in released }
             else listOfNotNull(stack)
         val next = (focusShown + ordinary).sortedWith(bigFirst)
         // Unchanged is the same reading (read() hands back the cached note): by key and time, a
