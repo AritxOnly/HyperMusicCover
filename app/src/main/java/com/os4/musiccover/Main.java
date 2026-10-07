@@ -872,6 +872,7 @@ public class Main extends XposedModule {
         try {
             Xp.hookAll(owner, method, chain -> {
                 LockLyrics.lockScreenLeaving(tag);
+                main().post(ImmersiveHost::onLockScreenLeaving);
                 main().post(kickLyrics);
                 main().postDelayed(kickLyrics, 160L);
                 return chain.proceed();

@@ -43,9 +43,10 @@ import java.util.Set;
  * Opening and closing on the lit lock screen crossfade the page with what is under it, over the
  * cover's own crossfade (Main.fadeMsFor the clock's response, eased out the same way), so the
  * page arrives with the clock. Closed, the clock starts home at once and the page fades out with
- * it; turned round half way, the fade turns from where it is. Everything else - an unlock, the
- * doze, the shade over an app - is a cut, as it always was: those go with the lock screen's own
- * motion, and a page fading there would be one left behind.
+ * it; turned round half way, the fade turns from where it is. An unlock fades the page out with
+ * the lock screen's own content as that starts to leave (onLockScreenLeaving). Everything else -
+ * the doze, the shade over an app - is a cut, as it always was: those go with the lock screen's
+ * own motion, and a page fading there would be one left behind.
  *
  * The page is blurred above and below the band it keeps its information in (EdgeBlurView,
  * ImmersiveScene.sharpBand), which is where the clock and the cards sit over it.
@@ -429,8 +430,8 @@ final class ImmersiveHost {
     /** From LockIslands: the scene's island was tapped open. */
     static void open(ImmersiveScene scene) {
         if (sOpen == scene && !sYield) return;
-        // Another page on the lit lock screen - just closed for this one, or still open: the two
-        // crossfade. The new one then appears as opened pages do, from nothing - or, when it is
+        // Another page on the lit lock screen - just closed for this one, or still open: the one
+        // dips out and the other in (SWAP_OUT_SHARE). The new one appears from nothing - or, when it is
         // the one still fading out of the last crossfade, from where it has got to: a run of
         // taps between two islands turns the two fades round rather than restarting them.
         float backFrom = scene == sSwapOut ? sSwapFade : Float.NaN;
@@ -1059,8 +1060,11 @@ final class ImmersiveHost {
         if (!shown) {
             stopFade();
             sFade = sFadeTo = 1f;
+            sExiting = false;
             return;
         }
+        // Going with the lock screen's content (onLockScreenLeaving): not brought back meanwhile.
+        if (sExiting) return;
         boolean leaving = page == sLeaving;
         if (!sShown) {
             // Appearing.
@@ -1083,6 +1087,59 @@ final class ImmersiveHost {
         startFade(page, to, leaving && sLeaveOntoCover);
     }
 
+    /**
+     * How long the page takes to go once the lock screen starts to leave. An unlock is otherwise a
+     * cut, at the window's going - but HyperOS fades the lock screen's own content out first, over
+     * about this long, and a page left standing at full strength through that went a beat after
+     * everything else (filmed 2026-10-07: four frames at 30fps with the clock and the shortcuts
+     * gone and the page still there).
+     */
+    private static final long EXIT_FADE_MS = 120L;
+    /** How long an exit that did not take the lock screen away holds the page down. */
+    private static final long EXIT_GIVE_UP_MS = 1500L;
+    private static boolean sExiting;
+
+    /** The lock screen started leaving (KeyguardService's exit animation). Main thread. */
+    static void onLockScreenLeaving() {
+        final ImmersiveScene page = sOpen;
+        if (!sShown || page == null || sExiting) return;
+        sExiting = true;
+        stopFade();
+        final float from = sFade;
+        sFadeTo = 0f;
+        ValueAnimator a = ValueAnimator.ofFloat(0f, 1f);
+        a.setDuration(EXIT_FADE_MS);
+        a.setInterpolator(t -> 1f - (1f - t) * (1f - t) * (1f - t));
+        a.addUpdateListener(an -> {
+            if (sFadeAnim != an) return;
+            sFade = from * (1f - (float) an.getAnimatedValue());
+            setPageFade(page, sFade);
+        });
+        sFadeAnim = a;
+        a.start();
+        sMain.removeCallbacks(EXIT_GIVE_UP);
+        sMain.postDelayed(EXIT_GIVE_UP, EXIT_GIVE_UP_MS);
+        Xp.log(TAG + "lock screen leaving: " + page.id() + " goes with it");
+    }
+
+    /** Still on a lit lock screen after an exit: it was not one, and the page comes back. */
+    private static final Runnable EXIT_GIVE_UP = () -> {
+        if (!sExiting) return;
+        if (!onLockScreen() || !screenOn()) return;
+        sExiting = false;
+        sFadeTo = sFade;
+        Xp.log(TAG + "lock screen stayed: the page comes back");
+        apply();
+    };
+
+    /**
+     * An exchange between two pages is a dip, not a crossfade: the one going out takes this share
+     * of the fade, and the one coming in waits this much of its own before it starts - by then
+     * the other is at under 1%.
+     */
+    private static final float SWAP_OUT_SHARE = 0.5f;
+    private static final float SWAP_IN_DELAY = 0.4f;
+
     /** @param late the curve that keeps the page until the cover under it is mostly in */
     private static void startFade(final ImmersiveScene page, final float to, boolean late) {
         stopFade();
@@ -1099,6 +1156,13 @@ final class ImmersiveHost {
             a.setInterpolator(t -> {
                 float e = 1f - (1f - t) * (1f - t) * (1f - t);
                 return e * e;
+            });
+        } else if (to > from && sSwapOut != null) {
+            // Coming in over a page going out: not until that one has all but gone. Two pages of
+            // words crossfaded read as one jumble for the middle of it (2026-10-07).
+            a.setInterpolator(t -> {
+                float u = Math.max(0f, (t - SWAP_IN_DELAY) / (1f - SWAP_IN_DELAY));
+                return 1f - (1f - u) * (1f - u) * (1f - u);
             });
         } else {
             a.setInterpolator(t -> 1f - (1f - t) * (1f - t) * (1f - t));
@@ -1148,7 +1212,7 @@ final class ImmersiveHost {
         sSwapOut = out;
         final float from = sFade;
         sSwapFade = from;
-        long ms = Math.max(1L, Math.round(Main.fadeMsFor(Main.sClockResponse) * from));
+        long ms = Math.max(1L, Math.round(Main.fadeMsFor(Main.sClockResponse) * from * SWAP_OUT_SHARE));
         ValueAnimator a = ValueAnimator.ofFloat(0f, 1f);
         a.setDuration(ms);
         a.setInterpolator(t -> 1f - (1f - t) * (1f - t) * (1f - t));
