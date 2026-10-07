@@ -18,6 +18,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import com.os4.musiccover.ui.screen.features.TransitDemo
 import com.os4.musiccover.ui.theme.AppTheme
 import com.os4.musiccover.ui.util.PageScaffold
 import top.yukonga.miuix.kmp.basic.Card
@@ -77,6 +78,13 @@ private fun TransitPage(blur: Boolean, refreshKey: Int, onBack: () -> Unit) {
 
     PageScaffold(title = stringResource(R.string.features_transit_title), isBlurEnabled = blur,
         onBack = onBack) {
+        item {
+            // What the trip's island does, played on a drawn phone, before the switch (as the
+            // islands' own page has it).
+            Card(Modifier.padding(horizontal = 12.dp).padding(top = 12.dp)) {
+                TransitDemo(Modifier.padding(top = 16.dp))
+            }
+        }
         item {
             Card(Modifier.padding(horizontal = 12.dp).padding(top = 12.dp)) {
                 // Only an answer can put this on (ShadePageView says why).

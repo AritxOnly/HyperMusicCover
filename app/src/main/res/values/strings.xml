@@ -231,4 +231,7 @@
     <string name="demo_island_switch_title">切换与打断</string>
     <string name="demo_island_immersive_title">沉浸页面</string>
     <string name="demo_island_stack_title">聚合岛</string>
+    <string name="demo_transit_island_title">解锁后的超级岛</string>
+    <string name="demo_transit_ride_title">逐站提醒</string>
+    <string name="demo_transit_alert_title">换乘与到站</string>
 </resources>

@@ -217,4 +217,7 @@
     <string name="demo_island_switch_title">Switching and interrupting</string>
     <string name="demo_island_immersive_title">Immersive pages</string>
     <string name="demo_island_stack_title">The stack island</string>
+    <string name="demo_transit_island_title">The super island when unlocked</string>
+    <string name="demo_transit_ride_title">Stop by stop</string>
+    <string name="demo_transit_alert_title">Transfers and arrival</string>
 </resources>
