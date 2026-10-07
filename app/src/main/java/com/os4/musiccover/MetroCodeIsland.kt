@@ -1,0 +1,746 @@
+package com.os4.musiccover
+
+import android.app.Application
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.content.BroadcastReceiver
+import android.content.ComponentName
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.RectF
+import android.graphics.drawable.Icon
+import android.net.Uri
+import android.os.Bundle
+import org.json.JSONArray
+import org.json.JSONObject
+
+/**
+ * 小爱建议's subway ride-code card, as a focus island.
+ *
+ * Near a station, Xiaomi's cloud hands the assistant an intention whose card is
+ * SmallMetroCodeWidgetProvider (topic `metro_qr_code.*`): the station, the city, its lines and the
+ * app the code opens in. The card lives in the 小爱建议 widget only and never reaches the island.
+ *
+ * Run inside 小爱建议 (com.miui.personalassistant) and posted as it. Both ways the assistant gets
+ * its cards are read (personalassistant 25.41.82.00):
+ *   - pulled: ServiceCardDataFetchTask.getIntentServiceList asks the engine's
+ *     `content://com.xiaomi.aireco.intention.AssistantContentProvider` for `getIntentionData`;
+ *     the answer's `data` is the JSON list of intentions. Read off ContentResolver.call.
+ *   - pushed: the engine calls ServiceDeliverSystemProvider.call("localDirectRefresh"), and the
+ *     assistant sends the cards out as `com.miui.servicedelivery.updateDataSet`, `deliveryEntity`
+ *     the Gson of ServiceDeliveryEntity. Heard with a receiver of our own, here.
+ * The list's items carry instanceId, target, periodList, extraInfo and slots. Each list is the
+ * whole set: one without the card takes the island down, as does `completeService` naming its
+ * instanceId, and the intention's own period ends it as a backstop.
+ *
+ * The slots are the ones SmallMetroCodeWidgetProvider.h reads: location_name, city_name,
+ * line_info (a JSON object of line name to colour), package_name, often_package_name,
+ * intent_content, app_title, default_flag. The education card (asking for the location
+ * permission) and the default card (「智能感知站点」, no station) are not islands.
+ *
+ * The card is drawn after 小米智能卡's 「简洁刷卡」 island, from its own layout ([official]); this
+ * module's template is kept for a phone without it.
+ *
+ * A tap is the widget's own tap: the island opens the assistant's RouterActivity, which hands the
+ * card to a SmallMetroCodeWidgetProvider of its own - h() to take the intention, onReceive with
+ * requestCode 6100 to open the code (the picked app, the card's intent, 支付宝; 微信's through
+ * 小爱). [opener] is what is opened should that fail.
+ */
+internal object MetroCodeIsland {
+
+    private const val TAG = "MCMetro: "
+    private const val ACTION_UPDATE = "com.miui.servicedelivery.updateDataSet"
+    private const val ACTION_COMPLETE = "com.miui.servicedelivery.completeService"
+    private const val EXTRA_ENTITY = "deliveryEntity"
+    private const val EXTRA_IDS = "instanceIds"
+    private const val ACTION_DISMISS = "com.os4.musiccover.METRO_DISMISSED"
+    /** The probe: `am broadcast -a com.os4.musiccover.METRO -p com.miui.personalassistant`. */
+    private const val ACTION_PROBE = "com.os4.musiccover.METRO"
+
+    const val PKG = "com.miui.personalassistant"
+    /** 小米智能卡, whose 「简洁刷卡」 island [official] is drawn after. */
+    private const val TSM = "com.miui.tsmclient"
+    private const val ROUTER = "com.miui.personalassistant.service.aireco.common.ui.RouterActivity"
+    private const val INTENTION =
+        "com.miui.personalassistant.service.aireco.common.entity.intention.IntentionData"
+    private const val GET_INTENTION = "getIntentionData"
+    private const val TYPE = "mc_metro_code"
+    private const val EXTRA_CARD = "mc_metro_card"
+    /** The widget's own extras for a tap: BaseWidgetProvider.onReceive and SmallMetroCode...e. */
+    private const val EXTRA_REQUEST = "request_code"
+    private const val EXTRA_WIDGET = "appWidgetId"
+    private const val EXTRA_INTENT_OPTION = "miuiDeliveryIntentExtraOption"
+    private const val CLICK = 6100
+
+    private const val PROVIDER =
+        "com.miui.personalassistant.service.aireco.metro_code.widget.SmallMetroCodeWidgetProvider"
+    private const val TOPIC = "metro_qr_code."
+    private const val TOPIC_EDU = "metro_qr_code.metro_qr_code_education.metro_education"
+
+    private const val ID = 1240
+    private const val CHANNEL = "mc_metro_code"
+    private const val PIC = "miui.focus.pic_mc_metro"
+    private const val PIC_APP = "miui.focus.pic_mc_metro_app"
+
+    private const val ALIPAY = "com.eg.android.AlipayGphone"
+    private const val MI_NFC = "com.miui.tsmclient"
+    /** 支付宝's ride code, without the widget's channel tags. */
+    private const val ALIPAY_METRO = "alipays://platformapi/startapp?appId=20002047&scene=metro"
+    /** 小米智能卡's swipe page, as MetroCodeWidgetHelper.b opens it. */
+    private const val MI_NFC_URI = "intent://tsmclient.mi.com/swiping?event_source=double_click_power" +
+        "&card_group_id=1&from=com.xiaomi.aireco#Intent;scheme=https;package=com.miui.tsmclient;end"
+
+    /** The island's blue where the card names no line. */
+    private const val BLUE = 0xff3482ff.toInt()
+    /** An intention with no period is given this long. */
+    private const val DEFAULT_LIFE = 30 * 60_000L
+    private const val MIN_LIFE = 60_000L
+    private const val MAX_LIFE = 3 * 3600_000L
+
+    private class Station(
+        val instanceId: String,
+        val location: String,
+        val city: String,
+        val lines: List<Pair<String, Int>>,
+        val pkg: String,
+        val oftenPkg: String,
+        val intentContent: String,
+        val appTitle: String,
+        /** Wall-clock end of the intention's period, 0 for none. */
+        val end: Long,
+        /** The intention as the widget's IntentionData reads it, for the tap. */
+        val card: String,
+    ) {
+        val name get() = location.ifEmpty { if (city.isNotEmpty()) city + "地铁" else "地铁站" }
+        fun key() = "$instanceId|$location|$city|${lines.joinToString { it.first }}|$pkg|$oftenPkg"
+    }
+
+    @Volatile private var ctx: Context? = null
+    @Volatile private var shown: Station? = null
+    @Volatile private var lastKey: String? = null
+    /** The instance the user swiped away: not put back until another one comes. */
+    @Volatile private var dismissed: String? = null
+    @Volatile private var updates = 0
+    @Volatile private var lastSeen = "none"
+    @Volatile private var lastError: String? = null
+    private val logged = java.util.Collections.synchronizedSet(HashSet<String>())
+
+    /** Called from 小爱建议's loader. Each hook stands on its own. */
+    fun install(cl: ClassLoader) {
+        try {
+            val instr = Xp.findClass("android.app.Instrumentation", cl)
+            Xp.hookAll(instr, "callApplicationOnCreate") { chain ->
+                val out = chain.proceed()
+                try {
+                    val app = chain.args[0] as Application
+                    if (Application.getProcessName() == PKG) register(app)
+                } catch (t: Throwable) {
+                    Xp.log(TAG + "not registered: $t")
+                }
+                out
+            }
+        } catch (t: Throwable) {
+            Xp.log(TAG + "application hook failed: $t")
+        }
+        try {
+            // Both overloads, (Uri, ...) and (String authority, ...): the method is the second.
+            Xp.hookAll(android.content.ContentResolver::class.java, "call") { chain ->
+                val out = chain.proceed()
+                if (chain.args.getOrNull(1) == GET_INTENTION) {
+                    try {
+                        val data = (out as? Bundle)?.getString("data")
+                        val c = ctx
+                        if (c != null && data != null) update(c, JSONArray(data), "pull")
+                    } catch (t: Throwable) {
+                        lastError = t.toString()
+                        Xp.log(TAG + "pull not read: $t")
+                    }
+                }
+                out
+            }
+        } catch (t: Throwable) {
+            Xp.log(TAG + "provider hook failed: $t")
+        }
+        try {
+            Xp.hookAll(Xp.findClass(ROUTER, cl), "onCreate") { chain ->
+                val out = chain.proceed()
+                val a = chain.thisObject as android.app.Activity
+                if (a.intent?.getStringExtra("type") == TYPE) tap(a, a.intent)
+                out
+            }
+        } catch (t: Throwable) {
+            Xp.log(TAG + "router hook failed: $t")
+        }
+    }
+
+    @Synchronized
+    private fun register(app: Context) {
+        if (ctx != null) return
+        ctx = app
+        val heard = object : BroadcastReceiver() {
+            override fun onReceive(c: Context, i: Intent) {
+                try {
+                    when (i.action) {
+                        ACTION_UPDATE -> i.getStringExtra(EXTRA_ENTITY)?.let { e ->
+                            update(c, JSONObject(e).optJSONArray("intentServiceInfoList") ?: JSONArray(), "push")
+                        }
+                        ACTION_COMPLETE -> complete(c, i.getStringArrayExtra(EXTRA_IDS))
+                    }
+                } catch (t: Throwable) {
+                    lastError = t.toString()
+                    Xp.log(TAG + "${i.action} failed: $t")
+                }
+            }
+        }
+        app.registerReceiver(heard, IntentFilter().apply {
+            addAction(ACTION_UPDATE)
+            addAction(ACTION_COMPLETE)
+        }, Context.RECEIVER_EXPORTED)
+        app.registerReceiver(object : BroadcastReceiver() {
+            override fun onReceive(c: Context, i: Intent) {
+                val s = shown ?: return
+                dismissed = s.instanceId
+                shown = null
+                lastKey = null
+                Xp.log(TAG + "swiped away: ${s.name}")
+            }
+        }, IntentFilter(ACTION_DISMISS), Context.RECEIVER_NOT_EXPORTED)
+        // adb's shell holds DUMP; nothing else that may send it here does.
+        app.registerReceiver(object : BroadcastReceiver() {
+            override fun onReceive(c: Context, i: Intent) {
+                resultData = command(i.getStringExtra("json"), i.getStringExtra("do"))
+            }
+        }, IntentFilter(ACTION_PROBE), android.Manifest.permission.DUMP, null, Context.RECEIVER_EXPORTED)
+        Xp.log(TAG + "listening for 小爱建议's cards")
+    }
+
+    /** A whole set of cards: the island follows whether the ride-code card is among them. */
+    @Synchronized
+    private fun update(c: Context, list: JSONArray, from: String) {
+        updates++
+        var found: Station? = null
+        val topics = ArrayList<String>()
+        for (k in 0 until list.length()) {
+            val o = list.optJSONObject(k) ?: continue
+            val topic = o.optJSONObject("extraInfo")?.optString("topicName").orEmpty()
+            topics += topic.ifEmpty { "?" }
+            if (!isMetro(o, topic)) continue
+            val id = o.optString("instanceId")
+            if (logged.add(id)) Xp.log(TAG + "card $id ($from): ${o.toString().take(1500)}")
+            if (topic == TOPIC_EDU) continue
+            val slots = o.optJSONObject("slots") ?: JSONObject()
+            if (slots.optString("default_flag") == "1") continue
+            found = parse(o, slots, topic)
+            break
+        }
+        lastSeen = from + ":" + (if (topics.isEmpty()) "empty" else topics.joinToString(","))
+        if (found == null) cancel(c, "the $from set has no ride-code card") else post(c, found)
+    }
+
+    private fun isMetro(o: JSONObject, topic: String): Boolean {
+        if (topic.startsWith(TOPIC)) return true
+        val target = o.optJSONArray("target") ?: return false
+        for (t in 0 until target.length()) {
+            val p = target.optJSONObject(t)?.optJSONObject("widgetImplInfo")?.optString("widgetProviderName")
+            if (p == PROVIDER) return true
+        }
+        return false
+    }
+
+    private fun parse(o: JSONObject, slots: JSONObject, topic: String): Station {
+        fun s(k: String) = if (slots.isNull(k)) "" else slots.optString(k).trim()
+        val lines = ArrayList<Pair<String, Int>>()
+        runCatching {
+            val info = JSONObject(s("line_info"))
+            for (name in info.keys()) {
+                if (name.isEmpty()) continue
+                val colour = runCatching { Color.parseColor(info.optString(name)) }.getOrDefault(BLUE)
+                lines += name to colour
+            }
+        }
+        var end = 0L
+        o.optJSONArray("periodList")?.let { p ->
+            for (k in 0 until p.length()) {
+                var e = p.optJSONObject(k)?.optLong("endTime") ?: 0L
+                if (e in 1 until 100_000_000_000L) e *= 1000 // seconds, not milliseconds
+                end = maxOf(end, e)
+            }
+        }
+        // Only what h() reads: the list's own fields (intentionType an int where IntentionData
+        // has an enum) could fail its Gson read and leave the widget nothing.
+        val card = JSONObject()
+            .put("instanceId", o.optString("instanceId"))
+            .put("extraInfo", JSONObject().put("topicName", topic)
+                .put("traceId", o.optJSONObject("extraInfo")?.optString("traceId").orEmpty()))
+            .put("slots", slots)
+        return Station(o.optString("instanceId"), s("location_name"), s("city_name"), lines,
+            s("package_name"), s("often_package_name"), s("intent_content"), s("app_title"), end,
+            card.toString())
+    }
+
+    private fun complete(c: Context, ids: Array<String>?) {
+        val s = shown ?: return
+        if (ids != null && s.instanceId in ids) cancel(c, "completed")
+    }
+
+    private fun cancel(c: Context, why: String) {
+        if (shown == null) return
+        shown = null
+        lastKey = null
+        c.getSystemService(NotificationManager::class.java)?.cancel(ID)
+        Xp.log(TAG + "taken down: $why")
+    }
+
+    // Runs in 小爱建议 and posts as it, under its own notification permission.
+    @android.annotation.SuppressLint("NotificationPermission")
+    private fun post(c: Context, s: Station) {
+        if (s.instanceId.isNotEmpty() && s.instanceId == dismissed) return
+        val key = s.key()
+        if (key == lastKey) return
+        val fresh = shown?.instanceId != s.instanceId
+        val nm = c.getSystemService(NotificationManager::class.java) ?: return
+        if (nm.getNotificationChannel(CHANNEL) == null) {
+            nm.createNotificationChannel(NotificationChannel(CHANNEL, "地铁乘车码",
+                NotificationManager.IMPORTANCE_DEFAULT).apply {
+                setSound(null, null)
+                enableVibration(false)
+                setShowBadge(false)
+                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+            })
+        }
+        val router = Intent().setClassName(PKG, ROUTER)
+            .putExtra("type", TYPE)
+            .putExtra(EXTRA_CARD, s.card)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        val tap = PendingIntent.getActivity(c, ID, router,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        val gone = PendingIntent.getBroadcast(c, ID,
+            Intent(ACTION_DISMISS).setPackage(c.packageName), PendingIntent.FLAG_IMMUTABLE)
+        val official = try {
+            official(c, s, fresh, tap, gone)
+        } catch (t: Throwable) {
+            Xp.log(TAG + "the official card could not be made ($t); the template instead")
+            null
+        }
+        if (official != null) {
+            nm.notify(ID, official)
+            shown = s
+            lastKey = key
+            lastError = null
+            Xp.log(TAG + (if (fresh) "up: " else "updated: ") + "${s.name} (official card)")
+            return
+        }
+        val open = opener(c, s)
+        val appPkg = open?.`package` ?: open?.component?.packageName
+        val appName = appPkg?.let { label(c, it) }.orEmpty()
+        val lineText = s.lines.joinToString(" · ") { it.first }
+        val content = lineText.ifEmpty { "一键进出站" }
+        val sub = s.appTitle.ifEmpty { if (appName.isNotEmpty()) "打开${appName}乘车码" else "" }
+        val colour = s.lines.firstOrNull()?.second ?: BLUE
+        val glyph = metro(colour)
+        val pics = Bundle().apply {
+            putParcelable(PIC, Icon.createWithBitmap(glyph))
+            putParcelable(PIC_APP, Icon.createWithBitmap(appPkg?.let { appIcon(c, it) } ?: glyph))
+        }
+        val island = JSONObject()
+            .put("islandProperty", 1)
+            .put("islandPriority", 2)
+            .put("bigIslandArea", JSONObject()
+                .put("imageTextInfoLeft", JSONObject()
+                    .put("type", 1)
+                    .put("picInfo", JSONObject().put("type", 1).put("pic", PIC))
+                    .put("textInfo", JSONObject().put("title", "乘车码")))
+                .put("imageTextInfoRight", JSONObject()
+                    .put("type", 2)
+                    .put("textInfo", JSONObject().put("title", s.name))))
+            .put("smallIslandArea", JSONObject()
+                .put("picInfo", JSONObject().put("type", 1).put("pic", PIC)))
+        val param = JSONObject()
+            .put("protocol", 1)
+            .put("business", "metro_code")
+            .put("scene", "template_v2")
+            .put("ticker", s.name + " 乘车码")
+            .put("tickerPic", PIC)
+            .put("aodTitle", s.name + " 乘车码")
+            .put("aodPic", PIC)
+            .put("enableFloat", fresh)
+            .put("updatable", true)
+            .put("param_island", island)
+            .put("title", s.name)
+            .put("content", content)
+            .put("baseInfo", JSONObject()
+                .put("type", 2)
+                .put("title", s.name)
+                .put("content", content)
+                .apply { if (sub.isNotEmpty()) put("subContent", sub) })
+            .put("picInfo", JSONObject().put("type", 1).put("pic", PIC_APP))
+        val extras = Bundle()
+        extras.putString("miui.focus.param", JSONObject().put("param_v2", param).toString())
+        extras.putBundle("miui.focus.pics", pics)
+        val b = Notification.Builder(c, CHANNEL)
+            .setSmallIcon(Icon.createWithBitmap(glyph))
+            .setContentTitle(s.name)
+            .setContentText(listOf(content, sub).filter { it.isNotEmpty() }.joinToString(" · "))
+            .setCategory(Notification.CATEGORY_RECOMMENDATION)
+            .setVisibility(Notification.VISIBILITY_PUBLIC)
+            .setOnlyAlertOnce(!fresh)
+            .setShowWhen(false)
+            .setAutoCancel(false)
+            .setTimeoutAfter(life(s))
+            .setDeleteIntent(gone)
+            .setContentIntent(tap)
+            .addExtras(extras)
+        nm.notify(ID, b.build())
+        shown = s
+        lastKey = key
+        lastError = null
+        Xp.log(TAG + (if (fresh) "up: " else "updated: ") + "${s.name} [$lineText] -> " +
+            (open?.let { it.`package` ?: it.component?.flattenToShortString() ?: it.data } ?: "nothing to open"))
+    }
+
+    /**
+     * The card in 小米智能卡's 「简洁刷卡」 style - the island it puts up for a card swiped at a
+     * gate (SimpleCardSwipingNotificationUtils in com.miui.tsmclient 2026-09): its own layout,
+     * island_custom_notification_view, as the focus view - a card picture on its plate, a title,
+     * one line under it, a button on the right - and its island, the picture on the left and the
+     * title on the right, floated open for its 3 seconds.
+     *
+     * The layout is the card app's, looked up by name in its package (RemoteViews carry the
+     * package they inflate from); the picture is drawn here the way its CardTransformation draws
+     * a card's art. What differs from a swipe: the notification stays in the shade and the island
+     * stays as a small one while the card is up, since the code is wanted again at the gate, and
+     * the screen is not woken. Null when the card app or one of its resources is not there.
+     */
+    private fun official(c: Context, s: Station, fresh: Boolean, tap: PendingIntent,
+                         gone: PendingIntent): Notification? {
+        val tsm = c.createPackageContext(TSM, 0)
+        val res = tsm.resources
+        fun id(name: String, type: String): Int {
+            val v = res.getIdentifier(name, type, TSM)
+            if (v == 0) throw IllegalStateException("the card app has no $type/$name")
+            return v
+        }
+        val layout = id("island_custom_notification_view", "layout")
+        val title = s.name
+        // Its 「支付 x元 | 余额 y元」, in the same hand: the lines, else what the code does.
+        val sub = s.lines.joinToString(" | ") { it.first }.ifEmpty { "一键进出站" }
+        val card = Icon.createWithBitmap(cardPicture(c, s.lines))
+        fun view(): android.widget.RemoteViews {
+            val rv = android.widget.RemoteViews(TSM, layout)
+            rv.setTextViewText(id("tv_title", "id"), title)
+            rv.setTextViewText(id("tv_subtitle", "id"), sub)
+            rv.setImageViewIcon(id("iv_left_icon", "id"), card)
+            rv.setViewVisibility(id("iv_right_icon", "id"), android.view.View.GONE)
+            // Its 「切卡」 button, for the code instead.
+            rv.setViewVisibility(id("btn_right", "id"), android.view.View.VISIBLE)
+            rv.setTextViewText(id("btn_right", "id"), "乘车码")
+            rv.setOnClickPendingIntent(id("btn_right", "id"), tap)
+            return rv
+        }
+        val nfcDynamic = runCatching {
+            val plugin = c.createPackageContext("miui.systemui.plugin", 0)
+            val b = plugin.resources.getIdentifier("nfc_dynamic", "bool", "miui.systemui.plugin")
+            b != 0 && plugin.resources.getBoolean(b)
+        }.getOrDefault(false)
+        val life = (life(s) / 1000L).toInt().coerceAtLeast(60)
+        val param = JSONObject()
+            .put("isShowNotification", true)
+            .put("islandFirstFloat", fresh)
+            .put("business", "tsmclient")
+            .put("updatable", true)
+            .put("ticker", title)
+            .put("tickerPic", "miui.focus.pic_start")
+            .put("aodTitle", title)
+            .put("aodPic", "miui.focus.pic_start")
+            .put("param_island", JSONObject()
+                .put("islandProperty", if (nfcDynamic) 0 else 1)
+                .put("islandTimeout", life)
+                .put("expandedTime", 3)
+                .put("islandPriority", 1)
+                .put("bigIslandArea", JSONObject()
+                    .put("imageTextInfoLeft", JSONObject()
+                        .put("type", 1)
+                        .put("picInfo", JSONObject().put("type", 4).put("pic", "miui.focus.pic_start")))
+                    .put("imageTextInfoRight", JSONObject()
+                        .put("type", 2)
+                        .put("textInfo", JSONObject().put("title", title))))
+                .put("smallIslandArea", JSONObject()
+                    .put("picInfo", JSONObject().put("type", 4).put("pic", "miui.focus.pic_start"))))
+        val extras = Bundle()
+        extras.putBundle("miui.focus.pics", Bundle().apply { putParcelable("miui.focus.pic_start", card) })
+        extras.putBundle("miui.focus.actions", Bundle().apply {
+            putParcelable("miui.focus.action_1", Notification.Action.Builder(card, "", tap).build())
+        })
+        val n = Notification.Builder(c, CHANNEL)
+            .setSmallIcon(Icon.createWithBitmap(metro(s.lines.firstOrNull()?.second ?: BLUE)))
+            .setContentTitle(title)
+            .setContentText(sub)
+            .setCategory(Notification.CATEGORY_RECOMMENDATION)
+            .setVisibility(Notification.VISIBILITY_PUBLIC)
+            .setOnlyAlertOnce(!fresh)
+            .setShowWhen(false)
+            .setAutoCancel(false)
+            .setTimeoutAfter(life(s))
+            .setContentIntent(tap)
+            .setDeleteIntent(gone)
+            .addExtras(extras)
+            .build()
+        n.extras.putParcelable("miui.focus.rv", view())
+        n.extras.putParcelable("miui.focus.rvNight", view())
+        n.extras.putParcelable("miui.focus.rv.island.expand", view())
+        n.extras.putString("miui.focus.param.custom", param.toString())
+        return n
+    }
+
+    /**
+     * The station's lines as a card, the way CardTransformation draws a card's art for the
+     * island: a 70x44dp card with 8dp corners, 6dp clear round it, edged with a 0.6dp hairline
+     * going from 40% white at the top to 14% at the foot.
+     *
+     * One line fills the card with its colour and its number large on it, white or, on a light
+     * colour, near-black - 「13」 over a small 「号线」, a line with no number by its name,
+     * 「昌平」. Two or three share it in upright bands
+     * of their colours, each with its own number, as an interchange's sign has them. No line, the
+     * blue with the train's front.
+     */
+    private fun cardPicture(c: Context, lines: List<Pair<String, Int>>): Bitmap {
+        val d = c.resources.displayMetrics.density
+        val cw = 70f * d
+        val ch = 44f * d
+        val pad = 6f * d
+        val r = 8f * d
+        val b = Bitmap.createBitmap(Math.round(cw + 2 * pad), Math.round(ch + 2 * pad), Bitmap.Config.ARGB_8888)
+        val cv = Canvas(b)
+        val box = RectF(pad, pad, pad + cw, pad + ch)
+        val p = Paint(Paint.ANTI_ALIAS_FLAG or Paint.DITHER_FLAG)
+        val shown = lines.take(3)
+        cv.save()
+        cv.clipPath(android.graphics.Path().apply { addRoundRect(box, r, r, android.graphics.Path.Direction.CW) })
+        if (shown.isEmpty()) {
+            p.color = BLUE
+            cv.drawRect(box, p)
+            val g = metro(Color.TRANSPARENT)
+            val side = ch * 0.8f
+            cv.drawBitmap(g, null, RectF(box.centerX() - side / 2, box.centerY() - side / 2,
+                box.centerX() + side / 2, box.centerY() + side / 2), Paint(Paint.FILTER_BITMAP_FLAG))
+        }
+        val band = cw / maxOf(1, shown.size)
+        val num = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.BOLD)
+            textAlign = Paint.Align.CENTER
+        }
+        val unit = Paint(num).apply { typeface = android.graphics.Typeface.create("sans-serif", android.graphics.Typeface.NORMAL) }
+        for ((k, line) in shown.withIndex()) {
+            val left = box.left + k * band
+            val col = line.second
+            p.shader = android.graphics.LinearGradient(left, box.top, left + band, box.bottom,
+                col, AmapTransitScene.blend(col, Color.BLACK, 0.16f), android.graphics.Shader.TileMode.CLAMP)
+            cv.drawRect(left, box.top, left + band, box.bottom, p)
+            p.shader = null
+            // White on the line's colour, near-black on a light one (13号线's yellow).
+            val light = (0.299f * Color.red(col) + 0.587f * Color.green(col) + 0.114f * Color.blue(col)) / 255f > 0.62f
+            num.color = if (light) 0xff1a1a1c.toInt() else Color.WHITE
+            unit.color = num.color
+            val digits = Regex("[0-9]+").find(line.first)?.value
+            val label = digits ?: line.first.removePrefix("地铁").removeSuffix("号线").removeSuffix("线").take(2)
+            val cx = left + band / 2
+            // As large as the band allows, the unit under a number only where there is room.
+            val withUnit = digits != null && shown.size == 1
+            num.textSize = (if (withUnit) ch * 0.56f else ch * 0.5f)
+            val room = band - 8f * d
+            if (num.measureText(label) > room) num.textSize *= room / num.measureText(label)
+            val fm = num.fontMetrics
+            if (withUnit) {
+                unit.textSize = ch * 0.2f
+                val total = (fm.descent - fm.ascent) * 0.78f + unit.textSize
+                val top = box.centerY() - total / 2
+                cv.drawText(label, cx, top - fm.ascent * 0.86f, num)
+                cv.drawText("号线", cx, top + total, unit)
+            } else {
+                cv.drawText(label, cx, box.centerY() - (fm.ascent + fm.descent) / 2, num)
+            }
+            if (k > 0) {
+                p.color = 0x59ffffff
+                cv.drawRect(left - 0.5f * d, box.top, left + 0.5f * d, box.bottom, p)
+            }
+        }
+        cv.restore()
+        val edge = 0.6f * d
+        p.style = Paint.Style.STROKE
+        p.strokeWidth = edge
+        p.shader = android.graphics.LinearGradient(0f, 0f, 0f, ch, 0x66ffffff, 0x24ffffff,
+            android.graphics.Shader.TileMode.CLAMP)
+        val h = edge / 2f
+        cv.drawRoundRect(RectF(box.left + h, box.top + h, box.right - h, box.bottom - h), r, r, p)
+        return b
+    }
+
+    private fun life(s: Station): Long {
+        if (s.end <= 0L) return DEFAULT_LIFE
+        return (s.end - System.currentTimeMillis()).coerceIn(MIN_LIFE, MAX_LIFE)
+    }
+
+    // ------------------------------------------------------------------ the tap
+
+    /**
+     * The island's tap, in RouterActivity: a SmallMetroCodeWidgetProvider of our own takes the
+     * card through h() - found by its parameters, (int[], String, IntentionData), as is g(), the
+     * String-to-IntentionData read - and is sent the widget's click.
+     */
+    private fun tap(a: android.app.Activity, i: Intent) {
+        val card = i.getStringExtra(EXTRA_CARD) ?: return
+        try {
+            val cl = a.classLoader
+            val provider = cl.loadClass(PROVIDER)
+            val intention = cl.loadClass(INTENTION)
+            val methods = generateSequence<Class<*>>(provider) { it.superclass }
+                .flatMap { it.declaredMethods.asSequence() }.toList()
+            val read = methods.first { m ->
+                m.returnType == intention && m.parameterTypes.contentEquals(arrayOf(String::class.java))
+            }
+            val take = methods.first { m ->
+                m.parameterTypes.contentEquals(arrayOf(IntArray::class.java, String::class.java, intention))
+            }
+            read.isAccessible = true
+            take.isAccessible = true
+            val p = provider.getDeclaredConstructor().newInstance()
+            take.invoke(p, IntArray(0), card, read.invoke(p, card))
+            (p as BroadcastReceiver).onReceive(a, Intent()
+                .putExtra(EXTRA_REQUEST, CLICK)
+                .putExtra(EXTRA_WIDGET, 0)
+                .putExtra(EXTRA_INTENT_OPTION, card))
+            Xp.log(TAG + "tap: handed to the widget")
+        } catch (t: Throwable) {
+            Xp.log(TAG + "tap: the widget's way failed ($t), opening it ourselves")
+            val s = shown ?: return
+            opener(a, s)?.let { runCatching { a.startActivity(it) } }
+        }
+    }
+
+    /** SmallMetroCodeWidgetProvider.e for requestCode 6100, without its 微信-through-小爱 path. */
+    private fun opener(c: Context, s: Station): Intent? {
+        val pm = c.packageManager
+        fun installed(p: String) = p.isNotEmpty() && runCatching { pm.getPackageInfo(p, 0) }.isSuccess
+        fun own(p: String): Intent? = when (p) {
+            ALIPAY -> Intent(Intent.ACTION_VIEW, Uri.parse(ALIPAY_METRO)).setPackage(ALIPAY)
+            MI_NFC -> fromUri(c, MI_NFC_URI, MI_NFC)
+            else -> null
+        }
+        fun launch(p: String) = pm.getLaunchIntentForPackage(p)
+        val alipay = if (installed(ALIPAY)) own(ALIPAY) else null
+        val picked = when {
+            installed(s.oftenPkg) -> own(s.oftenPkg) ?: launch(s.oftenPkg)
+            s.intentContent.isNotEmpty() && installed(s.pkg) ->
+                own(s.pkg) ?: fromUri(c, s.intentContent, s.pkg) ?: launch(s.pkg)
+            else -> alipay
+        } ?: alipay ?: return null
+        return picked.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+
+    /**
+     * The card's intent URI, kept to [pkg]'s own exported activities: it comes from the cloud and
+     * is sent from SystemUI, so no selector, no grants and nothing in another package.
+     */
+    private fun fromUri(c: Context, uri: String, pkg: String): Intent? = runCatching {
+        val i = Intent.parseUri(uri, Intent.URI_INTENT_SCHEME)
+        i.selector = null
+        i.flags = 0
+        val comp: ComponentName? = i.component
+        if (comp != null && comp.packageName != pkg) return@runCatching null
+        if (i.`package` != null && i.`package` != pkg) return@runCatching null
+        if (comp == null) i.setPackage(pkg)
+        val ri = c.packageManager.resolveActivity(i, 0) ?: return@runCatching null
+        if (!ri.activityInfo.exported || ri.activityInfo.packageName != pkg) null else i
+    }.getOrNull()
+
+    private fun label(c: Context, pkg: String) = runCatching {
+        c.packageManager.getApplicationLabel(c.packageManager.getApplicationInfo(pkg, 0)).toString()
+    }.getOrDefault("")
+
+    private fun appIcon(c: Context, pkg: String): Bitmap? = runCatching {
+        val d = c.packageManager.getApplicationIcon(pkg)
+        val b = Bitmap.createBitmap(96, 96, Bitmap.Config.ARGB_8888)
+        d.setBounds(0, 0, 96, 96)
+        d.draw(Canvas(b))
+        b
+    }.getOrNull()
+
+    /** A train's front in white on a disc of the line's colour. */
+    private fun metro(colour: Int): Bitmap {
+        val size = 96
+        val b = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val cv = Canvas(b)
+        val p = Paint(Paint.ANTI_ALIAS_FLAG)
+        p.color = colour
+        cv.drawCircle(48f, 48f, 48f, p)
+        p.color = Color.WHITE
+        cv.drawRoundRect(RectF(29f, 22f, 67f, 66f), 10f, 10f, p)
+        p.color = colour
+        cv.drawRoundRect(RectF(34f, 28f, 62f, 44f), 4f, 4f, p)
+        cv.drawCircle(38f, 55f, 3.5f, p)
+        cv.drawCircle(58f, 55f, 3.5f, p)
+        p.color = Color.WHITE
+        p.strokeWidth = 5f
+        p.strokeCap = Paint.Cap.ROUND
+        cv.drawLine(36f, 68f, 30f, 77f, p)
+        cv.drawLine(60f, 68f, 66f, 77f, p)
+        return b
+    }
+
+    // ------------------------------------------------------------------ probe
+
+    /**
+     * The probe: the state; `--es json '<list of intentions>'` as if the engine had sent it;
+     * `--es do demo` a made-up station; `--es do end` an empty set.
+     */
+    fun command(json: String?, what: String?): String {
+        val c = ctx ?: return "not registered yet"
+        return try {
+            when {
+                json != null -> update(c, JSONArray(json), "probe")
+                what == "demo" -> {
+                    dismissed = null
+                    update(c, demo(), "probe")
+                }
+                what == "end" -> update(c, JSONArray(), "probe")
+            }
+            describe()
+        } catch (t: Throwable) {
+            "failed: $t"
+        }
+    }
+
+    fun describe(): String {
+        val s = shown
+        return "metro: updates=$updates seen=[$lastSeen] shown=" +
+            (s?.let { "${it.name} id=${it.instanceId} end=${it.end}" } ?: "none") +
+            (dismissed?.let { " dismissed=$it" } ?: "") + (lastError?.let { " error=$it" } ?: "")
+    }
+
+    private fun demo(): JSONArray {
+        val slots = JSONObject()
+            .put("location_name", "西二旗")
+            .put("city_name", "北京")
+            .put("line_info", JSONObject().put("13号线", "#F9E700").put("昌平线", "#DE82B2").toString())
+            .put("package_name", ALIPAY)
+            .put("default_flag", "0")
+        val item = JSONObject()
+            .put("instanceId", "mc-demo-" + System.currentTimeMillis() / 60_000)
+            .put("extraInfo", JSONObject().put("topicName", "metro_qr_code.metro_qr_code.open_metro_code"))
+            .put("target", JSONArray().put(JSONObject().put("widgetImplInfo",
+                JSONObject().put("widgetProviderName", PROVIDER))))
+            .put("periodList", JSONArray().put(JSONObject()
+                .put("startTime", System.currentTimeMillis())
+                .put("endTime", System.currentTimeMillis() + 10 * 60_000L)))
+            .put("slots", slots)
+        return JSONArray().put(item)
+    }
+}

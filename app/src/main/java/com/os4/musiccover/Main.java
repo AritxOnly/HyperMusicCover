@@ -928,6 +928,11 @@ public class Main extends XposedModule {
             AmapImmerse.handle(param.getDefaultClassLoader());
             return;
         }
+        // 小爱建议, for its subway ride-code card on the island. See MetroCodeIsland.
+        if (MetroCodeIsland.PKG.equals(pkg)) {
+            MetroCodeIsland.INSTANCE.install(param.getDefaultClassLoader());
+            return;
+        }
         if (!"com.android.systemui".equals(pkg)) return;
 
         final ClassLoader cl = param.getDefaultClassLoader();
