@@ -188,7 +188,7 @@
     <string name="features_shade_title">Shade and control centre (experimental)</string>
     <string name="features_shade_summary">Flowing light</string>
     <string name="features_mini_title">Lock screen super island</string>
-    <string name="features_mini_summary">Media controls, gestures, size and material</string>
+    <string name="features_mini_summary">Music, notifications and navigation</string>
     <string name="features_transit_title">Amap bus &amp; subway</string>
     <string name="features_transit_summary">Stop-by-stop island</string>
     <string name="transit_enabled">Enable Amap bus &amp; subway</string>
@@ -204,11 +204,11 @@
     <string name="mini_enabled">Enable the lock screen super island</string>
     <string name="mini_enabled_waiting">Waiting for the SystemUI module to answer</string>
     <string name="mini_widen">Widen when a shortcut is off</string>
-    <string name="mini_widen_summary">When the flashlight or the camera is turned off in system settings, the island takes the space it leaves</string>
+    <string name="mini_widen_summary">Takes the flashlight or camera space when it is off</string>
     <string name="mini_nav_keep_on">Keep the screen on while navigating</string>
     <string name="mini_status_at_date">Status after the date</string>
-    <string name="mini_status_at_date_summary">Do Not Disturb, charging and the other lasting lines at the bottom of the lock screen move after the date, clear of the pill; passing hints such as fingerprint ones stay at the bottom</string>
-    <string name="mini_nav_keep_on_summary">The lock screen does not go dark while it shows an Amap navigation or transit page; in a pocket or face down it still does</string>
+    <string name="mini_status_at_date_summary">Keeps Do Not Disturb and charging clear of the pill</string>
+    <string name="mini_nav_keep_on_summary">While an Amap navigation or transit page is up</string>
 
     <!-- What the two demonstrations are called, page by page; see the default strings for the rule. -->
     <string name="demo_cover_takeover_title">The cover takes the lock screen</string>
