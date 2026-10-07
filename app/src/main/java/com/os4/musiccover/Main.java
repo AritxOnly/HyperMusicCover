@@ -948,6 +948,8 @@ public class Main extends XposedModule {
         MiniPlayerRuntime.install(cl);
         // The clock's colour extraction once it is still, not on every step (PaletteThrottle).
         PaletteThrottle.INSTANCE.install(cl);
+        // 勿扰 and charging drawn after the date, out from under the pill (DateStatus).
+        DateStatus.INSTANCE.install(cl);
         // 高德's ride card is a focus notification of its own only once the cloud list that
         // decides who may have one answers for it (AmapFocus).
         AmapFocus.install(cl);
@@ -2903,6 +2905,8 @@ public class Main extends XposedModule {
                             setResultData("mini not written: " + t + "\n"
                                     + all.substring(0, Math.min(all.length(), 1500)));
                         }
+                    } else if ("datestatus".equals(op)) {
+                        setResultData(DateStatus.INSTANCE.describe());
                     } else if ("palette".equals(op)) {
                         setResultData(PaletteThrottle.INSTANCE.describe());
                     } else if ("rowtree".equals(op)) {

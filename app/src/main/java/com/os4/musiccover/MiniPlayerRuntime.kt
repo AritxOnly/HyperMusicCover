@@ -65,8 +65,14 @@ object MiniPlayerRuntime {
         ?: JSONObject(configJson(context)).optBoolean(MiniPlayerConfig.NAV_KEEP_ON)
             .also { navKeepOnSaved = it }
 
+    /** Whether the bottom's lasting lines stand after the date (DateStatus): the islands on, and it. */
+    @JvmStatic fun statusAtDate(context: Context): Boolean = JSONObject(configJson(context)).let {
+        it.optBoolean(MiniPlayerConfig.ENABLED) && it.optBoolean(MiniPlayerConfig.STATUS_AT_DATE)
+    }
+
     @JvmStatic fun applyConfig(context: Context, raw: String?) {
         val saved = MiniPlayerConfig.apply(prefs(context), raw)
+        DateStatus.configChanged()
         val keep = JSONObject(saved).optBoolean(MiniPlayerConfig.NAV_KEEP_ON)
         if (keep != navKeepOnSaved) {
             navKeepOnSaved = keep

@@ -18,6 +18,9 @@ object MiniPlayerConfig {
     /** 屏幕常亮 while a navigation page is up behind the lock screen (ImmersiveHost.holdScreen, #63). */
     const val NAV_KEEP_ON = "navKeepOn"
 
+    /** 勿扰, charging and the like drawn after the date, clear of the pill (DateStatus). */
+    const val STATUS_AT_DATE = "statusAtDate"
+
     private val defaults = linkedMapOf<String, Any>(
         ENABLED to false,
         WIDTH to 221f,
@@ -25,12 +28,13 @@ object MiniPlayerConfig {
         ART_RADIUS to 12f,
         ADAPTIVE_WIDTH to false,
         NAV_KEEP_ON to false,
+        STATUS_AT_DATE to true,
     )
 
     @JvmStatic fun defaultJson(): String = normalizedJson(null)
 
     /**
-     * The config as the module will use it: [ENABLED], [ADAPTIVE_WIDTH] and [NAV_KEEP_ON] from the input, the
+     * The config as the module will use it: [ENABLED], [ADAPTIVE_WIDTH], [NAV_KEEP_ON] and [STATUS_AT_DATE] from the input, the
      * three size keys always at the values above.
      *
      * The sizes were sliders and are not settings any more - the app has no rows for them - so a
@@ -51,7 +55,7 @@ object MiniPlayerConfig {
         val input = runCatching { JSONObject(raw.orEmpty()) }.getOrDefault(JSONObject())
         val out = JSONObject()
         defaults.forEach { (key, fallback) ->
-            out.put(key, if (key == ENABLED || key == ADAPTIVE_WIDTH || key == NAV_KEEP_ON) {
+            out.put(key, if (key == ENABLED || key == ADAPTIVE_WIDTH || key == NAV_KEEP_ON || key == STATUS_AT_DATE) {
                 runCatching { input.getBoolean(key) }.getOrDefault(fallback)
             } else {
                 fallback

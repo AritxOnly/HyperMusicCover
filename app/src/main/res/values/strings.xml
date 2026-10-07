@@ -208,6 +208,8 @@
     <string name="mini_widen">快捷方式关闭时加宽</string>
     <string name="mini_widen_summary">手电筒或相机在系统设置里关掉后，超级岛占用空出的位置</string>
     <string name="mini_nav_keep_on">导航时屏幕常亮</string>
+    <string name="mini_status_at_date">状态显示在日期后面</string>
+    <string name="mini_status_at_date_summary">勿扰、充电等锁屏底部的常驻状态改到日期后面显示，不被胶囊挡住；指纹等临时提示仍在底部</string>
     <string name="mini_nav_keep_on_summary">锁屏显示高德导航或公交页面时不自动熄屏；放进口袋或扣在桌上时照常熄屏</string>
 
     <!-- What the two demonstrations are called, page by page. Only the title: the page under it
