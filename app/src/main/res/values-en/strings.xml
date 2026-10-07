@@ -180,6 +180,9 @@
     <string name="features_shade_summary">Flowing light</string>
     <string name="features_mini_title">Lock screen super island</string>
     <string name="features_mini_summary">Media controls, gestures, size and material</string>
+    <string name="features_transit_title">Amap bus &amp; subway</string>
+    <string name="features_transit_summary">Stop-by-stop island</string>
+    <string name="transit_enabled">Enable Amap bus &amp; subway</string>
 
     <string name="shade_enabled">Enable flowing light</string>
     <string name="shade_section_behaviour">Behaviour</string>

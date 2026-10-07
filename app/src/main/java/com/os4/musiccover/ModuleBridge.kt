@@ -164,6 +164,8 @@ object ModuleBridge {
         val lyriconInstalled: Boolean = false,
         /** 0 system default, 1 never avoid the fingerprint icon, 2 always avoid it. */
         val fpAvoid: Int = 0,
+        /** 「高德公交地铁」: the trip's island and lock screen page (AmapTransitScene.sOn). */
+        val transit: Boolean = true,
         /**
          * The notification-shade settings, keyed exactly as the module's own CFG_KEYS.
          *
@@ -470,6 +472,10 @@ object ModuleBridge {
 
     fun setFingerprintAvoid(context: Context, mode: Int) =
         send(context, "fpavoid") { putExtra("mode", mode) }
+
+    /** 「高德公交地铁」. SystemUI holds it and tells 高德, whose process posts the island. */
+    fun setTransit(context: Context, on: Boolean) =
+        send(context, "transitcfg") { putExtra("on", on) }
 
     /**
      * One shade setting, by the module's own key.
@@ -778,6 +784,7 @@ object ModuleBridge {
             lyricSource = b.getString("lyricsrc") ?: "none",
             lyriconInstalled = b.getBoolean("lyricon", false),
             fpAvoid = b.getInt("fpavoid", 0),
+            transit = b.getBoolean("transit", true),
             shade = b.keySet()
                 .filter { it.startsWith("shade_") }
                 .associate { it.removePrefix("shade_") to b.getInt(it, 0) },

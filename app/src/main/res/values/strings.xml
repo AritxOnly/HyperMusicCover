@@ -188,6 +188,11 @@
     <string name="features_shade_summary">动态流光</string>
     <string name="features_mini_title">锁屏超级岛</string>
     <string name="features_mini_summary">媒体控制、手势、尺寸与材质</string>
+    <string name="features_transit_title">高德公交地铁</string>
+    <string name="features_transit_summary">逐站超级岛</string>
+
+    <!-- The bus and subway trip's page, which the features page opens: one switch. -->
+    <string name="transit_enabled">启用高德公交地铁</string>
 
     <string name="shade_enabled">启用流光效果</string>
     <string name="shade_section_behaviour">行为</string>

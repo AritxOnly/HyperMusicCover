@@ -127,6 +127,14 @@ internal object AmapTransitShare {
     /** The last trip's capsules, kept past its end for `transit sim`. */
     private var lastCaps: JSONArray? = null
 
+    /**
+     * The app's 「高德公交地铁」 switch, as SystemUI holds it: off, the trip is still read - the
+     * ride-code island's stops come out of it (tellMetro) - but neither the island nor the lock
+     * screen page is told. SystemUI says it when 高德 starts (AmapImmerse asks), when SystemUI
+     * starts, and when it changes ([setEnabled]); on until then, the way it ships.
+     */
+    @Volatile private var enabled = true
+
     /** What SystemUI was last told, and when. */
     @Volatile private var lastSent: String? = null
     private var lastSentAt = 0L
@@ -637,6 +645,16 @@ internal object AmapTransitShare {
             Xp.log(TAG + "no context to tell SystemUI")
             return
         }
+        if (!enabled) {
+            tellMetro(ctx, entity != null)
+            return
+        }
+        show(ctx, entity)
+        tellMetro(ctx, entity != null)
+    }
+
+    /** The page and the island: [entity], or nothing for null. */
+    private fun show(ctx: android.content.Context, entity: String?) {
         try {
             val i = Intent(SYSUI_PROBE).setPackage(SYSUI)
                 .putExtra("op", "transit")
@@ -647,7 +665,21 @@ internal object AmapTransitShare {
         } catch (t: Throwable) {
             Xp.log(TAG + "tell failed: $t")
         }
-        tellMetro(ctx, entity != null)
+    }
+
+    /**
+     * The switch, from SystemUI. Turned off, what is up is taken down; turned on mid-trip, the
+     * trip's state now goes up - lastSent is kept current either way.
+     */
+    fun setEnabled(on: Boolean) {
+        worker.post {
+            if (on == enabled) return@post
+            enabled = on
+            Xp.log(TAG + "switch " + (if (on) "on" else "off"))
+            val ctx = AmapImmerse.context() ?: return@post
+            if (!on) show(ctx, null)
+            else lastSent?.let { show(ctx, it) }
+        }
     }
 
     /**
@@ -854,7 +886,8 @@ internal object AmapTransitShare {
     }
 
     fun describe(): String {
-        val sb = StringBuilder("transit: navigating=").append(navigating)
+        val sb = StringBuilder("transit: on=").append(enabled)
+            .append(" navigating=").append(navigating)
             .append(" leg=").append(milestones.legAt)
             .append(" status=").append(lastStatus.ifEmpty { "-" })
             .append(" kind=").append(lastKind.ifEmpty { "-" })

@@ -1939,6 +1939,8 @@ public class Main extends XposedModule {
                     // is not.
                     + "\nsawlyric=" + (LockLyrics.sSawSessionLyric ? 1 : 0)
                     + "\nfpavoid=" + sFpAvoid
+                    // On when absent: the trip's page and island shipped before their switch.
+                    + "\ntransit=" + (AmapTransitScene.sOn ? 1 : 0)
                     + "\nminicfg=" + android.util.Base64.encodeToString(
                             MiniPlayerRuntime.configJson(sAppCtx).getBytes(java.nio.charset.StandardCharsets.UTF_8),
                             android.util.Base64.NO_WRAP)
@@ -2047,6 +2049,7 @@ public class Main extends XposedModule {
                             LockLyrics.sSawSessionLyric = "1".equals(v);
                         }
                         else if ("fpavoid".equals(k)) sFpAvoid = Integer.parseInt(v);
+                        else if ("transit".equals(k)) AmapTransitScene.sOn = "1".equals(v);
                         else if ("minicfg".equals(k)) MiniPlayerRuntime.applyConfig(sAppCtx,
                                 new String(android.util.Base64.decode(v, android.util.Base64.DEFAULT),
                                         java.nio.charset.StandardCharsets.UTF_8));
@@ -2760,6 +2763,15 @@ public class Main extends XposedModule {
                     } else if ("minicfg".equals(op)) {
                         MiniPlayerRuntime.applyConfig(c, i.getStringExtra("json"));
                         saveState();
+                    } else if ("transitcfg".equals(op)) {
+                        // 「高德公交地铁」: --ez on true|false from the app; without it, 高德
+                        // asking as it starts (AmapImmerse), and told what it is.
+                        if (i.hasExtra("on")) {
+                            AmapTransitScene.INSTANCE.setOn(c, i.getBooleanExtra("on", true));
+                            saveState();
+                        } else {
+                            AmapTransitScene.INSTANCE.tellAmap(c);
+                        }
                     } else if ("query".equals(op)) {
                         // Answered through the ordered broadcast's result extras: the app is a
                         // separate process and this is the only channel it already has. A reply
@@ -2828,6 +2840,7 @@ public class Main extends XposedModule {
                         out.putBoolean("sessionlyric", LockLyrics.sSawSessionLyric
                                 || LyricSource.hasLyricInfo(sWatched));
                         out.putInt("fpavoid", sFpAvoid);
+                        out.putBoolean("transit", AmapTransitScene.sOn);
                         // Everything the app's preview needs to be to scale. It draws a lock
                         // screen it cannot see, and every one of these is device-specific, so
                         // they are measured here rather than written down twice.
@@ -2980,6 +2993,8 @@ public class Main extends XposedModule {
             Xp.log(TAG + "hello to the wallpaper process failed: " + t);
         }
         loadState();
+        // 高德 running already has the 「高德公交地铁」 switch's default until it is told.
+        AmapTransitScene.INSTANCE.tellAmap(ctx);
         // Again at startup, not only when the switch is touched: the flag the always-on display
         // reads is written by this process, and a phone that was rebooted with the switch on has
         // nothing in it otherwise.

@@ -184,6 +184,11 @@ internal object AmapImmerse {
         class Probe : ProbeGuard.Receiver() {
             override fun onReceive(c: Context, i: Intent) {
                 if (!ProbeGuard.admit(this, i)) return
+                // The 「高德公交地铁」 switch, from SystemUI: on its own, or riding on its ask.
+                if (i.hasExtra("transiton")) {
+                    AmapTransitShare.setEnabled(i.getBooleanExtra("transiton", true))
+                    if (!i.getBooleanExtra("ask", false)) return
+                }
                 i.getStringExtra("transit")?.let {
                     // A payload rides in base64: its JSON holds Chinese and colons, which `am
                     // broadcast` reads as a URI and cuts apart on the way.
@@ -239,5 +244,13 @@ internal object AmapImmerse {
         // SystemUI's ask after a restart, and adb.
         ProbeGuard.register(ctx, IntentFilter(ACTION), TAG, { Probe() }, SYSUI, BuildConfig.APPLICATION_ID)
         Xp.log(TAG + "probe registered")
+        // The switch, asked for before any trip can start: SystemUI answers on the probe above.
+        try {
+            ProbeGuard.send(ctx, Intent(SYSUI_PROBE).setPackage(SYSUI)
+                .putExtra("op", "transitcfg")
+                .putExtra("src", "amap"))
+        } catch (t: Throwable) {
+            Xp.log(TAG + "switch not asked for: " + t)
+        }
     }
 }
