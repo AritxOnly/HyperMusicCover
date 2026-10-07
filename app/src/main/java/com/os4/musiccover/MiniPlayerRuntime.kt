@@ -9771,6 +9771,7 @@ private class MiniPlayerController(
             if (value.sessionToken == controller?.sessionToken) usableSeenAt = android.os.SystemClock.uptimeMillis()
             return true
         }
+        if (cardHolds(value)) return true
         if (usableSeenAt == 0L || value.sessionToken != controller?.sessionToken ||
             value.sessionToken != liveFor) return false
         val left = usableSeenAt + USABLE_GAP_MS - android.os.SystemClock.uptimeMillis()
@@ -9779,6 +9780,21 @@ private class MiniPlayerController(
         handler.removeCallbacks(usableGapEnd)
         handler.postDelayed(usableGapEnd, left + 1L)
         return true
+    }
+
+    /**
+     * The session the lock screen's media card is showing, while the card is up, in a state that
+     * says nothing has played yet. QQ Music puts up its notification - and so the card - as soon
+     * as it is opened, with the session at NONE or STOPPED until the first play: read by state
+     * alone that was no music, so the card stayed a card on the lock screen and never went into
+     * the pill until something had been played. The card is what the lock screen shows as the
+     * music; once it goes, the state decides again.
+     */
+    private fun cardHolds(value: MediaController): Boolean {
+        val state = stateOf(value)?.state
+        if (state != PlaybackState.STATE_NONE && state != PlaybackState.STATE_STOPPED) return false
+        if (!Main.miniPlayerMediaCardPresent()) return false
+        return value.sessionToken == Main.miniPlayerSession()?.sessionToken
     }
 
     private fun playbackUsable(state: Int?): Boolean = when (state) {
