@@ -84,8 +84,23 @@ final class QqLyrics {
 
     private static Found fetch(NcmLyrics.Query q, boolean[] answered) throws Exception {
         long started = android.os.SystemClock.uptimeMillis();
+        // QQ 音乐 playing: its own id for the song, and its lyric by that - the original, the
+        // translation and the romanisation, with no search to lose the song in. Measured
+        // 2026-10-07, the id alone answers; names and length need not be sent.
+        if (q.qqId != null) {
+            Found f = lyrics(new LyricMatch.Candidate(q.qqId, q.title, q.artist, q.album, 0L, null));
+            if (f != null) {
+                answered[0] = true;
+                Xp.log("[" + TAG + "] " + f.id + " by id -> " + (f.words ? "qrc" : "lrc")
+                        + (f.translation != null ? " + translation" : "")
+                        + (f.roma != null ? " + romanisation" : "") + " in "
+                        + (android.os.SystemClock.uptimeMillis() - started) + "ms");
+                return f;
+            }
+        }
         LyricMatch.Wanted w = new LyricMatch.Wanted(q);
-        List<LyricMatch.Candidate> cands = search(joined(q.title, q.artist), answered);
+        List<LyricMatch.Candidate> cands = search(joined(TrackName.untranslated(q.title),
+                TrackName.unaliased(NcmLyrics.firstArtist(q.artist))), answered);
         LyricMatch.Pick p = LyricMatch.best(cands, w);
         // Several credited names and none of them on the best result: the search ranked on the
         // wrong one. Asked again by the title and the album, as HyperLyrics Enhanced does.

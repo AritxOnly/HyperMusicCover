@@ -51,17 +51,27 @@ final class NcmLyrics {
         final String artist;
         final String album;
         final long durationMs;
+        /**
+         * QQ 音乐's own id for the song (its MEDIA_ID), or null. With it QQ's lyric is asked for
+         * by the id, no search: the search is where QQ's renamed songs got lost (QqLyrics).
+         */
+        final String qqId;
 
         Query(String title, String artist, String album, long durationMs) {
+            this(title, artist, album, durationMs, null);
+        }
+
+        Query(String title, String artist, String album, long durationMs, String qqId) {
             this.title = title;
             this.artist = artist;
             this.album = album;
             this.durationMs = durationMs;
+            this.qqId = qqId;
         }
 
         /** Stable across a track's lifetime, so it can key a cache. */
         String key() {
-            return title + '|' + artist + '|' + album + '|' + durationMs;
+            return title + '|' + artist + '|' + album + '|' + durationMs + '|' + qqId;
         }
 
         @Override
@@ -109,8 +119,22 @@ final class NcmLyrics {
             }
         } catch (Throwable ignored) {
         }
-        return build(title, artist, album, dur);
+        String pkg = c.getPackageName();
+        boolean qq = pkg != null && pkg.startsWith("com.tencent.qqmusic");
+        // QQ 音乐 publishes 60000 for the length of every song now, the whole way through
+        // (2026-10-07, 打上花火, aLIEz, 夢灯籠 - all a minute). Taken at its word, every right
+        // answer lost 30 points for being four minutes long and nothing passed.
+        if (qq && dur == QQ_PLACEHOLDER_MS) {
+            dur = 0L;
+        }
+        Query q = build(title, artist, album, dur);
+        String qqId = qq ? LyricSource.idOf(c) : null;
+        return q == null || qqId == null ? q
+                : new Query(q.title, q.artist, q.album, q.durationMs, qqId);
     }
+
+    /** What QQ 音乐 publishes as a song's duration when it is not saying. */
+    private static final long QQ_PLACEHOLDER_MS = 60_000L;
 
     /**
      * The four raw fields, rearranged into something searchable.
@@ -626,12 +650,12 @@ final class NcmLyrics {
 
     /** Title and artist, which is what the search endpoint ranks on. */
     static String terms(Query q) {
-        return joined(q.title, firstArtist(q.artist));
+        return joined(TrackName.untranslated(q.title), TrackName.unaliased(firstArtist(q.artist)));
     }
 
     /** The album's name and its artist, which is what the album search ranks on. */
     private static String albumTerms(Query q) {
-        return joined(q.album, firstArtist(q.artist));
+        return joined(q.album, TrackName.unaliased(firstArtist(q.artist)));
     }
 
     /** Two search terms, either of which may be missing, in the one order the endpoint wants. */
