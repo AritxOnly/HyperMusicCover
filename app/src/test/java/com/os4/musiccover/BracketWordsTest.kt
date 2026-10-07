@@ -53,6 +53,37 @@ class BracketWordsTest {
     }
 
     @Test
+    fun aTranslationWrittenAboveItsLineIsItsLines() {
+        val lines = parse("[00:01.000]你孤身一人[00:01.000]",
+            "[00:01.001]君[00:01.300]は[00:01.600]ひとり[00:02.500]",
+            "[00:03.000]听到了什么[00:03.000]",
+            "[00:03.001]何[00:03.300]を[00:03.600]聴いてた[00:04.500]")
+        assertEquals(listOf("君はひとり", "何を聴いてた"), lines.map { it.text })
+        assertEquals(listOf("你孤身一人", "听到了什么"), lines.map { it.translation })
+    }
+
+    @Test
+    fun aPlainTranslationWrittenFirstIsStillTheTranslation() {
+        val lines = parse("[00:01.00]你孤身一人", "[00:01.00]君はひとり",
+            "[00:03.00]听到了什么", "[00:03.00]何を聴いてた")
+        assertEquals(listOf("君はひとり", "何を聴いてた"), lines.map { it.text })
+        assertEquals(listOf("你孤身一人", "听到了什么"), lines.map { it.translation })
+        // Written the usual way round, nothing moves.
+        val usual = parse("[00:01.00]君はひとり", "[00:01.00]你孤身一人")
+        assertEquals("君はひとり", usual[0].text)
+        assertEquals("你孤身一人", usual[0].translation)
+        // A Chinese song with a Chinese second row is left alone.
+        assertEquals("第一行", parse("[00:01.00]第一行", "[00:01.00]第二行")[0].text)
+    }
+
+    @Test
+    fun aPlainTranslationOfAWordTimedLineGoesUnderIt() {
+        val lines = parse("[00:01.000]你孤身一人", "[00:01.000]<00:01.000>君<00:01.300>は<00:01.600>ひとり")
+        assertEquals("君はひとり", lines.single().text)
+        assertEquals("你孤身一人", lines.single().translation)
+    }
+
+    @Test
     fun aDuetPrefixHoldsUntilTheNextOne() {
         val lines = parse("[00:01.000]女：[00:01.100]镜[00:01.250]中[00:01.400]",
             "[00:05.000]偶尔[00:05.300]红妆[00:05.600]",

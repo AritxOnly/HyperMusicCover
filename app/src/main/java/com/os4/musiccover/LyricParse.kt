@@ -390,6 +390,7 @@ object LyricParse {
         val rows = body.split('\n').flatMap { sungAgain(it) }
         val cut = rows.map { pieces(it) }
         val timed = cut.any { it != null && words(it) }
+        val ahead = timed && translationsAhead(cut)
         val out = ArrayList<String>(rows.size)
         val lanes = ArrayList<Pair<Int, String>>()
         // The start of the word-timed line a translation after it would belong to.
@@ -416,8 +417,16 @@ object LyricParse {
             // "[t]text[t2]": a translation, or a line with its closing time.
             val text = p[0].second.trim()
             val end = ms(p.last().first) ?: start
+            if (ahead) {
+                // A file that writes each translation above its line: it is the next line's.
+                val next = nextWords(cut, i)
+                if (next != null && kotlin.math.abs(next - start) <= LANE_MS) {
+                    lanes.add(Pair(next, text))
+                    continue
+                }
+            }
             val own = owner
-            val lane = timed && own != null && (kotlin.math.abs(start - own) <= LANE_MS
+            val lane = !ahead && timed && own != null && (kotlin.math.abs(start - own) <= LANE_MS
                     || (end == start && start >= own && start <= nextStart(cut, i)))
             if (lane) {
                 lanes.add(Pair(own!!, text))
@@ -431,8 +440,102 @@ object LyricParse {
                 owner = null
             }
         }
-        return Prepared(inOrder(out).joinToString("\n"), lanes)
+        return Prepared(originalsFirst(inOrder(out)).joinToString("\n"), lanes)
     }
+
+    /**
+     * Whether a word-timed file writes its translations above their lines rather than below:
+     * its first translation - a row with no word timings, at the time of the line after it -
+     * comes before its first sung line. Read the usual way, every translation went to the line
+     * before its own and the first one was a line of its own (#64, 正文/翻译颠倒).
+     */
+    private fun translationsAhead(cut: List<List<Pair<MatchResult, String>>?>): Boolean {
+        for ((i, p) in cut.withIndex()) {
+            if (p == null || p.size < 2) continue
+            if (words(p)) return false
+            val start = ms(p[0].first) ?: continue
+            val next = nextWords(cut, i) ?: return false
+            return kotlin.math.abs(next - start) <= LANE_MS
+        }
+        return false
+    }
+
+    /** When the row after row i starts, if it is a word-timed one. */
+    private fun nextWords(cut: List<List<Pair<MatchResult, String>>?>, i: Int): Int? {
+        for (j in i + 1 until cut.size) {
+            val p = cut[j] ?: continue
+            return if (words(p)) ms(p[0].first) else null
+        }
+        return null
+    }
+
+    /**
+     * Two rows at one time - a line and its translation, as LRC writes them - with the line first,
+     * since the parser takes the first for the line and the second for its translation. Some
+     * files write the translation first, and the song came out in Chinese with its own words
+     * under it (#64). A row with word timings is the line wherever it is; between two without,
+     * a Japanese or Korean one is the line and a Chinese one its translation, when the file puts
+     * the Chinese first more often than not. Not English: a Chinese song translated into English
+     * is written exactly like an English song with its translation first, and is left as it is.
+     */
+    private fun originalsFirst(rows: List<String>): List<String> {
+        val at = rows.map { r -> LRC_TIME.find(r.trimStart())?.let { ms(it) } }
+        val pairs = ArrayList<Int>()
+        for (i in 0 until rows.size - 1) {
+            if (at[i] != null && at[i] == at[i + 1]) pairs.add(i)
+        }
+        if (pairs.isEmpty()) return rows
+        val out = rows.toMutableList()
+        var behind = 0
+        var ahead = 0
+        for (i in pairs) {
+            val a = script(rows[i])
+            val b = script(rows[i + 1])
+            if (a == HAN && b == KANA) ahead++
+            if (a == KANA && b == HAN) behind++
+        }
+        val swapChinese = ahead > behind
+        var i = 0
+        while (i < rows.size - 1) {
+            if (at[i] == null || at[i] != at[i + 1]) {
+                i++
+                continue
+            }
+            val wa = rows[i].contains('<')
+            val wb = rows[i + 1].contains('<')
+            val swap = if (wa != wb) wb
+                else swapChinese && script(rows[i]) == HAN && script(rows[i + 1]) == KANA
+            if (swap) {
+                out[i] = rows[i + 1]
+                out[i + 1] = rows[i]
+            }
+            i += 2
+        }
+        return out
+    }
+
+    private const val HAN = 1
+    private const val KANA = 2
+
+    /**
+     * HAN for a row in Chinese, KANA for one with any kana or hangul in it - Japanese is Han and
+     * kana both - and 0 for anything else.
+     */
+    private fun script(row: String): Int {
+        val text = row.replace(LRC_TAG, "").replace(ANGLE_TAG, "")
+        var h = 0
+        var other = 0
+        for (ch in text) {
+            when {
+                ch.code in 0x3040..0x30FF || ch.code in 0xAC00..0xD7AF -> return KANA
+                ch.code in 0x4E00..0x9FFF -> h++
+                ch.isLetter() -> other++
+            }
+        }
+        return if (h > 0 && h > other) HAN else 0
+    }
+
+    private val ANGLE_TAG = Regex("<[^>]*>")
 
     /**
      * A line sung more than once, written once with all its times - "[00:12.00][01:30.00]副歌",
