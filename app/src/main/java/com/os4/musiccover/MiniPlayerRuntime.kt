@@ -6597,10 +6597,9 @@ private class MiniPlayerController(
         override fun onSettled(morph: MiniCardMorph, toNative: Boolean, completed: Boolean) {}
     }
 
-    /** One upward gesture opens every island in the visual stack on the same list scroll. */
+    /** Even a lone stacked card uses the list whose downward pull returns it to its island. */
     fun beginStackSpread(startY: Float): Boolean {
-        if (!stackedStyle() || islandKeys.isEmpty() ||
-            islandKeys.size + LockIslands.releasedKeys().size < 2 || spread != null ||
+        if (!stackedStyle() || islandKeys.isEmpty() || spread != null ||
             morph != null || exchange != null || noteMorphKey != null || group != null ||
             flight != null || player?.visibility != View.VISIBLE) return false
         openSpread("stack swipe", SpreadFinger(startY))
