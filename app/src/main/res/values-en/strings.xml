@@ -208,6 +208,8 @@
     <string name="mini_nav_keep_on">Keep the screen on while navigating</string>
     <string name="mini_status_at_date">Status after the date</string>
     <string name="mini_status_at_date_summary">Keeps Do Not Disturb and charging clear of the pill</string>
+    <string name="mini_fod_lift">Clear of the fingerprint sensor</string>
+    <string name="mini_fod_lift_summary">On phones with a low optical sensor, lifts the pill above it</string>
     <string name="mini_nav_keep_on_summary">While an Amap navigation or transit page is up</string>
 
     <!-- What the two demonstrations are called, page by page; see the default strings for the rule. -->

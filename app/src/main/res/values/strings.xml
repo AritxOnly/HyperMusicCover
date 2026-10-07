@@ -219,6 +219,8 @@
     <string name="mini_nav_keep_on">导航时屏幕常亮</string>
     <string name="mini_status_at_date">状态显示在日期后面</string>
     <string name="mini_status_at_date_summary">勿扰、充电不再被胶囊挡住</string>
+    <string name="mini_fod_lift">避开屏下指纹</string>
+    <string name="mini_fod_lift_summary">光学短焦指纹位置较低的机型，把胶囊抬到指纹区上方</string>
     <string name="mini_nav_keep_on_summary">显示高德导航或公交页面时</string>
 
     <!-- What the two demonstrations are called, page by page. Only the title: the page under it

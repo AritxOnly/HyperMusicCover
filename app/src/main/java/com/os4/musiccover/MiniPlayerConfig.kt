@@ -21,6 +21,11 @@ object MiniPlayerConfig {
     /** 勿扰, charging and the like drawn after the date, clear of the pill (DateStatus). */
     const val STATUS_AT_DATE = "statusAtDate"
 
+    /** The row lifted off a low under-display fingerprint sensor (MiniPlayerRuntime.fingerprintArea, #66). */
+    const val FOD_LIFT = "fodLift"
+
+    private val switches = setOf(ENABLED, ADAPTIVE_WIDTH, NAV_KEEP_ON, STATUS_AT_DATE, FOD_LIFT)
+
     private val defaults = linkedMapOf<String, Any>(
         ENABLED to false,
         WIDTH to 221f,
@@ -29,12 +34,13 @@ object MiniPlayerConfig {
         ADAPTIVE_WIDTH to false,
         NAV_KEEP_ON to false,
         STATUS_AT_DATE to true,
+        FOD_LIFT to true,
     )
 
     @JvmStatic fun defaultJson(): String = normalizedJson(null)
 
     /**
-     * The config as the module will use it: [ENABLED], [ADAPTIVE_WIDTH], [NAV_KEEP_ON] and [STATUS_AT_DATE] from the input, the
+     * The config as the module will use it: the switches ([ENABLED], [ADAPTIVE_WIDTH], [NAV_KEEP_ON], [STATUS_AT_DATE], [FOD_LIFT]) from the input, the
      * three size keys always at the values above.
      *
      * The sizes were sliders and are not settings any more - the app has no rows for them - so a
@@ -55,7 +61,7 @@ object MiniPlayerConfig {
         val input = runCatching { JSONObject(raw.orEmpty()) }.getOrDefault(JSONObject())
         val out = JSONObject()
         defaults.forEach { (key, fallback) ->
-            out.put(key, if (key == ENABLED || key == ADAPTIVE_WIDTH || key == NAV_KEEP_ON || key == STATUS_AT_DATE) {
+            out.put(key, if (key in switches) {
                 runCatching { input.getBoolean(key) }.getOrDefault(fallback)
             } else {
                 fallback

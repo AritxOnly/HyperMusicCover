@@ -10165,9 +10165,12 @@ private class MiniPlayerController(
     /**
      * The row's centre moved up off the fingerprint sensor where the two would meet
      * (MiniPlayerRuntime.fingerprintArea, #66); the torch and camera stay where they are. Only
-     * the span between the buttons counts across: the row never reaches past them.
+     * the span between the buttons counts across: the row never reaches past them. Under a
+     * switch (MiniPlayerConfig.FOD_LIFT); off, the row stays put and only the touches that start
+     * on the sensor are still left to it.
      */
     private fun clearOfFingerprint(centerY: Float, height: Int, l: FloatArray?, r: FloatArray?): Float {
+        if (!config.optBoolean(MiniPlayerConfig.FOD_LIFT, true)) return centerY
         val fod = fingerprintInHost() ?: return centerY
         val from = l?.get(0) ?: 0f
         val to = r?.get(0) ?: host.width.toFloat()
