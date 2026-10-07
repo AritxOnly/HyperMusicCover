@@ -66,9 +66,28 @@ class BracketWordsTest {
     }
 
     @Test
-    fun aLineSungTwiceIsLeftToTheParser() {
-        val twice = "[00:01.00][00:05.00]副歌\n[00:03.00]主歌\n[00:07.00][00:07.00]歌词"
-        assertEquals(twice, LyricParse.bracketWords(twice).body)
+    fun aLineSungTwiceIsOneRowPerTime() {
+        val lines = parse("[ti:歌]", "[00:01.00][00:05.00]副歌", "[00:03.00]主歌",
+            "[00:07.00] [00:07.00]歌词")
+        assertEquals(listOf("副歌", "主歌", "副歌", "歌词"), lines.map { it.text })
+        assertEquals(listOf(1000, 3000, 5000, 7000), lines.map { it.start })
+    }
+
+    /** NetEase 2057709543 (Pasión): one row out of place, and the whole lyric was lost. */
+    @Test
+    fun aRowOutOfPlaceIsPutBack() {
+        val lines = parse("[00:00.00] 作词 : G.E.M.", "[02:10.00]before",
+            "[02:20.02]Cuz Father, my heart aches", "[02:14.44]¿Alguien escucha mi llanto?",
+            "[02:30.00]after")
+        assertEquals(listOf(0, 130000, 134440, 140020, 150000), lines.map { it.start })
+    }
+
+    @Test
+    fun aLineSungTwiceKeepsItsTranslation() {
+        val lines = parse("[00:01.00][00:05.00]副歌", "[00:01.00][00:05.00]chorus",
+            "[00:03.00]主歌", "[00:03.00]verse")
+        assertEquals(listOf("副歌", "主歌", "副歌"), lines.map { it.text })
+        assertEquals(listOf("chorus", "verse", "chorus"), lines.map { it.translation })
     }
 
     @Test

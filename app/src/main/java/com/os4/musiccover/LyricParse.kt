@@ -347,7 +347,7 @@ object LyricParse {
      */
     internal fun bracketWords(body: String): Prepared {
         if (!body.contains('[')) return Prepared(body, emptyList())
-        val rows = body.split('\n')
+        val rows = body.split('\n').flatMap { sungAgain(it) }
         val cut = rows.map { pieces(it) }
         val timed = cut.any { it != null && words(it) }
         val out = ArrayList<String>(rows.size)
@@ -391,7 +391,46 @@ object LyricParse {
                 owner = null
             }
         }
-        return Prepared(out.joinToString("\n"), lanes)
+        return Prepared(inOrder(out).joinToString("\n"), lanes)
+    }
+
+    /**
+     * A line sung more than once, written once with all its times - "[00:12.00][01:30.00]副歌",
+     * as hand-made LRC writes a chorus - as one row per time, which inOrder then puts in its
+     * place. As written, the file read as no lyric at all. The same time twice is one row. A row with word timings
+     * after its times is left as it is: those are the first time's, and no other time has any.
+     */
+    private fun sungAgain(raw: String): List<String> {
+        val tags = LRC_TAG.findAll(raw).toList()
+        if (tags.size < 2 || raw.substring(0, tags[0].range.first).isNotBlank()) return listOf(raw)
+        var n = 1
+        while (n < tags.size && raw.substring(tags[n - 1].range.last + 1, tags[n].range.first).isBlank()) n++
+        if (n < 2 || n < tags.size) return listOf(raw)
+        val text = raw.substring(tags[n - 1].range.last + 1)
+        return tags.map { it.value }.distinct().map { it + text }
+    }
+
+    /**
+     * The timed rows in time order, the rest (the tags, blank rows) ahead of them as they were.
+     * lyrics-core throws on an LRC whose rows go back in time - its rearrangeUncheckedLineTime
+     * requires the next line to start later - and a lyric it throws on is no lyric at all; a
+     * chorus written once with all its times always does, and hand-edited files often. Stable,
+     * so a translation stays after the line it shares a start with; run once bracketWords has
+     * taken off the ones timed a millisecond early, which would have gone ahead of their line.
+     * Untouched when in order.
+     */
+    private fun inOrder(rows: List<String>): List<String> {
+        val at = rows.map { r -> LRC_TIME.find(r.trimStart())?.let { ms(it) } }
+        var last = Int.MIN_VALUE
+        var sorted = true
+        for (t in at) {
+            if (t == null) continue
+            if (t < last) sorted = false
+            last = t
+        }
+        if (sorted) return rows
+        val timed = rows.indices.filter { at[it] != null }.sortedBy { at[it] }
+        return rows.indices.filter { at[it] == null }.map { rows[it] } + timed.map { rows[it] }
     }
 
     /**
