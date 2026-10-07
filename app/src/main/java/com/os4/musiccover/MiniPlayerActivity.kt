@@ -98,41 +98,41 @@ private fun MiniPlayerPage(blur: Boolean, refreshKey: Int, onBack: () -> Unit) {
             // width and artwork radius remain fixed.
             Card(Modifier.padding(horizontal = 12.dp, vertical = 12.dp)) {
                 Column {
-                    SwitchPreference(title = "启用锁屏超级岛",
+                    SwitchPreference(title = stringResource(R.string.mini_enabled),
                         summary = when {
-                            !alive -> "等待 SystemUI 模块响应"
-                            !ready -> "请在首页重启 SystemUI，载入新版模块后才能保存这些选项"
-                            else -> "普通锁屏的底部快捷按钮之间显示"
+                            !alive -> stringResource(R.string.mini_enabled_waiting)
+                            !ready -> stringResource(R.string.mini_enabled_update_required)
+                            else -> null
                         },
                         checked = config.optBoolean(MiniPlayerConfig.ENABLED), enabled = ready,
                         onCheckedChange = { push(MiniPlayerConfig.ENABLED, it) })
                     WindowDropdownPreference(
-                        title = "锁屏岛样式",
-                        items = listOf("并排样式", "堆叠样式"),
+                        title = stringResource(R.string.mini_style),
+                        items = listOf(stringResource(R.string.mini_style_row), stringResource(R.string.mini_style_stack)),
                         selectedIndex = config.optInt(MiniPlayerConfig.STYLE, MiniPlayerConfig.STYLE_ROW)
                             .coerceIn(MiniPlayerConfig.STYLE_ROW, MiniPlayerConfig.STYLE_STACK),
                         enabled = ready && config.optBoolean(MiniPlayerConfig.ENABLED),
                         onSelectedIndexChange = { push(MiniPlayerConfig.STYLE, it) },
                     )
-                    SwitchPreference(title = "按应用堆叠通知",
-                        summary = "同一应用合成一层；点击展开该应用，上滑展开全部",
+                    SwitchPreference(title = stringResource(R.string.mini_group_by_app),
+                        summary = stringResource(R.string.mini_group_by_app_summary),
                         checked = config.optBoolean(MiniPlayerConfig.GROUP_NOTIFICATIONS_BY_APP),
                         enabled = ready && config.optBoolean(MiniPlayerConfig.ENABLED) &&
                             config.optInt(MiniPlayerConfig.STYLE) == MiniPlayerConfig.STYLE_STACK,
                         onCheckedChange = { push(MiniPlayerConfig.GROUP_NOTIFICATIONS_BY_APP, it) })
-                    SwitchPreference(title = "媒体通知默认收起为锁屏岛",
-                        summary = "新媒体出现时保持锁屏岛，点击可展开封面",
+                    SwitchPreference(title = stringResource(R.string.mini_media_collapsed),
+                        summary = stringResource(R.string.mini_media_collapsed_summary),
                         checked = config.optBoolean(MiniPlayerConfig.MEDIA_COLLAPSED_DEFAULT),
                         enabled = ready && config.optBoolean(MiniPlayerConfig.ENABLED),
                         onCheckedChange = { push(MiniPlayerConfig.MEDIA_COLLAPSED_DEFAULT, it) })
-                    SwitchPreference(title = "背景展开时下沉通知并隐藏指纹",
-                        summary = "展开音乐封面、地图或计时器等背景时生效；收起后恢复原有布局",
+                    SwitchPreference(title = stringResource(R.string.mini_sink_background),
+                        summary = stringResource(R.string.mini_sink_background_summary),
                         checked = config.optBoolean(MiniPlayerConfig.SINK_WITH_EXPANDED_BACKGROUND),
                         enabled = ready && config.optBoolean(MiniPlayerConfig.ENABLED),
                         onCheckedChange = { push(MiniPlayerConfig.SINK_WITH_EXPANDED_BACKGROUND, it) })
                     ValueSlider(
-                        title = "锁屏岛与快捷方式大小",
-                        summary = "调整锁屏岛高度和两侧按钮直径",
+                        title = stringResource(R.string.mini_height),
+                        summary = stringResource(R.string.mini_height_summary),
                         value = heightDraft.coerceIn(MiniPlayerConfig.MIN_HEIGHT_DP,
                             MiniPlayerConfig.MAX_HEIGHT_DP),
                         valueRange = MiniPlayerConfig.MIN_HEIGHT_DP..MiniPlayerConfig.MAX_HEIGHT_DP,
@@ -144,40 +144,40 @@ private fun MiniPlayerPage(blur: Boolean, refreshKey: Int, onBack: () -> Unit) {
                             push(MiniPlayerConfig.HEIGHT_RADIUS, heightDraft.roundToInt() / 2f)
                         },
                     )
-                    SwitchPreference(title = "统一通知卡片材质",
-                        summary = "使用锁屏通知卡片的颜色与玻璃参数",
+                    SwitchPreference(title = stringResource(R.string.mini_notification_material),
+                        summary = stringResource(R.string.mini_notification_material_summary),
                         checked = config.optBoolean(MiniPlayerConfig.NOTIFICATION_MATERIAL),
                         enabled = ready && config.optBoolean(MiniPlayerConfig.ENABLED),
                         onCheckedChange = { push(MiniPlayerConfig.NOTIFICATION_MATERIAL, it) })
-                    SwitchPreference(title = "快捷方式关闭时加宽",
-                        summary = "手电筒或相机在系统设置里关掉后，超级岛占用空出的位置",
+                    SwitchPreference(title = stringResource(R.string.mini_widen),
+                        summary = stringResource(R.string.mini_widen_summary),
                         checked = config.optBoolean(MiniPlayerConfig.ADAPTIVE_WIDTH),
                         enabled = ready && config.optBoolean(MiniPlayerConfig.ENABLED),
                         onCheckedChange = { push(MiniPlayerConfig.ADAPTIVE_WIDTH, it) })
-                    SwitchPreference(title = "息屏时隐藏两侧快捷方式",
-                        summary = "全屏息屏显示时隐藏手电筒、相机及其柔光玻璃",
+                    SwitchPreference(title = stringResource(R.string.mini_hide_aod_shortcuts),
+                        summary = stringResource(R.string.mini_hide_aod_shortcuts_summary),
                         checked = config.optBoolean(MiniPlayerConfig.HIDE_AOD_SHORTCUTS),
                         enabled = ready && config.optBoolean(MiniPlayerConfig.ENABLED),
                         onCheckedChange = { push(MiniPlayerConfig.HIDE_AOD_SHORTCUTS, it) })
-                    SwitchPreference(title = "锁屏岛文字跑马灯",
-                        summary = "关闭后长标题和副标题以省略号截断",
+                    SwitchPreference(title = stringResource(R.string.mini_marquee),
+                        summary = stringResource(R.string.mini_marquee_summary),
                         checked = config.optBoolean(MiniPlayerConfig.MARQUEE, true),
                         enabled = ready && config.optBoolean(MiniPlayerConfig.ENABLED),
                         onCheckedChange = { push(MiniPlayerConfig.MARQUEE, it) })
                     SwitchPreference(title = stringResource(R.string.mini_nav_keep_on),
                         summary = stringResource(R.string.mini_nav_keep_on_summary),
                         checked = config.optBoolean(MiniPlayerConfig.NAV_KEEP_ON),
-                        enabled = alive && config.optBoolean(MiniPlayerConfig.ENABLED),
+                        enabled = ready && config.optBoolean(MiniPlayerConfig.ENABLED),
                         onCheckedChange = { push(MiniPlayerConfig.NAV_KEEP_ON, it) })
                     SwitchPreference(title = stringResource(R.string.mini_status_at_date),
                         summary = stringResource(R.string.mini_status_at_date_summary),
                         checked = config.optBoolean(MiniPlayerConfig.STATUS_AT_DATE),
-                        enabled = alive && config.optBoolean(MiniPlayerConfig.ENABLED),
+                        enabled = ready && config.optBoolean(MiniPlayerConfig.ENABLED),
                         onCheckedChange = { push(MiniPlayerConfig.STATUS_AT_DATE, it) })
                     SwitchPreference(title = stringResource(R.string.mini_fod_lift),
                         summary = stringResource(R.string.mini_fod_lift_summary),
                         checked = config.optBoolean(MiniPlayerConfig.FOD_LIFT),
-                        enabled = alive && config.optBoolean(MiniPlayerConfig.ENABLED),
+                        enabled = ready && config.optBoolean(MiniPlayerConfig.ENABLED),
                         onCheckedChange = { push(MiniPlayerConfig.FOD_LIFT, it) })
                 }
             }

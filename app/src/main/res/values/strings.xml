@@ -152,8 +152,8 @@
     <string name="lyrics_provider_got_it">知道了</string>
     <string name="lyrics_provider_got_it_wait">知道了 (%1$d)</string>
     <string name="lyrics_trans">显示翻译</string>
-    <string name="lyrics_hide_aod">息屏时隐藏歌词</string>
-    <string name="lyrics_hide_aod_summary">全屏息屏显示时隐藏滚动歌词，点亮后继续显示</string>
+    <string name="lyrics_hide_aod">息屏时隐藏滚动歌词</string>
+    <string name="lyrics_hide_aod_summary">仅在全屏息屏显示时隐藏，点亮屏幕后恢复</string>
     <string name="lyrics_roma">显示罗马音</string>
     <string name="lyrics_align">歌词对齐方式</string>
     <string name="lyrics_align_left">居左</string>
@@ -211,11 +211,28 @@
     <string name="shade_mode_restore">系统默认</string>
     <string name="shade_mode_keep">保持音乐封面</string>
 
-    <!-- The islands' page, which the features page opens. The two rows here are the only settings
-         it has left; everything else about the pill is fixed. -->
+    <!-- Settings for the lockscreen islands page. -->
     <string name="mini_page_title">锁屏超级岛</string>
     <string name="mini_enabled">启用锁屏超级岛</string>
     <string name="mini_enabled_waiting">等待 SystemUI 模块响应</string>
+    <string name="mini_enabled_update_required">请在首页重启 SystemUI 后再修改设置</string>
+    <string name="mini_style">锁屏岛排列方式</string>
+    <string name="mini_style_row">并排</string>
+    <string name="mini_style_stack">堆叠</string>
+    <string name="mini_group_by_app">按应用合并普通通知</string>
+    <string name="mini_group_by_app_summary">堆叠时，同一应用的普通通知放在同一层；点击展开该应用的通知</string>
+    <string name="mini_media_collapsed">播放音乐时不自动展开封面</string>
+    <string name="mini_media_collapsed_summary">开始播放时先显示锁屏岛，点击后再展开音乐封面</string>
+    <string name="mini_sink_background">展开背景时下移通知</string>
+    <string name="mini_sink_background_summary">展开音乐封面、导航或倒计时页面时，下移通知并隐藏指纹图标；收起后恢复</string>
+    <string name="mini_height">锁屏岛高度</string>
+    <string name="mini_height_summary">同时调整两侧手电筒和相机按钮的大小</string>
+    <string name="mini_notification_material">锁屏岛使用通知柔光玻璃</string>
+    <string name="mini_notification_material_summary">锁屏岛使用普通通知的颜色和柔光玻璃，展开超级岛通知时也保持不变</string>
+    <string name="mini_hide_aod_shortcuts">息屏时隐藏手电筒和相机按钮</string>
+    <string name="mini_hide_aod_shortcuts_summary">仅在全屏息屏显示时隐藏，点亮屏幕后恢复</string>
+    <string name="mini_marquee">滚动显示锁屏岛长文字</string>
+    <string name="mini_marquee_summary">标题或副标题显示不全时自动滚动；关闭后用省略号截断</string>
     <string name="mini_widen">快捷方式关闭时加宽</string>
     <string name="mini_widen_summary">手电筒或相机关闭后占用空位</string>
     <string name="mini_nav_keep_on">导航时屏幕常亮</string>

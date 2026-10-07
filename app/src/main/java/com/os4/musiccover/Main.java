@@ -2384,6 +2384,8 @@ public class Main extends XposedModule {
                         saveState();
                     } else if ("lyrichideaod".equals(op)) {
                         LockLyrics.sHideInAod = i.getBooleanExtra("on", !LockLyrics.sHideInAod);
+                        LockLyrics.refresh();
+                        saveState();
                     } else if ("lyricroma".equals(op)) {
                         LockLyrics.sRoma = i.getBooleanExtra("on", !LockLyrics.sRoma);
                         Xp.log(TAG + "lyrics romanisations: " + LockLyrics.sRoma);
