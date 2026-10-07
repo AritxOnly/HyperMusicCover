@@ -507,13 +507,14 @@ internal class MiniCardMorph(
                     val nt = n as TextView
                     val colour = androidx.core.graphics.ColorUtils.blendARGB(piece.ownColor, nt.currentTextColor, mix)
                     if (tv.currentTextColor != colour) tv.setTextColor(colour)
-                    if (mix >= 0.5f && !piece.textRefused &&
-                        !android.text.TextUtils.equals(tv.text, nt.text)) {
+                    // Restore the island's words at the blurred midpoint on the way back,
+                    // rather than switching visible text after the final animation frame.
+                    val words = if (mix >= 0.5f) nt.text else piece.ownText
+                    if (!piece.textRefused && !android.text.TextUtils.equals(tv.text, words)) {
                         // The words, not the card's text object: that is a PrecomputedText laid
                         // out for the card's size, typeface and hyphenation, and setText throws on
                         // a TextView whose own differ - from a frame callback, so the whole of
                         // SystemUI went down with it (issue #11, 2026-09-26).
-                        val words = nt.text
                         val copy = if (words is android.text.Spanned) android.text.SpannedString(words)
                             else words.toString()
                         try {

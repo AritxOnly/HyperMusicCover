@@ -2549,6 +2549,12 @@ private class MiniPlayerController(
         // A focus template's own picture for the small island, moving if it moves; bare as the
         // super island draws it.
         // Every notification's picture comes cut or whole already (LockIslands.roundIcon).
+        if (stackedStyle()) {
+            val metadata = music?.let(::metadataOf)
+            view.setCardText(
+                note?.title ?: metadata?.getString(MediaMetadata.METADATA_KEY_TITLE).orEmpty().ifBlank { "正在播放" },
+                note?.text ?: metadata?.getString(MediaMetadata.METADATA_KEY_ARTIST).orEmpty())
+        } else view.setCardText(null, null)
         view.setIconBare(note != null)
         // The pill's own Lottie, not the plugin's smaller one for its small island: the two
         // files draw at different sizes on their canvases, and in the same box the small island's
@@ -3147,14 +3153,15 @@ private class MiniPlayerController(
         val box = CoverMorphMotion.Box(grown.x, grown.y + (grown.h - h) / 2f, maxOf(grown.w, h), h)
         if (pillLandingBox != null || s.holdPill) {
             // The pill is under a flight landing on it, or waiting for a card to: that has its frame.
-        } else if (s.pillKept || stackedStyle()) {
+        } else if (s.pillKept) {
             view.setMorphFrame(box, box.h / 2f, 1f)
             view.setContentAlpha(1f)
-        } else if (s.kind == SWAP_PREV) {
+        } else if (s.kind == SWAP_PREV || stackedStyle()) {
             view.setMorphFrame(box, box.h / 2f, 1f)
             // Out of the middle: the content comes into focus as it arrives.
-            val c = s.contentIn.value.coerceIn(0f, 1f)
-            view.setContentAlpha(c)
+            val c = if (s.kind == SWAP_PREV) s.contentIn.value.coerceIn(0f, 1f)
+                else MiniCardMorph.smooth(0f, 1f, p)
+            view.setContentAlpha(if (stackedStyle()) 1f else c)
             view.setContentBlur((1f - c) * swapBlurPx())
         } else {
             view.setMorphFrame(box, box.h / 2f, 1f)
@@ -3224,6 +3231,7 @@ private class MiniPlayerController(
         val front = lerpBox(s.pillFrom, s.pillTo, p)
         view.setMorphFrame(front, front.h / 2f, 1f)
         view.setContentAlpha(1f)
+        view.setContentBlur(kotlin.math.sin(Math.PI.toFloat() * q) * swapBlurPx())
         view.alpha = lerp(MiniPlayerGeometry.STACK_BACK_ALPHA, 1f, q)
         val rear = smallBoxOnScreen()
         val from = s.ghostFrom
@@ -3367,7 +3375,8 @@ private class MiniPlayerController(
             // Made without it, the stand-in dropped the button the moment the switch began: the
             // stopwatch's left button gone in a frame as the cover was pulled down (2026-09-26).
             view.setSecondProgress(s.ghostSecond * (1f - MiniCardMorph.smooth(0f, 0.5f, g)))
-            view.setTextAlpha(1f - MiniCardMorph.smooth(0f, 0.5f, g))
+            view.setTextAlpha(if (stackedStyle()) 1f else 1f - MiniCardMorph.smooth(0f, 0.5f, g))
+            if (stackedStyle()) view.setContentBlur(kotlin.math.sin(Math.PI.toFloat() * g.coerceIn(0f, 1f)) * swapBlurPx())
             view.alpha = 1f - MiniCardMorph.smooth(GHOST_HANDOFF, 1f, g)
             return
         }
@@ -3399,6 +3408,8 @@ private class MiniPlayerController(
         }
         val picture: Any? = if (key == MUSIC_ISLAND) (thumbShown ?: cachedCover)
             else LockIslands.notes.firstOrNull { it.key == key }?.icon ?: LockIslands.noteFor(key)?.icon
+        if (stackedStyle()) disc.copyCardTextFrom(smallIsland)
+        else disc.setCardText(null, null)
         disc.setIconBare(key != MUSIC_ISLAND)
         disc.setIcon(when (picture) {
             is Bitmap -> android.graphics.drawable.BitmapDrawable(context.resources, picture)
@@ -3970,7 +3981,7 @@ private class MiniPlayerController(
         }
         val next = MiniCardMorph(lead, native, toNative, morphListener,
             restBox = if (g.musicSmall) { { smallBoxOnScreen() } } else null,
-            circle = g.musicSmall)
+            circle = g.musicSmall && !stackedStyle())
         // The other island's row, if the stack has it laid out already: coming down it always
         // has; going up, only if the pull was seen coming (rowsAnticipated). Otherwise the music
         // sets out alone and the other island joins it the moment its row is there (groupFrame).
@@ -4120,7 +4131,7 @@ private class MiniPlayerController(
         showRow(row)
         val f = MiniCardMorph(view, row, fromIsland, followerListener, rowLanding(row),
             restBox = if (g.otherSmall) { { smallBoxOnScreen() } } else null,
-            circle = g.otherSmall)
+            circle = g.otherSmall && !stackedStyle())
         if (!f.startDragging()) {
             if (g.otherSmall) runCatching { host.removeView(view) }
             hideRow(row)
