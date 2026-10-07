@@ -226,23 +226,29 @@ object LyricParse {
             val m = LRC_TIME.find(raw) ?: continue
             val text = raw.substring(m.range.last + 1).trim()
             if (text.isEmpty()) continue
-            val min = m.groupValues[1].toIntOrNull() ?: continue
-            val sec = m.groupValues[2].toIntOrNull() ?: continue
-            val frac = m.groupValues[3]
-            // One digit is tenths, two are hundredths, three are milliseconds.
-            val ms = when (frac.length) {
-                0 -> 0
-                1 -> (frac.toIntOrNull() ?: 0) * 100
-                3 -> frac.toIntOrNull() ?: 0
-                else -> (frac.toIntOrNull() ?: 0) * 10
-            }
-            out.add(Pair(min * 60000 + sec * 1000 + ms, text))
+            out.add(Pair(ms(m) ?: continue, text))
         }
         out.sortBy { it.first }
         return out
     }
 
+    /** An LRC time tag's minutes, seconds and fraction, in milliseconds. */
+    private fun ms(m: MatchResult): Int? {
+        val min = m.groupValues[1].toIntOrNull() ?: return null
+        val sec = m.groupValues[2].toIntOrNull() ?: return null
+        val frac = m.groupValues[3]
+        // One digit is tenths, two are hundredths, three are milliseconds.
+        val ms = when (frac.length) {
+            0 -> 0
+            1 -> (frac.toIntOrNull() ?: 0) * 100
+            3 -> frac.toIntOrNull() ?: 0
+            else -> (frac.toIntOrNull() ?: 0) * 10
+        }
+        return min * 60000 + sec * 1000 + ms
+    }
+
     private val LRC_TIME = Regex("^\\[(\\d{1,3}):(\\d{2})(?:[.:](\\d{1,3}))?]")
+    private val LRC_TAG = Regex("\\[(\\d{1,3}):(\\d{2})(?:[.:](\\d{1,3}))?]")
 
     /** The same line carrying a translation it did not come with. */
     private fun withTranslation(line: LyricLine, text: String): LyricLine {
@@ -259,8 +265,9 @@ object LyricParse {
         // Pasión). Uncaught on a worker thread that is the whole of SystemUI going down, once per
         // play of the song (2026-10-06, twice in fifteen seconds). A lyric that cannot be read is
         // no lyric.
+        val prepared = bracketWords(body)
         val lyrics = try {
-            AutoParser().parse(body)
+            AutoParser().parse(prepared.body)
         } catch (t: Throwable) {
             // The log is SystemUI's; on the JVM the tests run on it is not there to write to.
             runCatching { Xp.log("[MCLyric] the parser gave up on a lyric (" + body.length + " chars): " + t) }
@@ -319,7 +326,128 @@ object LyricParse {
             }
         }
         out.sortBy { it.start }
-        return speakers(out)
+        return speakers(withLanes(out, prepared.lanes))
+    }
+
+    /** A body made ready for the parser, and the translations taken off it by their line's start. */
+    internal class Prepared(val body: String, val lanes: List<Pair<Int, String>>)
+
+    /**
+     * Word timings written in the line's own brackets - "[00:01.000]日[00:01.100]本[00:01.200]語
+     * [00:01.500]", the form LDDC and the tools like it save - rewritten into Enhanced LRC's angle
+     * brackets before the parser sees them. lyrics-core does not read that form (#64): it took the
+     * first word for the line's time and lost it ("本語"), left a closing time on the screen
+     * ("Goodbyes[01:15.342]") and on the end of a translation, and a duet's "女：" went with the
+     * first word, so the two voices were never told apart.
+     *
+     * The same files give a translation a line of its own, timed one of two ways: at its line's
+     * start, or with the same time twice - which no sung line has - just before the next line.
+     * Either way it is taken off here and handed back to its line after parsing; left in, it was
+     * a line of its own. A file with no word timings only loses the closing times.
+     */
+    internal fun bracketWords(body: String): Prepared {
+        if (!body.contains('[')) return Prepared(body, emptyList())
+        val rows = body.split('\n')
+        val cut = rows.map { pieces(it) }
+        val timed = cut.any { it != null && words(it) }
+        val out = ArrayList<String>(rows.size)
+        val lanes = ArrayList<Pair<Int, String>>()
+        // The start of the word-timed line a translation after it would belong to.
+        var owner: Int? = null
+        for ((i, raw) in rows.withIndex()) {
+            val p = cut[i]
+            // Untouched: no time, one time, or times one after another before any text - the
+            // same line sung more than once ("[00:12.00][01:30.00]...").
+            if (p == null || p.size < 2) {
+                if (p != null) owner = null
+                out.add(raw)
+                continue
+            }
+            val start = ms(p[0].first)
+            if (start == null) {
+                out.add(raw)
+                continue
+            }
+            if (words(p)) {
+                out.add(angle(p))
+                owner = start
+                continue
+            }
+            // "[t]text[t2]": a translation, or a line with its closing time.
+            val text = p[0].second.trim()
+            val end = ms(p.last().first) ?: start
+            val own = owner
+            val lane = timed && own != null && (kotlin.math.abs(start - own) <= LANE_MS
+                    || (end == start && start >= own && start <= nextStart(cut, i)))
+            if (lane) {
+                lanes.add(Pair(own!!, text))
+                continue
+            }
+            if (timed && end > start) {
+                out.add(angle(p))
+                owner = start
+            } else {
+                out.add(p[0].first.value + text)
+                owner = null
+            }
+        }
+        return Prepared(out.joinToString("\n"), lanes)
+    }
+
+    /**
+     * How far a translation's time may be from its line's and still be at its start: LDDC writes
+     * them a millisecond apart as often as at the same time.
+     */
+    private const val LANE_MS = 20
+
+    /**
+     * A row's times and the text after each - "[t0]a[t1]b[t2]" is (t0, "a"), (t1, "b"), (t2, "").
+     * Null for a row that does not open with a time, or opens with times one after another.
+     */
+    private fun pieces(raw: String): List<Pair<MatchResult, String>>? {
+        val tags = LRC_TAG.findAll(raw).toList()
+        if (tags.isEmpty() || raw.substring(0, tags[0].range.first).isNotBlank()) return null
+        val p = tags.mapIndexed { i, m ->
+            val end = if (i + 1 < tags.size) tags[i + 1].range.first else raw.length
+            Pair(m, raw.substring(m.range.last + 1, end))
+        }
+        return if (p[0].second.isBlank()) null else p
+    }
+
+    /** Words after the first carry times of their own. */
+    private fun words(p: List<Pair<MatchResult, String>>): Boolean =
+        p.size > 1 && p.drop(1).any { it.second.isNotBlank() }
+
+    /** The row again, every time after the first in angle brackets. */
+    private fun angle(p: List<Pair<MatchResult, String>>): String {
+        val sb = StringBuilder(p[0].first.value)
+        for ((tag, text) in p) {
+            sb.append('<').append(tag.value, 1, tag.value.length - 1).append('>').append(text)
+        }
+        return sb.toString()
+    }
+
+    /** When the next lyric row after row i starts; a translation before it can still be the last line's. */
+    private fun nextStart(cut: List<List<Pair<MatchResult, String>>?>, i: Int): Int {
+        for (j in i + 1 until cut.size) {
+            val p = cut[j] ?: continue
+            return ms(p[0].first) ?: continue
+        }
+        return Int.MAX_VALUE
+    }
+
+    /** The translations bracketWords took off, back on the lines that start where they were. */
+    private fun withLanes(lines: List<LyricLine>, lanes: List<Pair<Int, String>>): List<LyricLine> {
+        if (lanes.isEmpty()) return lines
+        val by = LinkedHashMap<Int, String>()
+        for ((at, text) in lanes) {
+            if (text.isEmpty()) continue
+            by[at] = by[at]?.let { it + "\n" + text } ?: text
+        }
+        return lines.map { line ->
+            val t = by.remove(line.start) ?: return@map line
+            withTranslation(line, line.translation?.let { it + "\n" + t } ?: t)
+        }
     }
 
     /**
