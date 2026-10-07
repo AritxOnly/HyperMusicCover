@@ -354,7 +354,9 @@ internal object LockIslands {
         }
         // Over: the island stands as the stack does. A pull let go before the stack ever left its
         // fold said nothing (no exitNumState), and the island taken out for it stayed out.
-        if (!on && nativeStack) stackOut = !stackFolded()
+        // The module owns a completed collapse. The OEM's fold callback can arrive
+        // after the morph; sampling it here left only the count line for those frames.
+        if (!on && nativeStack) stackOut = !folded && !stackFolded()
         publish()
         invalidate(if (on) "row spread out as the list" else "row folded back")
     }
@@ -897,11 +899,12 @@ internal object LockIslands {
     /** The islands put together from the last run: the focus ones and the stack island. */
     private fun publish() {
         val stack = stackNote?.takeIf { !stackOut }
-        // Spread out, the count stays hidden too: the row folding back comes into its place.
-        if (nativeStack) NumState.hideCount(spreading || active && stack != null)
         val ordinary = if (normalsInStack) emptyList()
             else if (groupByApp) appGroupNotes.values.filter { it.key !in released }
             else listOfNotNull(stack)
+        // App-group islands replace the count too. The OEM may enter NUMBER during a
+        // cancelled pull, even when nativeStack is off; don't leave its count over our cards.
+        NumState.hideCount(!normalsInStack && (spreading || active && ordinary.isNotEmpty()))
         val next = (focusShown + ordinary).sortedWith(bigFirst)
         // Unchanged is the same reading (read() hands back the cached note): by key and time, a
         // stopwatch paused or resumed - its `when` the same - never reached the island.

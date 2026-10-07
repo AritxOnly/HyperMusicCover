@@ -7,6 +7,13 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MiniPlayerStackGestureTest {
+    @Test fun collapsingFollowsTheFingerAndCanReverseWithoutJumping() {
+        assertEquals(0.5f, MiniPlayerStackGesture.collapseProgress(1f, 110f, 220f))
+        assertEquals(0.75f, MiniPlayerStackGesture.collapseProgress(1f, 55f, 220f))
+        assertEquals(0.25f, MiniPlayerStackGesture.collapseProgress(0.5f, 55f, 220f))
+        assertEquals(1f, MiniPlayerStackGesture.collapseProgress(1f, -110f, 220f))
+        assertEquals(0f, MiniPlayerStackGesture.collapseProgress(1f, 1000f, 220f))
+    }
     @Test fun onlyDownwardVerticalMotionStartsBrowsing() {
         assertTrue(MiniPlayerStackGesture.starts(5f, 20f))
         assertFalse(MiniPlayerStackGesture.starts(0f, -80f))

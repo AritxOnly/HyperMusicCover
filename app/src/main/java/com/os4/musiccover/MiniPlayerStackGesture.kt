@@ -10,6 +10,9 @@ internal object MiniPlayerStackGesture {
         !cancelled && dy > 0f &&
             (dy >= 50f * density || dy >= 8f * density && velocityY > 1200f * density)
 
+    fun collapseProgress(startProgress: Float, dy: Float, range: Float): Float =
+        (startProgress - dy / range.coerceAtLeast(1f)).coerceIn(0f, 1f)
+
     fun nextKey(keys: List<String>, selected: String?): String? {
         if (keys.size < 2) return null
         val at = keys.indexOf(selected).coerceAtLeast(0)

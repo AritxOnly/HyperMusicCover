@@ -117,12 +117,6 @@ object MiniPlayerRuntime {
             .forEach { runCatching { it.refresh() } }
     }
 
-    /** The notification stack needs a live move; the fingerprint avoidance flow may stay idle. */
-    @JvmStatic fun onBackdropSinkChanged() {
-        synchronized(controllers) { controllers.values.map { it.controller } }
-            .forEach { controller -> controller.postBackdropSink() }
-    }
-
     /**
      * Each hook on its own: a build that renamed one class costs the feature that needed it,
      * not the rest of the mini player.
@@ -320,6 +314,7 @@ object MiniPlayerRuntime {
     private var notificationBackground: android.graphics.drawable.Drawable.ConstantState? = null
     private var notificationSignature: Any? = null
     private var notificationSource: WeakReference<View>? = null
+    private var notificationFocusCheck: Method? = null
     private var recording: ArrayList<Recorded>? = null
     private var recordTarget: View? = null
     private var recordDepth = 0
@@ -334,6 +329,11 @@ object MiniPlayerRuntime {
      * call made on its media_bg is recorded, and the pill gets the same calls, in order.
      */
     private fun installCardMaterialHooks(classLoader: ClassLoader) {
+        notificationFocusCheck = runCatching {
+            Xp.findClass("com.android.systemui.statusbar.notification.utils.FocusUtils", classLoader)
+                .getDeclaredMethod("isFocusNotification", android.app.Notification::class.java)
+                .apply { isAccessible = true }
+        }.getOrNull()
         val effects = runCatching {
             val helper = Xp.findClass(
                 "com.android.systemui.statusbar.notification.style.vieweffect.NotificationViewEffectHelper",
@@ -452,7 +452,7 @@ object MiniPlayerRuntime {
         else -> value
     }
 
-    /** Remember the material calls made on a real keyguard notification row. */
+    /** Only ordinary rows supply the glass; expanded focus cards have their own darker material. */
     private fun recordNotificationMaterial(method: Method, args: Array<Any?>) {
         if (!Main.keyguardLocked() || MiniPlayerScene.aodActive) return
         if (method.name != "applyElementViewBlend" && method.name != "setMiGlassCompat") return
@@ -468,6 +468,17 @@ object MiniPlayerRuntime {
             ancestor = ancestor.parent as? View
         }
         val source = row ?: return
+        val ordinary = runCatching {
+            val entry = Xp.callMethod(source, "getEntry")
+            val notification = (Xp.getObjectField(entry, "mSbn") as?
+                android.service.notification.StatusBarNotification)?.notification ?: return@runCatching false
+            // A media row or a focus/super-island row must never replace the ordinary palette.
+            // If classification is unavailable, keep the last ordinary look or the keyguard
+            // fallback rather than sampling an unknown card.
+            !notification.extras.containsKey(android.app.Notification.EXTRA_MEDIA_SESSION) &&
+                notificationFocusCheck?.invoke(null, notification) == false
+        }.getOrDefault(false)
+        if (!ordinary) return
         val previousSource = notificationSource?.get()
         if (previousSource != null && previousSource !== source && previousSource.isAttachedToWindow) return
         notificationSource = WeakReference(source)
@@ -1642,6 +1653,37 @@ object MiniPlayerRuntime {
     @JvmStatic fun releasedRowAt(x: Float, y: Float): String? =
         live().firstNotNullOfOrNull { it.releasedRowAt(x, y) }
 
+    @JvmStatic fun spreadCollapseAt(x: Float, y: Float): Boolean =
+        live().any { it.spreadCollapseAt(x, y) }
+
+    private var spreadCollapseOwner: MiniPlayerController? = null
+    private var spreadCollapseTracker: VelocityTracker? = null
+
+    @JvmStatic fun beginSpreadCollapse(ev: MotionEvent, startY: Float): Boolean {
+        val owner = live().firstOrNull { it.beginSpreadCollapse(startY) } ?: return false
+        spreadCollapseOwner = owner
+        spreadCollapseTracker?.recycle()
+        spreadCollapseTracker = VelocityTracker.obtain().also { it.addMovement(ev) }
+        owner.moveSpreadCollapse(ev.rawY)
+        return true
+    }
+
+    @JvmStatic fun moveSpreadCollapse(ev: MotionEvent) {
+        spreadCollapseTracker?.addMovement(ev)
+        spreadCollapseOwner?.moveSpreadCollapse(ev.rawY)
+    }
+
+    @JvmStatic fun endSpreadCollapse(ev: MotionEvent, cancelled: Boolean) {
+        val tracker = spreadCollapseTracker
+        tracker?.addMovement(ev)
+        tracker?.computeCurrentVelocity(1000)
+        spreadCollapseOwner?.moveSpreadCollapse(ev.rawY)
+        spreadCollapseOwner?.endSpreadCollapse(tracker?.yVelocity ?: 0f, cancelled)
+        tracker?.recycle()
+        spreadCollapseTracker = null
+        spreadCollapseOwner = null
+    }
+
     /**
      * The lock screen's list at its top, where a pull down on a card can fold it home.
      * [readRest]: read where the lock screen rests the list afresh - on the DOWN, once a gesture.
@@ -1949,43 +1991,10 @@ private class MiniPlayerController(
     /** The stack's content top the clock was last given room by (Main.roomForRows). */
     private var clockTopAsked = Float.NaN
 
-    private var backdropSinkStack: ViewGroup? = null
-    private var backdropSinkBaseY = 0f
-    private var backdropSinkAppliedY = Float.NaN
-
-    fun postBackdropSink() {
-        host.post { if (!destroyed) syncBackdropSink() }
-    }
-
-    private fun restoreBackdropSink() {
-        backdropSinkStack?.let { stack ->
-            if (abs(stack.translationY - backdropSinkAppliedY) < 0.5f)
-                stack.translationY = backdropSinkBaseY
-        }
-        backdropSinkStack = null
-        backdropSinkAppliedY = Float.NaN
-    }
-
-    /** Move the actual notification list now, including when the OEM bound's flow is idle. */
-    private fun syncBackdropSink() {
-        if (!Main.backdropSinkActive()) { restoreBackdropSink(); return }
-        val stack = notificationStack() ?: run { restoreBackdropSink(); return }
-        if (stack !== backdropSinkStack) {
-            restoreBackdropSink()
-            backdropSinkStack = stack
-        }
-        val current = stack.translationY
-        if (backdropSinkAppliedY.isNaN() || abs(current - backdropSinkAppliedY) >= 0.5f)
-            backdropSinkBaseY = current
-        val target = backdropSinkBaseY + dp(56f)
-        if (abs(current - target) >= 0.5f) stack.translationY = target
-        backdropSinkAppliedY = target
-    }
-
     private val preDraw = ViewTreeObserver.OnPreDrawListener { android.os.Trace.beginSection("MC islandsPreDraw"); try {
         holdKept()
         holdRows()
-        syncBackdropSink()
+        Main.onBackdropHoldChanged()
         // The rows can settle after the stack last told the clock where they are - a row let out
         // is laid out a frame or more after the list changed. The clock is asked again then.
         val top = stackContentTop()
@@ -2987,6 +2996,7 @@ private class MiniPlayerController(
         val from = when {
             pillStays -> pillFrom ?: rest
             fromGhost -> ghostNow!!
+            stackedStyle() -> if (fromSmall) oldSmallBox else rest
             // Out of hiding, the super island's HiddenToBigIsland: out of the middle.
             kind == SWAP_PREV -> cutoutBox(rest)
             fromSmall -> oldSmallBox
@@ -3137,7 +3147,7 @@ private class MiniPlayerController(
         val box = CoverMorphMotion.Box(grown.x, grown.y + (grown.h - h) / 2f, maxOf(grown.w, h), h)
         if (pillLandingBox != null || s.holdPill) {
             // The pill is under a flight landing on it, or waiting for a card to: that has its frame.
-        } else if (s.pillKept) {
+        } else if (s.pillKept || stackedStyle()) {
             view.setMorphFrame(box, box.h / 2f, 1f)
             view.setContentAlpha(1f)
         } else if (s.kind == SWAP_PREV) {
@@ -3213,7 +3223,7 @@ private class MiniPlayerController(
         val q = p.coerceIn(0f, 1f)
         val front = lerpBox(s.pillFrom, s.pillTo, p)
         view.setMorphFrame(front, front.h / 2f, 1f)
-        view.setContentAlpha(MiniCardMorph.smooth(0f, 0.5f, q))
+        view.setContentAlpha(1f)
         view.alpha = lerp(MiniPlayerGeometry.STACK_BACK_ALPHA, 1f, q)
         val rear = smallBoxOnScreen()
         val from = s.ghostFrom
@@ -3716,17 +3726,18 @@ private class MiniPlayerController(
         val d = discDiameter().toFloat()
         val p = appear.value
         // applySwap's: thinner while it widens fast, a touch taller off its overshoot.
-        val widening = appear.velocity * (fullW - d)
+        val widening = if (stackedStyle()) 0f else appear.velocity * (fullW - d)
         val squash = (widening / fullW.coerceAtLeast(1f) * ROW_SQUASH).coerceIn(-ROW_SQUASH_MAX, ROW_SQUASH_MAX)
         val h = (rest.h * (1f - squash)).coerceAtLeast(1f)
-        val w = lerp(d, fullW, p).coerceAtLeast(h)
-        val glass = if (leaving()) MiniCardMorph.smooth(0f, APPEAR_FADE_AT, p) else 1f
+        val w = (if (stackedStyle()) fullW else lerp(d, fullW, p)).coerceAtLeast(h)
+        val glass = if (stackedStyle()) p.coerceIn(0f, 1f)
+            else if (leaving()) MiniCardMorph.smooth(0f, APPEAR_FADE_AT, p) else 1f
         backFrames++
         // setMorphFrame does nothing to a pill out of its morph: the way is then not drawn.
         if (view.inMorph()) backDrawn++
         if (backMinW.isNaN() || w < backMinW) backMinW = w
         view.setMorphFrame(CoverMorphMotion.Box(left, rest.y + (rest.h - h) / 2f, w, h), h / 2f, glass)
-        view.setContentAlpha(MiniCardMorph.smooth(0.35f, 0.9f, p))
+        view.setContentAlpha(if (stackedStyle()) 1f else MiniCardMorph.smooth(0.35f, 0.9f, p))
         return true
     }
 
@@ -5909,7 +5920,7 @@ private class MiniPlayerController(
         m.endT.value = if (current == null) 1f else 0f
         m.endT.velocity = 0f
         m.endT.target = 1f
-        val round = if (place == LAND_SMALL || place == LAND_HIDDEN) 1f else 0f
+        val round = if (place == LAND_HIDDEN || place == LAND_SMALL && !stackedStyle()) 1f else 0f
         if (snap) {
             m.round.value = round
             m.round.velocity = 0f
@@ -6180,7 +6191,9 @@ private class MiniPlayerController(
             followShortcuts()
         }
         if (m.landed) morph.containerBox()?.let { if (m.place == LAND_PILL) landOnPill(it) else landOn(it) }
-        val a = if (m.landed || hiding) MiniCardMorph.smooth(0f, FLIGHT_HANDOFF, p) else 1f
+        val a = if (m.landed || hiding) MiniCardMorph.smooth(0f, FLIGHT_HANDOFF, p)
+            else if (m.place == LAND_SMALL && stackedStyle()) lerp(MiniPlayerGeometry.STACK_BACK_ALPHA, 1f, p)
+            else 1f
         if (kotlin.math.abs(m.view.alpha - a) > 0.002f) m.view.alpha = a
         traced("MC xTrace") {
             // Only as it changes: a tenth of the way, a turn, the stack's target moving. Every
@@ -6479,6 +6492,15 @@ private class MiniPlayerController(
         var letGoSent = false
         /** Pulled open by a finger still on the island: it scrolls the stack (followFinger). */
         var finger: SpreadFinger? = null
+        var collapseFinger: SpreadCollapseFinger? = null
+    }
+
+    private class SpreadCollapseFinger(val startY: Float, val startProgress: Float) {
+        var y = startY
+        var ended = false
+        var target = 1f
+        fun progress(range: Float): Float = if (ended) target
+            else MiniPlayerStackGesture.collapseProgress(startProgress, y - startY, range)
     }
 
     /**
@@ -6498,6 +6520,55 @@ private class MiniPlayerController(
     }
 
     private var spread: Spread? = null
+
+    fun spreadCollapseAt(x: Float, y: Float): Boolean {
+        val s = spread ?: return false
+        if (!s.stacked || s.phase != SPREAD_OPEN && s.phase != SPREAD_CLOSING) return false
+        val stack = notificationStack() ?: return false
+        val rect = android.graphics.Rect()
+        return (0 until stack.childCount).any { i ->
+            val row = stack.getChildAt(i)
+            (row.javaClass.name.contains("ExpandableNotificationRow") ||
+                s.items.any { it.native === row }) && row.isShown && row.alpha > 0f &&
+                row.getGlobalVisibleRect(rect) && rect.contains(x.toInt(), y.toInt())
+        }
+    }
+
+    fun beginSpreadCollapse(startY: Float): Boolean {
+        val s = spread ?: return false
+        if (!s.stacked || s.phase != SPREAD_OPEN && s.phase != SPREAD_CLOSING) return false
+        if (s.phase == SPREAD_OPEN) {
+            s.islandsY = NumState.scrollTo("NUMBER") ?: s.islandsY
+            startSpreadMorphs(s, toCards = false)
+            s.phase = SPREAD_CLOSING
+        }
+        s.collapseFinger = SpreadCollapseFinger(startY, s.progress)
+        s.since = android.os.SystemClock.uptimeMillis()
+        s.visualAt = s.since
+        s.still = 0
+        s.nudged = false
+        s.letGoSent = true
+        spreadTrace("spread collapse owned by islands")
+        return true
+    }
+
+    fun moveSpreadCollapse(y: Float) {
+        val s = spread ?: return
+        val finger = s.collapseFinger?.takeIf { !it.ended } ?: return
+        finger.y = y
+        val p = finger.progress(dp(220f).toFloat())
+        NumState.setScroll((s.islandsY + (s.cardsY - s.islandsY) * p).roundToInt())
+    }
+
+    fun endSpreadCollapse(velocityY: Float, cancelled: Boolean) {
+        val s = spread ?: return
+        val finger = s.collapseFinger?.takeIf { !it.ended } ?: return
+        finger.target = if (MiniPlayerStackGesture.commits(
+                finger.y - finger.startY, velocityY, density(), cancelled)) 0f else 1f
+        finger.ended = true
+        s.still = 0
+        NumState.goTo(if (finger.target == 0f) "NUMBER" else "LIST", why = "island collapse released")
+    }
 
     /** For `op mini`. */
     private fun describeSpread(): String = spread?.let { s ->
@@ -6760,7 +6831,7 @@ private class MiniPlayerController(
         val now = android.os.SystemClock.uptimeMillis()
         val elapsed = (now - s.visualAt).coerceIn(0L, 50L).toFloat()
         s.visualAt = now
-        if (s.finger?.ended == false) return target
+        if (s.finger?.ended == false || s.collapseFinger?.ended == false) return target
         if (elapsed <= 0f) return s.progress
         val eased = (target - s.progress) * (1f - kotlin.math.exp(-elapsed / 80f))
         val maxStep = elapsed / 220f
@@ -6815,7 +6886,7 @@ private class MiniPlayerController(
     private fun moveSpread(s: Spread) {
         s.finger?.takeIf { !it.ended && s.phase == SPREAD_OPENING }?.let { followFinger(s, it) }
         val y = NumState.position() ?: return
-        val p = spreadProgress(s, y)
+        val p = s.collapseFinger?.progress(dp(220f).toFloat()) ?: spreadProgress(s, y)
         s.rawProgress = p
         if (s.items.any { it.morph?.active == false }) {
             // The lock screen's guard ended a morph (asleep, say): straight to the nearer end.
@@ -6825,7 +6896,7 @@ private class MiniPlayerController(
         applySpread(s, visibleSpreadProgress(s, p))
         if (y != s.lastY) spreadFrameLog(s, y, p)
         // Held by the finger, it rests where the finger does; the let-go sends it to an end.
-        if (s.finger?.ended == false) {
+        if (s.finger?.ended == false || s.collapseFinger?.ended == false) {
             s.lastY = y
             s.still = 0
             return
@@ -6857,7 +6928,8 @@ private class MiniPlayerController(
         s.wasDragged = dragged
         // Still by the stack's own drag, not its pull: a fling left the pull at 44 for good, and
         // counted as a finger the spread never came to rest and stood half folded for 10s.
-        val moving = y != s.lastY || NumState.busy() || dragged
+        val moving = s.collapseFinger?.let { !it.ended }
+            ?: (y != s.lastY || NumState.busy() || dragged)
         s.still = if (moving) 0 else s.still + 1
         s.lastY = y
         // The native scroll can finish in one frame. Keep drawing the morph until its visible
@@ -6962,6 +7034,7 @@ private class MiniPlayerController(
 
     /** The list is open: the cards are the lock screen's own, the row's views put away. */
     private fun finishOpen(s: Spread, y: Int) {
+        s.collapseFinger = null
         for (item in s.items) {
             item.morph?.cancel()
             item.morph = null
@@ -7125,8 +7198,8 @@ private class MiniPlayerController(
             return
         }
         if (noteMorphKey != null || morph != null || exchange != null) return
-        // Another island is out as its card: this one goes out in its stead, together.
-        if (!stackedStyle() && expandedKey()?.let { it != key } == true) {
+        // Every layout shares one expanded card: the previous island returns as this one opens.
+        if (expandedKey()?.let { it != key } == true) {
             startExchange(key)
             return
         }
@@ -7703,7 +7776,7 @@ private class MiniPlayerController(
         if (!fromSmall && selectedIsland != key) return false
         // Another island out as its card: the pull opens this one in its stead, the two
         // exchanged on their own spring (not under the finger, which only asked for it).
-        if (!stackedStyle() && expandedKey()?.let { it != key } == true) {
+        if (expandedKey()?.let { it != key } == true) {
             player?.springNudgeBack(0f, 0f)
             springSmallNudgeBack(0f, 0f)
             // The music left the cover for the island out now (a page opened from it): pulled
@@ -8669,7 +8742,6 @@ private class MiniPlayerController(
 
     fun destroy() {
         destroyed = true
-        restoreBackdropSink()
         restoreAodShortcuts()
         prefs.unregisterOnSharedPreferenceChangeListener(prefListener)
         runCatching { host.viewTreeObserver.removeOnPreDrawListener(preDraw) }
@@ -8803,6 +8875,11 @@ private class MiniPlayerController(
     }
 
     fun describe(): String {
+        val native = expandedKey()?.let(::nativeFor)
+        val nativeY = native?.let { n -> IntArray(2).also(n::getLocationOnScreen)[1] }
+        val sink = " nativeY=$nativeY nativeTy=${native?.translationY} nativeTarget=${native?.let(::stackTargetY)} " +
+            "pin=${pinned?.get() != null} frozen=$pinnedAt pinY=${pinY.value} pinDy=$pinnedDy " +
+            "stackTy=${notificationStack()?.translationY} "
         val islands = describeSpread() + " rowAnim=$rowAnimating swap=${swap != null} noteMorph=${noteMorphKey != null} " +
             "flight=${flight != null} drag=${noteDrag != null} ${player?.touchState()} " +
             "out=${expandedKey()?.takeLast(12)} xchg=${exchange?.let { x -> "out=${x.expanded?.takeLast(6)} pend=${x.pending?.takeLast(6)} " +
@@ -8810,7 +8887,7 @@ private class MiniPlayerController(
                 x.movers.values.joinToString(" ") { moverState(it) } }} " +
             "row=${islandKeys.size} sel=${selectedIsland?.takeLast(24)} " +
             "small=${smallKey?.takeLast(24)} smallShown=${smallIsland?.visibility == View.VISIBLE} " +
-            "follow=$followBranch "
+            "follow=$followBranch " + sink
         val v = player ?: return islands + "no pill"
         val xy = IntArray(2).also(v::getLocationOnScreen)
         val icons = "pillArt=[${v.artworkState()}] smallIcon=[${smallIsland?.iconState()}] " +
