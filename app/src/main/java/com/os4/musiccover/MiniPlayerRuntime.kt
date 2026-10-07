@@ -5882,7 +5882,7 @@ private class MiniPlayerController(
         val key = (if (small) seats.small else seats.big) ?: return
         if (key == x.expanded) return
         if (key == STACK_ISLAND && LockIslands.foldsNatively()) {
-            openSpread("tap during a switch")
+            if (!openSingleApp("tap during a switch")) openSpread("tap during a switch")
             return
         }
         trace("switch tap ${key.takeLast(6)} small=$small")
@@ -6127,6 +6127,40 @@ private class MiniPlayerController(
         override fun canSettle(morph: MiniCardMorph, toNative: Boolean) = true
         override fun artBridged() = false
         override fun onSettled(morph: MiniCardMorph, toNative: Boolean, completed: Boolean) {}
+    }
+
+    /**
+     * The stack island tapped with one app's notifications in it: that app's newest one opened,
+     * as a tap on its own row opens it - the row's click (NotificationClicker), which wakes,
+     * asks the keyguard to go first where it has to, and starts the notification's intent. A
+     * spread out to a list of one app's notifications was a step on the way to the same place.
+     * False when there is more than one app, nothing to open, or no row to click: then it opens.
+     */
+    private fun openSingleApp(why: String): Boolean {
+        val key = LockIslands.stackSingleAppLead() ?: return false
+        val stack = notificationStack() ?: return false
+        var row: View? = null
+        for (i in 0 until stack.childCount) {
+            val child = stack.getChildAt(i)
+            if (!child.javaClass.name.contains("ExpandableNotificationRow")) continue
+            // Its own row, never its group's: the group's click expands the group instead.
+            row = if (rowKey(child) == key) child else childRows(child).firstOrNull { rowKey(it) == key }
+            if (row != null) break
+        }
+        if (row == null || !row.hasOnClickListeners()) {
+            MiniPlayerRuntime.noteTouch("open app ($why): no row for ${key.takeLast(6)}, spread instead")
+            return false
+        }
+        MiniPlayerRuntime.noteTouch("open app ($why): ${key.substringAfter('|').substringBefore('|')}")
+        // The row's own listener (ExpandableNotificationRowInjector$1) only posts the click to a
+        // flow, whose collector dropped it for a row folded away: tapped, nothing happened
+        // (2026-10-07). NotificationClicker, which the flow ends in, is the injector's
+        // clickListener (NotificationRowBinderImpl): called straight, as the flow would.
+        val clicker = runCatching {
+            Xp.getObjectField(Xp.callMethod(row, "getInjector"), "clickListener") as? View.OnClickListener
+        }.getOrNull()
+        if (clicker != null) clicker.onClick(row) else row.performClick()
+        return true
     }
 
     /**
@@ -6609,7 +6643,7 @@ private class MiniPlayerController(
         // they are. No flight: the rows were never out of the stack for one to land on.
         if (spread != null) return
         if (key == STACK_ISLAND && LockIslands.foldsNatively()) {
-            openSpread("tap")
+            if (!openSingleApp("tap")) openSpread("tap")
             return
         }
         // Pulled down and on its way home still: a tap on its place - its logical place, the
