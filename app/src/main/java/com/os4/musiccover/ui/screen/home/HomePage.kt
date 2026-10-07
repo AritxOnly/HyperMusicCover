@@ -11,6 +11,7 @@ import android.annotation.SuppressLint
 import android.content.Intent
 import android.os.Build
 import android.provider.Settings
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.IntrinsicSize
@@ -22,6 +23,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.CheckCircleOutline
 import androidx.compose.material.icons.rounded.ErrorOutline
@@ -29,6 +31,7 @@ import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -45,6 +48,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.os4.musiccover.BuildConfig
 import com.os4.musiccover.DonateActivity
+import com.os4.musiccover.LsposedService
 import com.os4.musiccover.ModuleBridge
 import com.os4.musiccover.R
 import com.os4.musiccover.ui.component.DropdownItem
@@ -55,6 +59,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.BasicComponent
+import top.yukonga.miuix.kmp.basic.ButtonDefaults
+import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.CardDefaults
 import top.yukonga.miuix.kmp.basic.Icon
@@ -65,8 +71,10 @@ import top.yukonga.miuix.kmp.basic.PopupPositionProvider
 import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.overlay.OverlayListPopup
 import top.yukonga.miuix.kmp.preference.ArrowPreference
+import top.yukonga.miuix.kmp.theme.LocalDismissState
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.utils.PressFeedbackType
+import top.yukonga.miuix.kmp.window.WindowDialog
 import top.yukonga.miuix.kmp.basic.Text as MiuixText
 
 @SuppressLint("LocalContext")
@@ -142,6 +150,18 @@ fun HomePageView(
     LaunchedEffect(resumeKey) {
         if (resumed && activated && current) refresh()
         resumed = true
+    }
+
+    // Processes still on the build before this one: installing does not reload a module, and
+    // the old one goes on running until its process restarts. Asked with the status, and again
+    // once LSPosed's service binds, which can be after the page is up.
+    val service by LsposedService.service.collectAsState()
+    var stale by remember { mutableStateOf(0) }
+    // The row is a whole card wide and sits right under the status card, where a scroll starts;
+    // a restart blanks the screen and stops whatever the scoped apps were doing, so it asks.
+    var confirmRestart by remember { mutableStateOf(false) }
+    LaunchedEffect(current, resumeKey, service) {
+        if (current) stale = withContext(Dispatchers.IO) { LsposedService.staleCount() }
     }
 
     PageScaffold(
@@ -288,6 +308,24 @@ fun HomePageView(
             }
         }
 
+        // Right under the status, while there is something to restart: the module is answering,
+        // but in some processes as the version before. One tap restarts what LSPosed lists.
+        if (stale > 0) {
+            item {
+                Card(
+                    modifier = Modifier
+                        .padding(top = 12.dp)
+                        .padding(horizontal = 12.dp)
+                ) {
+                    ArrowPreference(
+                        title = stringResource(R.string.home_stale_title),
+                        summary = stringResource(R.string.home_stale_summary, stale),
+                        onClick = { confirmRestart = true },
+                    )
+                }
+            }
+        }
+
         // No heading over this one. The four rows say what they are - a heading reading
         // "device information" over a list of device facts only repeated them - and the gap it
         // used to hold is now the card's own, so the card sits exactly where it always did.
@@ -353,6 +391,35 @@ fun HomePageView(
                     },
                 )
             }
+        }
+    }
+
+    WindowDialog(
+        show = confirmRestart,
+        title = stringResource(R.string.restart_scope),
+        summary = stringResource(R.string.restart_confirm_summary),
+        onDismissRequest = { confirmRestart = false },
+    ) {
+        val dismiss = LocalDismissState.current
+        Row(horizontalArrangement = Arrangement.SpaceBetween) {
+            TextButton(
+                modifier = Modifier.weight(1f),
+                text = stringResource(R.string.update_cancel),
+                onClick = { dismiss?.invoke() },
+            )
+            Spacer(Modifier.width(20.dp))
+            TextButton(
+                modifier = Modifier.weight(1f),
+                text = stringResource(R.string.restart_menu),
+                onClick = {
+                    confirmRestart = false
+                    scope.launch {
+                        withContext(Dispatchers.IO) { ModuleBridge.restartScope(context) }
+                        stale = 0
+                    }
+                },
+                colors = ButtonDefaults.textButtonColorsPrimary(),
+            )
         }
     }
 }

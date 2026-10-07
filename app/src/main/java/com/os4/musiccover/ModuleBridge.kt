@@ -827,10 +827,17 @@ object ModuleBridge {
     fun restartWallpaper(): Boolean = kill("com.miui.miwallpaper")
 
     /**
-     * Every process the module is scoped to, in one go.
+     * Every process the module is loaded into, in one go.
      *
-     * Read from the scope list the module ships rather than hard-coded, so this keeps meaning
-     * "everything the module touches" if that list ever grows.
+     * Asked of LSPosed first (LsposedService.runningTargets): the packages the user actually
+     * enabled, their sub-processes included, and nothing that is not running - a player or 高德
+     * the module is not enabled in is left alone.
+     *
+     * Without the service, the scope the APK ships, from META-INF/xposed/scope.list - the list
+     * LSPosed itself installs the module by. It was read from the legacy `xposedscope` array, which
+     * nothing kept in step: 高德 and 小爱建议 were added to scope.list only, so their processes went
+     * on running the old module after an update (2026-10-07). The array is the last fallback, and
+     * ScopeListTest holds the two equal.
      *
      * A package's own name is not enough any more. The lock screen editor runs as
      * `com.miui.aod:keyguardeditor`, and `pidof` matches a process name exactly - so the entry
@@ -839,11 +846,21 @@ object ModuleBridge {
      */
     fun restartScope(context: Context): Boolean {
         restartingSince = SystemClock.elapsedRealtime()
-        val scoped = context.resources.getStringArray(R.array.xposedscope)
+        val running = LsposedService.runningTargets()
+        if (!running.isNullOrEmpty()) return running.map { killPid(it.pid) }.all { it }
+        val scoped = shippedScope() ?: context.resources.getStringArray(R.array.xposedscope).toList()
         var all = true
         for (pkg in scoped) if (!killTree(pkg)) all = false
         return all
     }
+
+    /** The packages in the APK's own scope.list, one a line; null when it cannot be read. */
+    private fun shippedScope(): List<String>? = runCatching {
+        ModuleBridge::class.java.classLoader!!.getResourceAsStream("META-INF/xposed/scope.list")
+            .bufferedReader().useLines { lines ->
+                lines.map { it.trim() }.filter { it.isNotEmpty() && !it.startsWith("#") }.toList()
+            }
+    }.getOrNull()?.takeIf { it.isNotEmpty() }
 
     /**
      * The package's process and every `package:name` process under it.
@@ -858,6 +875,12 @@ object ModuleBridge {
             arrayOf("su", "-c", "pkill -f '^$pkg(\$|:)' ; true"),
         )
         p.waitFor() == 0
+    } catch (_: Throwable) {
+        false
+    }
+
+    private fun killPid(pid: Int): Boolean = try {
+        Runtime.getRuntime().exec(arrayOf("su", "-c", "kill $pid")).waitFor() == 0
     } catch (_: Throwable) {
         false
     }
