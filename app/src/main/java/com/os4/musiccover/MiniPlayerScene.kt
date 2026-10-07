@@ -3,13 +3,16 @@
 package com.os4.musiccover
 
 /**
- * The editor and the full-screen charging animation reuse the keyguard window, and the control
- * centre is drawn over it. Their explicit SystemUI states decide whether the lock screen the mini
- * player belongs to is actually what is showing.
+ * The editor reuses the keyguard window, and the control centre is drawn over it. Their explicit
+ * SystemUI states decide whether the lock screen the mini player belongs to is actually what is
+ * showing.
+ *
+ * Not the full-screen charging animation: it is a view added on top of the lock screen, which
+ * stays as it is underneath. Counted as a block, the pill went for the animation's few seconds
+ * and the media card stood in for it, then the pill came back as the animation ended.
  */
 internal object MiniPlayerScene {
     @Volatile private var editorActive = false
-    @Volatile private var chargingActive = false
     @Volatile private var controlCenterActive = false
     @Volatile var keyguardGoingAway = false
         private set
@@ -29,7 +32,7 @@ internal object MiniPlayerScene {
         get() = aodActive && !fullScreenAod
 
     val blocksMiniPlayer: Boolean
-        get() = editorActive || chargingActive
+        get() = editorActive
 
     val controlCenterIsActive: Boolean
         get() = controlCenterActive
@@ -56,12 +59,6 @@ internal object MiniPlayerScene {
         hook("com.android.keyguard.editor.KeyguardEditorHelper", "setEditorState") {
             setEditorActive(it.firstOrNull()?.toString() != "IDEL")
         }
-        hook("com.miui.charge.container.MiuiChargeAnimationView", "addChargeView") {
-            setChargingActive(true)
-        }
-        hook("com.miui.charge.container.MiuiChargeAnimationView", "removeChargeView") {
-            setChargingActive(false)
-        }
         runCatching {
             val listener = Xp.findClass(
                 "com.miui.systemui.controlcenter.container.ControlCenterContainerController\$onExpandChangeListener\$1",
@@ -80,12 +77,6 @@ internal object MiniPlayerScene {
     private fun setEditorActive(active: Boolean) {
         if (editorActive == active) return
         editorActive = active
-        MiniPlayerRuntime.refresh()
-    }
-
-    private fun setChargingActive(active: Boolean) {
-        if (chargingActive == active) return
-        chargingActive = active
         MiniPlayerRuntime.refresh()
     }
 
