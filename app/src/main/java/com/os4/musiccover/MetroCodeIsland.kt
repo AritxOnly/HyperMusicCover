@@ -18,6 +18,9 @@ import android.graphics.RectF
 import android.graphics.drawable.Icon
 import android.net.Uri
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -48,6 +51,13 @@ import org.json.JSONObject
  * The card is drawn after 小米智能卡's 「简洁刷卡」 island, from its own layout ([official]); this
  * module's template is kept for a phone without it.
  *
+ * 小爱建议 sends a card at every station it notices, the ones ridden through as well. Which of
+ * them get the island is ColorOS's rule (Metis, MetroIntentManager.d), kept per trip ([Trip]): the
+ * first station after none, then only the ones 高德's navigation boards or leaves the subway at
+ * (its remindType 0 / 1 come from a learned commute; here from the plan, AmapTransitShare), each
+ * once. A trip ends the way TripManager's monitor ends it - no station for a while, or one stayed
+ * at too long - or on the way out ([exit], from RideCodeExit in SystemUI).
+ *
  * A tap is the widget's own tap: the island opens the assistant's RouterActivity, which hands the
  * card to a SmallMetroCodeWidgetProvider of its own - h() to take the intention, onReceive with
  * requestCode 6100 to open the code (the picked app, the card's intent, 支付宝; 微信's through
@@ -61,6 +71,10 @@ internal object MetroCodeIsland {
     private const val EXTRA_ENTITY = "deliveryEntity"
     private const val EXTRA_IDS = "instanceIds"
     private const val ACTION_DISMISS = "com.os4.musiccover.METRO_DISMISSED"
+    /** 高德's plan and SystemUI's way out ([onTrip]), from the module's own processes. */
+    const val ACTION_TRIP = "com.os4.musiccover.METRO_TRIP"
+    private const val AMAP = "com.autonavi.minimap"
+    private const val SYSUI = "com.android.systemui"
     /** The probe: `am broadcast -a com.os4.musiccover.METRO -p com.miui.personalassistant`. */
     private const val ACTION_PROBE = "com.os4.musiccover.METRO"
 
@@ -104,6 +118,18 @@ internal object MetroCodeIsland {
     private const val MIN_LIFE = 60_000L
     private const val MAX_LIFE = 3 * 3600_000L
 
+    /** LegacyFluidExitPolicy SINGLE_STATION_TIMEOUT: a first station's card, with no second one. */
+    private const val ENTRY_MS = 5 * 60_000L
+    /**
+     * TripManager's monitor ends a trip with no station for 5 min; a wait on the platform runs
+     * past that off-peak, and the next station would then start a trip of its own and get a card.
+     */
+    private const val IDLE_MS = 10 * 60_000L
+    /** TripManager's monitor: one station for this long is not a ride any more. */
+    private const val LONG_STAY_MS = 20 * 60_000L
+    /** 高德 says its plan again at least each minute while it navigates; past this it has gone. */
+    private const val PLAN_STALE_MS = 30 * 60_000L
+
     private class Station(
         val instanceId: String,
         val location: String,
@@ -131,6 +157,27 @@ internal object MetroCodeIsland {
     @Volatile private var lastSeen = "none"
     @Volatile private var lastError: String? = null
     private val logged = java.util.Collections.synchronizedSet(HashSet<String>())
+
+    /**
+     * One ride through the subway as Metis keeps it (TripManager.h, tripStations): the stations
+     * in the order their cards came, from the first one after none.
+     */
+    private class Trip(now: Long) {
+        val stations = ArrayList<String>()
+        /** When the newest station came, and when any card last said where the phone is. */
+        var newAt = now
+        var seenAt = now
+        /** The stations whose card has been up: once each (metroFluidMaxTimesPerStation). */
+        val popped = HashSet<String>()
+    }
+
+    private var trip: Trip? = null
+    /** Where 高德's plan boards and leaves the subway, and when it last said so. */
+    private var planStops: Set<String> = emptySet()
+    private var planAt = 0L
+    private val main = Handler(Looper.getMainLooper())
+    private val entryOver = Runnable { entryTimeout() }
+    private val BRACKETS = Regex("[（(][^）)]*[）)]")
 
     /** Called from 小爱建议's loader. Each hook stands on its own. */
     fun install(cl: ClassLoader) {
@@ -212,6 +259,14 @@ internal object MetroCodeIsland {
                 Xp.log(TAG + "swiped away: ${s.name}")
             }
         }, IntentFilter(ACTION_DISMISS), Context.RECEIVER_NOT_EXPORTED)
+        class Trips : ProbeGuard.Receiver() {
+            override fun onReceive(c: Context, i: Intent) {
+                if (!ProbeGuard.admit(this, i)) return
+                onTrip(c, i)
+            }
+        }
+        ProbeGuard.register(app, IntentFilter(ACTION_TRIP), TAG, { Trips() },
+            AMAP, SYSUI, BuildConfig.APPLICATION_ID)
         // adb's shell holds DUMP; nothing else that may send it here does.
         app.registerReceiver(object : BroadcastReceiver() {
             override fun onReceive(c: Context, i: Intent) {
@@ -241,8 +296,118 @@ internal object MetroCodeIsland {
             break
         }
         lastSeen = from + ":" + (if (topics.isEmpty()) "empty" else topics.joinToString(","))
-        if (found == null) cancel(c, "the $from set has no ride-code card") else post(c, found)
+        if (found == null) cancel(c, "the $from set has no ride-code card") else arrive(c, found)
     }
+
+    // ------------------------------------------------------------------ the trip
+
+    /**
+     * A card for station [s]: whether it is one ColorOS puts up (MetroIntentManager.d) - the trip's
+     * first station, or one the plan boards or leaves at - and not one it has put up already.
+     */
+    @Synchronized
+    private fun arrive(c: Context, s: Station) {
+        val now = SystemClock.elapsedRealtime()
+        expire(now)
+        val n = norm(s.location)
+        val known = trip
+        val t = known ?: Trip(now)
+        val remind: Boolean
+        if (known == null) {
+            // No trip: it starts here (tripStations.size == 1, metro_commute_start).
+            t.stations += n
+            trip = t
+            main.removeCallbacks(entryOver)
+            main.postDelayed(entryOver, ENTRY_MS)
+            Xp.log(TAG + "trip starts at ${s.name}")
+            remind = true
+        } else if (n.isNotEmpty() && t.stations.last() != n) {
+            t.stations += n
+            t.newAt = now
+            main.removeCallbacks(entryOver)
+            val plan = if (now - planAt < PLAN_STALE_MS) planStops else emptySet()
+            remind = n in plan
+            Xp.log(TAG + "in the trip at ${s.name} (station ${t.stations.size}): " +
+                if (remind) "高德's plan boards or leaves here" else "riding through")
+        } else {
+            // The same station again: as it was.
+            remind = shown != null
+        }
+        t.seenAt = now
+        when {
+            !remind -> cancel(c, "riding through")
+            n in t.popped && shown == null -> Unit
+            else -> {
+                t.popped += n
+                post(c, s)
+            }
+        }
+    }
+
+    /** TripManager's monitor: no station for [IDLE_MS], or none new for [LONG_STAY_MS]. */
+    private fun expire(now: Long) {
+        val t = trip ?: return
+        val why = when {
+            now - t.seenAt > IDLE_MS -> "no station for ${(now - t.seenAt) / 60_000} min"
+            now - t.newAt > LONG_STAY_MS -> "at one station for ${(now - t.newAt) / 60_000} min"
+            else -> return
+        }
+        end(why)
+    }
+
+    private fun end(why: String) {
+        val t = trip ?: return
+        trip = null
+        main.removeCallbacks(entryOver)
+        Xp.log(TAG + "trip over (" + t.stations.joinToString(" -> ") + "): $why")
+    }
+
+    /** SINGLE_STATION_TIMEOUT: still at the first station, its card goes. */
+    @Synchronized
+    private fun entryTimeout() {
+        val t = trip ?: return
+        if (t.stations.size != 1) return
+        ctx?.let { cancel(it, "no second station in ${ENTRY_MS / 60_000} min") }
+    }
+
+    /**
+     * [ACTION_TRIP]: 高德's plan (`do plan`, `stops` its boarding and leaving stations), its
+     * navigation over (`do end`), or the way out of a station (`do exit`, `how` card or code).
+     */
+    @Synchronized
+    private fun onTrip(c: Context, i: Intent) {
+        when (i.getStringExtra("do")) {
+            "plan" -> {
+                val stops = i.getStringArrayExtra("stops").orEmpty()
+                    .map { norm(it) }.filter { it.isNotEmpty() }.toSet()
+                if (stops != planStops) Xp.log(TAG + "高德's plan stops at " + stops.joinToString())
+                planStops = stops
+                planAt = SystemClock.elapsedRealtime()
+            }
+            "end" -> if (planStops.isNotEmpty()) {
+                planStops = emptySet()
+                Xp.log(TAG + "高德's navigation over")
+            }
+            "exit" -> exit(c, i.getStringExtra("how").orEmpty())
+        }
+    }
+
+    /**
+     * The way out. A card's fare is taken only on leaving, and ends the trip and its card as
+     * Alipay's boardingType 2 does (TripManager.e). A ride code opened at the first station is the
+     * way in; after it, the way out - the island is left to its card, which may be the one opened.
+     * A trip begun after it, an out-of-station change, starts with a card of its own.
+     */
+    private fun exit(c: Context, how: String) {
+        val t = trip ?: return
+        if (how == "card") cancel(c, "out of the station (card)")
+        else if (t.stations.size < 2) return
+        end("out of the station ($how)")
+    }
+
+    /** A station's name as both 高德 and 小爱建议 write it: no (地铁站), no 站 on the end. */
+    private fun norm(name: String): String =
+        name.replace(BRACKETS, "").replace(" ", "").trim().removeSuffix("地铁站").removeSuffix("站")
 
     private fun isMetro(o: JSONObject, topic: String): Boolean {
         if (topic.startsWith(TOPIC)) return true
@@ -699,7 +864,7 @@ internal object MetroCodeIsland {
 
     /**
      * The probe: the state; `--es json '<list of intentions>'` as if the engine had sent it;
-     * `--es do demo` a made-up station; `--es do end` an empty set.
+     * `--es do demo` a made-up station; `--es do end` an empty set; `--es do exit` the way out.
      */
     fun command(json: String?, what: String?): String {
         val c = ctx ?: return "not registered yet"
@@ -711,6 +876,7 @@ internal object MetroCodeIsland {
                     update(c, demo(), "probe")
                 }
                 what == "end" -> update(c, JSONArray(), "probe")
+                what == "exit" -> synchronized(this) { exit(c, "probe") }
             }
             describe()
         } catch (t: Throwable) {
@@ -722,7 +888,9 @@ internal object MetroCodeIsland {
         val s = shown
         return "metro: updates=$updates seen=[$lastSeen] shown=" +
             (s?.let { "${it.name} id=${it.instanceId} end=${it.end}" } ?: "none") +
-            (dismissed?.let { " dismissed=$it" } ?: "") + (lastError?.let { " error=$it" } ?: "")
+            (dismissed?.let { " dismissed=$it" } ?: "") + (lastError?.let { " error=$it" } ?: "") +
+            " trip=" + (trip?.stations?.joinToString(" -> ") ?: "none") +
+            " plan=" + planStops.joinToString(",").ifEmpty { "none" }
     }
 
     private fun demo(): JSONArray {
