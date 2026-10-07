@@ -38,7 +38,6 @@ import org.json.JSONObject
  *   cardSecondaryInfo      -> baseInfo.content (with cardSecondaryLineName before it)
  *   titleInLock            -> ticker, aodTitle
  *   cardStationOverview    -> progressInfo: the leg's progress, its car, the stop and the end
- *   the landmark           -> bgInfo
  * The silent walking card is posted only while 高德's own walking island is not up: when 高德's
  * walking navigation runs, that is ColorOS's walking card too.
  *
@@ -48,13 +47,13 @@ internal object AmapTransitIsland {
 
     private const val TAG = "MCAmap: transit island: "
     /** Beside 高德's walking island, 1236, and clear of its XiaomiUAConnectedDevice's 1237. */
-    private const val ID = 1239
+    /** The trip's notification id: the lock screen page answers this island only. */
+    const val ID = 1239
     private const val AMAP_WALK_ID = 1236
     private const val AMAP_UA_ID = 1237
     private const val CHANNEL = "mc_transit"
 
     private const val PIC = "miui.focus.pic_mc_transit"
-    private const val PIC_BG = "miui.focus.pic_mc_transit_bg"
     private const val PIC_LEFT = "miui.focus.pic_mc_left"
     private const val PIC_RIGHT = "miui.focus.pic_mc_right"
     /** The progress bar's three pictures: the vehicle, the stop ahead, the leg's end. */
@@ -119,13 +118,6 @@ internal object AmapTransitIsland {
         "C592.6 239.8 593.1 241 593.4 242 C590 242 587.5 241.9 585.5 241.5 C582 240.8 578.5 240.1 576.5 239.4 " +
         "C575.2 238.9 574.6 237.8 574.6 236.5 L574.6 230 C574.6 228.9 575.2 228.1 576 228.1 Z"
 
-    /** The ground's size: the notification card's height, its corner radius, how much of it. */
-    private const val CARD_DP = 176f
-    private const val CORNER_DP = 24f
-    private const val BOTTOM = 0xff07080b.toInt()
-    /** Where the landmark's own centre sits across the ground, and how far past a cover it grows. */
-    private const val LANDMARK_AT = 0.72f
-    private const val LANDMARK_ZOOM = 1.25f
     /**
      * The narrowest fill the bar draws as a piece of itself: below the bar's own height the caps
      * meet and the fill is a square head (about 4.8% of the bar on this phone).
@@ -142,11 +134,7 @@ internal object AmapTransitIsland {
     @Volatile private var posted = false
     @Volatile private var lastStatus: String? = null
     @Volatile private var lastKey: String? = null
-    /** The entity last shown, for a repost once its landmark arrives. */
-    @Volatile private var lastEntity: String? = null
     @Volatile private var lastError: String? = null
-    @Volatile private var art: AmapTransitScene.Art.Set? = null
-    @Volatile private var artPick: AmapTransitScene.Art.Pick? = null
     @Volatile private var held = 0
 
     /**
@@ -182,7 +170,6 @@ internal object AmapTransitIsland {
                 cancel(ctx)
                 return ""
             }
-            lastEntity = entity
             if (card.kind == AmapTransitCard.Card.KIND_WALK && AmapTransitShare.walkIslandUp()) {
                 cancel(ctx)
                 return card.kind + " (高德's own)"
@@ -208,7 +195,6 @@ internal object AmapTransitIsland {
 
     fun describe(): String {
         val sb = StringBuilder("island: posted=").append(posted)
-            .append(" art=").append(if (art != null) "yes" else artPick?.toString() ?: "-")
         if (held > 0) sb.append(" held1237=").append(held)
         lastError?.let { sb.append(" error=").append(it) }
         return sb.toString()
@@ -227,8 +213,6 @@ internal object AmapTransitIsland {
                 setShowBadge(false)
             })
         }
-        val pick = AmapTransitScene.Art.Pick.of(trip, c)
-        fetchArt(ctx, pick)
         val walk = c.kind == AmapTransitCard.Card.KIND_WALK
         // ColorOS's walking card puts where the walk starts and where it goes side by side, a
         // route with an arrow between (cardPrimaryInfo / cardSecondaryInfo); in the template's
@@ -271,7 +255,6 @@ internal object AmapTransitIsland {
             if (c.rightLine.isNotEmpty()) {
                 putParcelable(PIC_RIGHT, Icon.createWithBitmap(chip(c.rightLine, c.rightLineColor, dp)))
             }
-            putParcelable(PIC_BG, Icon.createWithBitmap(ground(ctx, c, pick)))
             if (c.stations != null) {
                 putParcelable(PIC_VEHICLE, Icon.createWithBitmap(vehicle(c.subway(), c.lineBg)))
                 putParcelable(PIC_PIN, Icon.createWithBitmap(pin(c.lineBg)))
@@ -316,9 +299,13 @@ internal object AmapTransitIsland {
     }
 
     /**
-     * The template: the card's words in baseInfo, the line's badge in picInfo, the landmark in
-     * bgInfo, the capsule in param_island, and the leg's progress where the card has a station
-     * overview - the milestones between stops, 下一站 / 下一站即终点 / 当前站 / 换乘.
+     * The template: the card's words in baseInfo, the line's badge in picInfo, the capsule in
+     * param_island, and the leg's progress where the card has a station overview - the milestones
+     * between stops, 下一站 / 下一站即终点 / 当前站 / 换乘.
+     *
+     * No ground of its own, and the system's own colours: the landmark is the lock screen page's
+     * (AmapTransitScene), and as that page's row this card sat over it with a second, opaque copy
+     * of the picture, hiding the stops under it (2026-10-07).
      */
     private fun template(trip: AmapTransitCard.Trip, c: AmapTransitCard.Card, title: String,
                          content: String, lineRow: String, milestone: Boolean, float: Boolean): JSONObject {
@@ -353,22 +340,14 @@ internal object AmapTransitIsland {
             .put("param_island", island)
             .put("title", title)
             .put("content", content)
-            .put("colorTitle", "#FFFFFF")
-            .put("colorContent", "#FFFFFF")
-            .put("colorBg", "#000000")
             .put("showSmallIcon", false)
             .put("padding", true)
             .put("baseInfo", JSONObject()
                 .put("type", 2)
                 .put("title", title)
                 .put("content", content)
-                .put("subContent", lineRow)
-                .put("colorTitle", "#FFFFFF")
-                .put("colorContent", "#CCFFFFFF")
-                .put("colorSubContent", "#B3FFFFFF"))
+                .put("subContent", lineRow))
             .put("picInfo", JSONObject().put("type", 1).put("pic", PIC))
-            .put("bgInfo", JSONObject().put("type", 1).put("picBg", PIC_BG)
-                .put("colorBg", hex(AmapTransitScene.blend(c.lineBg, BOTTOM, 0.55f))))
         val leg = trip.current
         if (c.stations != null && leg != null) {
             // 高德's own share of the leg (`location.persent`) where it gave one, else the stops
@@ -393,79 +372,6 @@ internal object AmapTransitIsland {
     }
 
     // ------------------------------------------------------------------ pictures
-
-    /** The card as wide as a notification row: the screen less the shade's margins. */
-    private fun cardWidth(ctx: Context): Int {
-        val m = ctx.resources.displayMetrics
-        return (minOf(m.widthPixels, m.heightPixels) - 2 * 14f * m.density).toInt().coerceAtLeast(1)
-    }
-
-    /**
-     * The ground: the line's colour into near-black, and the landmark on the right, fading into
-     * the colour under the words and darkening at the foot. A default picture rather than a
-     * landmark stays dim, as on the page. Cut to the card's corners, as the system's own card is.
-     */
-    private fun ground(ctx: Context, c: AmapTransitCard.Card, pick: AmapTransitScene.Art.Pick): Bitmap {
-        val dp = ctx.resources.displayMetrics.density
-        val scale = 0.5f
-        val w = (cardWidth(ctx) * scale).toInt().coerceAtLeast(1)
-        val h = (CARD_DP * dp * scale).toInt().coerceAtLeast(1)
-        val b = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(b)
-        canvas.clipPath(Path().apply {
-            val r = (CORNER_DP * dp * scale).coerceAtMost(minOf(w, h) / 2f)
-            addRoundRect(RectF(0f, 0f, w.toFloat(), h.toFloat()), r, r, Path.Direction.CW)
-        })
-        val p = Paint(Paint.DITHER_FLAG)
-        val top = AmapTransitScene.blend(c.lineBg, BOTTOM, 0.42f)
-        p.shader = LinearGradient(0f, 0f, w.toFloat(), h.toFloat(),
-            intArrayOf(top, AmapTransitScene.blend(c.lineBg, BOTTOM, 0.72f), BOTTOM),
-            floatArrayOf(0f, 0.55f, 1f), Shader.TileMode.CLAMP)
-        canvas.drawRect(0f, 0f, w.toFloat(), h.toFloat(), p)
-        val set = art
-        val still = set?.still
-        if (still != null && set.pick == pick) {
-            // Placed by the landmark in the picture, not by its edge: grown past a cover so no
-            // edge shows, right of centre where the words are not, lifted by what the growth bought.
-            val cover = maxOf(w / still.width.toFloat(), h / still.height.toFloat()) * LANDMARK_ZOOM
-            val lw = still.width * cover
-            val lh = still.height * cover
-            val left = w * LANDMARK_AT - lw / 2f
-            val r = RectF(left, h - lh, left + lw, h.toFloat())
-            val ip = Paint(Paint.FILTER_BITMAP_FLAG or Paint.DITHER_FLAG)
-            ip.alpha = if (set.pick.fallback) 110 else 235
-            canvas.drawBitmap(still, null, r, ip)
-            val fade = Paint(Paint.DITHER_FLAG)
-            val seam = maxOf(0f, r.left)
-            val fadeEnd = seam + w * 0.45f
-            fade.shader = LinearGradient(0f, 0f, fadeEnd, 0f,
-                intArrayOf(top, top, top and 0x00ffffff),
-                floatArrayOf(0f, (seam / fadeEnd).coerceIn(0f, 1f), 1f), Shader.TileMode.CLAMP)
-            canvas.drawRect(0f, 0f, w.toFloat(), h.toFloat(), fade)
-            fade.shader = LinearGradient(0f, h * 0.45f, 0f, h.toFloat(),
-                0x00000000, 0x99000000.toInt(), Shader.TileMode.CLAMP)
-            canvas.drawRect(0f, 0f, w.toFloat(), h.toFloat(), fade)
-        }
-        return b
-    }
-
-    /**
-     * The landmark for the card, fetched in 高德's process the way the page fetches it in
-     * SystemUI's; the card is posted again, quietly, once it is here.
-     */
-    private fun fetchArt(ctx: Context, pick: AmapTransitScene.Art.Pick) {
-        if (pick == artPick) return
-        artPick = pick
-        art = null
-        AmapTransitScene.Art.request(ctx, pick) { set ->
-            AmapTransitShare.post(Runnable {
-                if (set.pick != artPick) return@Runnable
-                art = set
-                val e = lastEntity ?: return@Runnable
-                update(ctx, e)
-            })
-        }
-    }
 
     /**
      * The line-coloured half of a capsule half (ColorOS's capsule*TextLine): the text in white on

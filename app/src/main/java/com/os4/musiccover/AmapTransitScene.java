@@ -6,7 +6,10 @@ import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.ImageDecoder;
 import android.graphics.LinearGradient;
+import android.graphics.Matrix;
 import android.graphics.Paint;
+import android.graphics.Path;
+import android.graphics.RadialGradient;
 import android.graphics.RectF;
 import android.graphics.Shader;
 import android.graphics.Typeface;
@@ -36,21 +39,22 @@ import java.util.concurrent.Executors;
  *
  * AmapTransitShare, in 高德's process, sends the trip as ColorOS's GaoDePtIntentEntity
  * ({@code op transit}); AmapTransitCard works out the card from it, the same card the island is
- * posted from, and this draws it:
- *   - the line, in its own colour, and where it is heading;
- *   - the card's primary and secondary lines (下一站 XX / N站 XX下车, 准备换乘 / 3号线(往XX), the
- *     stop and its exit at 到站, the waiting card's next train);
- *   - the station overview, two or three stops with the train between or at them, a transfer stop
- *     with ⇄ and the next line's badge;
- *   - behind it, the landmark ColorOS shows: in transit the one by the stop the card names (ya.d),
+ * posted from. The card's own words are the focus notification's, so the page says what that
+ * cannot (Route):
+ *   - where the trip goes, how long and how far, how many changes;
+ *   - the trip leg by leg - each walk's length, each line in its colour, the one ridden now
+ *     filled;
+ *   - the leg ridden now stop by stop: passed, at or coming to, getting off and what comes then
+ *     (the line changed to, or the exit), the rest folded;
+ *   - between them, the landmark ColorOS shows: in transit the one by the stop the card names (ya.d),
  *     at 到站 the exit's, else the city's, else the nation's (ya.b.O), from OPPO's CDN
- *     (AmapTransitLandmarks). Where ColorOS shows none the national picture stands in, dimmed, so
+ *     (AmapTransitLandmarks). Where ColorOS shows none the national picture stands in, so
  *     the page keeps a ground.
  *
  * Ready while 高德's trip has a card that is not a walk (a walk is 高德's own map, AmapNavScene);
  * it sits before AmapNavScene in ImmersiveHost.SCENES and claims 高德's island only while ready.
  *
- * The ground - the line's colour into black, and the still landmark - is a picture under the
+ * The ground - graphite under the line's glow, and the still landmark - is a picture under the
  * shade window (CountdownScene.GroundSurface): the lock screen's glass rows sample what is behind
  * the window, never a view in it. The moving landmark and the words are a view over it.
  *
@@ -95,6 +99,15 @@ final class AmapTransitScene implements ImmersiveScene {
     private CountdownScene.GroundSurface mGround;
     private boolean mShown;
     private boolean mDozing;
+    /** Where the words start on the screen, under the clock (wordsTop); NaN before a draw. */
+    private float mTop = Float.NaN;
+    /** Where the page ends on the screen, above the trip's row (pageLimit). */
+    private float mLimit = Float.NaN;
+    /** Where the view put the landmark's box on the screen, for the ground's still of it. */
+    private RectF mArtBox;
+    /** And where it fades in from under the words (the view's fadeFrom / fadeTo), on the screen. */
+    private float mFadeFrom = Float.NaN;
+    private float mFadeTo = Float.NaN;
 
     private AmapTransitScene() {
     }
@@ -142,7 +155,7 @@ final class AmapTransitScene implements ImmersiveScene {
         Xp.log(TAG + c.kind + " " + c.status + ": " + c.primary + " | " + c.secondaryLine
                 + c.secondary + " art=" + pick);
         if (mView != null) {
-            mView.setCard(c, again);
+            mView.setCard(c, Route.of(t, c), again);
             if (newPicture) Art.request(mView.getContext(), pick, this::onArt);
             if (mDozing) ImmersiveHost.lift(mView);
         }
@@ -150,6 +163,7 @@ final class AmapTransitScene implements ImmersiveScene {
     }
 
     private final Runnable mStale = () -> end("silence");
+    private final Runnable mRepaint = this::paintGround;
 
     private void end(String by) {
         mMain.removeCallbacks(mStale);
@@ -182,10 +196,21 @@ final class AmapTransitScene implements ImmersiveScene {
         return focus && PKG.equals(pkg);
     }
 
-    /** 高德's island is this page's only while there is a card to show; the map's otherwise. */
+    /** The trip's island is this page's while there is a card to show; the map's otherwise. */
     @Override
     public boolean servesKey(String key) {
-        return ready();
+        return ready() && isTripKey(key);
+    }
+
+    /**
+     * The trip's own island (AmapTransitIsland.ID), not 高德's others: its walking island opens
+     * the map (AmapNavScene). Claimed whole, an exchange between the two islands left this page
+     * up for both. The key is the notification's, user|pkg|id|tag|uid.
+     */
+    private static boolean isTripKey(String key) {
+        if (key == null) return false;
+        String[] parts = key.split("[|]");
+        return parts.length > 2 && String.valueOf(AmapTransitIsland.ID).equals(parts[2]);
     }
 
     /** A card that is not the walking one: a walk is 高德's own navigation, and its map. */
@@ -211,7 +236,7 @@ final class AmapTransitScene implements ImmersiveScene {
         mGround = g;
         AmapTransitCard.Card c = mCard;
         if (c != null) {
-            v.setCard(c, false);
+            v.setCard(c, Route.of(mTrip, c), false);
             Art.request(ctx, mPick, this::onArt);
         }
         Xp.log(TAG + "page made");
@@ -233,6 +258,7 @@ final class AmapTransitScene implements ImmersiveScene {
             v.setVisibility(shown ? View.VISIBLE : View.INVISIBLE);
             if (mGround != null) mGround.setVisibility(shown ? View.VISIBLE : View.INVISIBLE);
         }
+        if (!shown) mLimit = Float.NaN;
         mShown = shown;
         boolean was = mDozing;
         mDozing = dozing;
@@ -252,6 +278,10 @@ final class AmapTransitScene implements ImmersiveScene {
         if (v == null) return;
         mView = null;
         mShown = false;
+        mLimit = Float.NaN;
+        mArtBox = null;
+        mFadeFrom = Float.NaN;
+        mFadeTo = Float.NaN;
         v.setLive(false);
         ViewGroup parent = (ViewGroup) v.getParent();
         if (parent != null) parent.removeView(v);
@@ -302,13 +332,15 @@ final class AmapTransitScene implements ImmersiveScene {
             }
             sb.append(" art=").append(mPick);
         }
-        sb.append(" shown=").append(mShown).append(" dozing=").append(mDozing);
+        sb.append(" shown=").append(mShown).append(" dozing=").append(mDozing)
+                .append(" top=").append(Math.round(mTop)).append(" limit=").append(Math.round(mLimit))
+                .append(" [").append(sLimitWhy).append(']');
         if (mView != null) sb.append(' ').append(mView.describe());
         return sb.toString();
     }
 
     /**
-     * The ground under the window: the line's colour into black, with the still landmark on it
+     * The ground under the window: graphite under the line's glow, with the still landmark on it
      * when the view is not drawing the moving one over it - the doze, or no moving one to draw.
      */
     private void paintGround() {
@@ -319,7 +351,7 @@ final class AmapTransitScene implements ImmersiveScene {
         int w = v.getResources().getDisplayMetrics().widthPixels;
         int h = v.getResources().getDisplayMetrics().heightPixels;
         boolean still = mDozing || !v.animating();
-        g.setBitmap(Ground.make(w, h, c.lineBg, mPick, still ? v.stillArt() : null));
+        g.setBitmap(Ground.make(w, h, c.lineBg, still ? v.stillArt() : null, mArtBox, mFadeFrom, mFadeTo));
     }
 
     // ---------------------------------------------------------------- the pictures
@@ -338,7 +370,7 @@ final class AmapTransitScene implements ImmersiveScene {
             final String[] ground;
             /** The landmark's name, white, for under it; null without a landmark. */
             final String label;
-            /** A default rather than a landmark: drawn dimmer. */
+            /** A default rather than a landmark: the island's card draws it dimmer. */
             final boolean fallback;
             private final String why;
 
@@ -369,7 +401,7 @@ final class AmapTransitScene implements ImmersiveScene {
             /** SceneService's choice for a card: ya.d.a in transit, ya.b.O on arriving. */
             static Pick of(AmapTransitCard.Trip t, AmapTransitCard.Card c) {
                 AmapTransitCard.Leg l = t.current;
-                boolean subway = c.subway();
+                boolean subway = rail(t, c);
                 if (!c.landmarkStation.isEmpty() && l != null) {
                     double[] at = stationPoint(l, c.landmarkStation);
                     AmapTransitLandmarks.Match m = at == null ? null
@@ -380,8 +412,8 @@ final class AmapTransitScene implements ImmersiveScene {
                     }
                     double[] p = at != null ? at : where(t);
                     boolean night = night(p[0], p[1], System.currentTimeMillis());
-                    return new Pick(new String[] {AmapTransitLandmarks.nationalDefaultUrl(subway, night)},
-                            null, true, "no landmark at " + c.landmarkStation + (night ? ", night" : ""));
+                    return new Pick(defaults(t, subway, night, at), null, true,
+                            "no landmark at " + c.landmarkStation + (night ? ", night" : ""));
                 }
                 if (c.arrivalArt && l != null) {
                     double[] exit = exitPoint(t, l);
@@ -412,9 +444,68 @@ final class AmapTransitScene implements ImmersiveScene {
                 }
                 double[] p = where(t);
                 boolean night = night(p[0], p[1], System.currentTimeMillis());
-                return new Pick(new String[] {AmapTransitLandmarks.nationalDefaultUrl(subway, night)},
-                        null, true, c.kind + (night ? ", night" : ""));
+                return new Pick(defaults(t, subway, night, null), null, true,
+                        c.kind + (night ? ", night" : ""));
             }
+
+            /**
+             * With no landmark by the stop: the city's own picture for a subway, then the
+             * nation's. ColorOS keeps the city's for an arrival and shows the nation's in transit
+             * (ya.d); the generic station between a city's own pictures read as the wrong one
+             * (user, 2026-10-07), so the city's stands in transit too. The city by its code, else
+             * by a point of the trip's own ([own], or the leg's ends) - never where()'s fixed one.
+             */
+            private static String[] defaults(AmapTransitCard.Trip t, boolean subway, boolean night,
+                                             double[] own) {
+                List<String> urls = new ArrayList<>();
+                if (subway) {
+                    String folder = AmapTransitLandmarks.folder(t.cityCode);
+                    double[] at = own;
+                    AmapTransitCard.Leg l = t.current;
+                    if (at == null && l != null) {
+                        if (AmapTransitLandmarks.valid(l.offLat, l.offLng)) at = new double[] {l.offLat, l.offLng};
+                        else if (AmapTransitLandmarks.valid(l.onLat, l.onLng)) at = new double[] {l.onLat, l.onLng};
+                    }
+                    if (folder == null && at != null) folder = AmapTransitLandmarks.folderNear(at[0], at[1]);
+                    if (folder != null) urls.add(AmapTransitLandmarks.cityDefaultUrl(folder, night));
+                }
+                urls.add(AmapTransitLandmarks.nationalDefaultUrl(subway, night));
+                return urls.toArray(new String[0]);
+            }
+
+            /**
+             * Whether the trip is on rails where the card is, for a rail picture rather than the
+             * bus's. ColorOS asks the card's own type, and only a subway (2) is one: an intercity
+             * line or an outer-loop line that 高德 types as a bus got the bus, and so did the
+             * arrival, a walk (2026-10-07). Here the leg is the one ridden now, else the last one
+             * ridden, else the next; its type if it says subway, else its name.
+             */
+            static boolean rail(AmapTransitCard.Trip t, AmapTransitCard.Card c) {
+                if (c.subway()) return true;
+                AmapTransitCard.Leg l = t.current;
+                int cur = t.currentIndex();
+                if (l == null || !l.rides()) {
+                    l = null;
+                    for (int i = Math.min(cur, t.navi.size() - 1); i >= 0 && l == null; i--) {
+                        if (t.navi.get(i).rides()) l = t.navi.get(i);
+                    }
+                    for (int i = Math.max(0, cur); i < t.navi.size() && l == null; i++) {
+                        if (t.navi.get(i).rides()) l = t.navi.get(i);
+                    }
+                }
+                if (l == null) return false;
+                if (AmapTransitCard.subway(l.type)) return true;
+                String name = l.lineName == null ? "" : l.lineName;
+                for (String mark : RAIL_NAMES) {
+                    if (name.contains(mark)) return true;
+                }
+                return false;
+            }
+
+            /** What a line on rails has in its name, where its type does not say so. */
+            private static final String[] RAIL_NAMES = {
+                    "号线", "地铁", "城际", "轨道", "铁路", "有轨", "APM", "轻轨", "磁浮", "云巴",
+            };
 
             /** ya.d.c: the named stop's spot, a stop between the ends or the one gotten off at. */
             private static double[] stationPoint(AmapTransitCard.Leg l, String name) {
@@ -473,8 +564,13 @@ final class AmapTransitScene implements ImmersiveScene {
             /** The still the animated one was made from, for the ground under the window. */
             final Bitmap still;
             final Drawable label;
+            /** Its solid part's top and foot, as shares of its height (see solid). */
+            final float solidTop;
+            final float solidBottom;
 
-            Set(Pick pick, Drawable ground, Bitmap still, Drawable label) {
+            Set(Pick pick, Drawable ground, Bitmap still, Drawable label, float[] solid) {
+                this.solidTop = solid[0];
+                this.solidBottom = solid[1];
                 this.pick = pick;
                 this.ground = ground;
                 this.still = still;
@@ -520,10 +616,42 @@ final class AmapTransitScene implements ImmersiveScene {
                     Xp.log(TAG + "no picture for " + pick);
                     return;
                 }
-                final Set set = new Set(pick, ground, still, label);
+                final Set set = new Set(pick, ground, still, label, solid(still));
                 MAIN.post(() -> done.done(set));
             });
         }
+
+        /**
+         * Where a picture's solid part starts and ends down its height - the rows with anything
+         * over SOLID_ALPHA in them - for the page to keep its rhythm to the picture rather than
+         * its box. The subway stations start at about 0.35, the bus's stop sign at 0.2; the fixed
+         * 0.35 put the bus over the summary (2026-10-07). The shares artRect assumes, without one.
+         */
+        static float[] solid(Bitmap b) {
+            float[] out = {ART_SOLID_TOP, ART_SOLID_BOTTOM};
+            if (b == null || !b.hasAlpha()) return out;
+            int w = b.getWidth();
+            int h = b.getHeight();
+            int[] row = new int[w];
+            int first = -1;
+            int last = -1;
+            for (int y = 0; y < h; y += 2) {
+                b.getPixels(row, 0, w, 0, y, w, 1);
+                for (int x = 0; x < w; x += 2) {
+                    if ((row[x] >>> 24) > SOLID_ALPHA) {
+                        if (first < 0) first = y;
+                        last = y;
+                        break;
+                    }
+                }
+            }
+            if (first < 0 || last <= first) return out;
+            out[0] = first / (float) h;
+            out[1] = (last + 1) / (float) h;
+            return out;
+        }
+
+        private static final int SOLID_ALPHA = 110;
 
         /** From the disk if it has been fetched before, else from OPPO's CDN, kept. */
         private static byte[] fetch(File dir, String url) {
@@ -588,54 +716,307 @@ final class AmapTransitScene implements ImmersiveScene {
     // ---------------------------------------------------------------- where things go
 
     /**
-     * The page's layout, as shares of the screen: the words under the small clock, the landmark
-     * in the middle, the overview under it, all inside the band ColorOS keeps an immersive page's
-     * information in (0.231 to 0.703 of the height, LiveAlertScene.INFO_*).
+     * The page, top to bottom under the small clock: where the trip goes, large, and how long and
+     * far; the landmark, its clear top tucked under those words; the trip leg by leg as the
+     * picture's caption; this leg's stops. What the focus notification already says - the card's
+     * own lines, the arrival, the line and its direction, the progress - is not said again here.
+     * Everything ends by [BOTTOM] of the height, above the rows the lock screen keeps at its foot.
      */
-    private static final float WORDS_TOP = 0.235f;
-    private static final float ART_CENTRE = 0.505f;
-    private static final float TRACK_Y = 0.585f;
-    /** OPPO's landmark pictures are 807x378, their names 423x66. */
+    private static final float WORDS_TOP = 0.19f;
+    private static final float BOTTOM = 0.70f;
+    /**
+     * The page's two rhythms, in dp, measured ink to ink: the summary sits as far under the title
+     * as the landmark sits under it; the strip as far under the landmark as the stops under it.
+     */
+    private static final float GAP_HEAD_DP = 12f;
+    private static final float GAP_BODY_DP = 22f;
+    private static final float TITLE_SP = 32f;
+    /** A long destination's title gets smaller down to this, then goes on two lines this far apart. */
+    private static final float TITLE_MIN_SP = 22f;
+    private static final float TITLE_LINE_GAP_DP = 8f;
+    private static final float SUMMARY_SP = 15f;
+    private static final float STRIP_DP = 30f;
+    /** Between the strip's two lines, where a long trip needs two. */
+    private static final float LINE_GAP_DP = 10f;
+    /** How far a row of stops reaches above its middle: the halo round the stop coming to. */
+    private static final float ROW_HALF_DP = 11f;
+    private static final float ART_WIDTH = 0.80f;
+    /**
+     * The picture's fade in from under the words: from this far under the summary's ink, to this
+     * far into its solid part (Art.solid), so its clear top never sits behind the summary.
+     */
+    private static final float FADE_CLEAR_DP = 2f;
+    private static final float FADE_INTO_DP = 6f;
+    /** Narrower than this, the picture is left out: the words and the stops are the page. */
+    private static final float ART_MIN_WIDTH = 0.45f;
+    /** OPPO's landmark pictures are 807x378. */
     private static final float ART_ASPECT = 378f / 807f;
-    private static final float LABEL_ASPECT = 66f / 423f;
-    /** A default rather than a landmark stays in the background. */
-    private static final int FALLBACK_ALPHA = 110;
+    /**
+     * The solid part of every one of them, as shares of its box's height (alpha over 140,
+     * measured on the day and night defaults, 故宫 and 欢乐港湾): the block, with clear sky above
+     * it and the city block's fade round it.
+     */
+    private static final float ART_SOLID_TOP = 0.35f;
+    private static final float ART_SOLID_BOTTOM = 0.88f;
+    /**
+     * The key that takes the card colour OPPO's moving landmarks are rendered on (#1E1E1E, 30/255)
+     * back out of a frame. A pixel is that colour over whatever the picture holds there, so how far
+     * it is from it says how much of the picture there is: its largest channel's distance over
+     * 40/255 is its opacity, and what it adds to the card colour is its colour. The grey block
+     * the stills fade out comes back at about the stills' own weight, shadows darken whatever is
+     * under them, and the building, far from the card colour everywhere, is untouched.
+     */
+    private static final String KEY = ""
+            + "uniform shader content;"
+            + "uniform float fadeFrom;"
+            + "uniform float fadeTo;"
+            + "half4 main(float2 p) {"
+            + "  half4 c = content.eval(p);"
+            + "  half3 d = c.rgb - half3(0.1176) * c.a;"
+            + "  half a = clamp(max(max(abs(d.r), abs(d.g)), abs(d.b)) / 0.157, 0.0, 1.0) * c.a;"
+            + "  half f = half(smoothstep(fadeFrom, fadeTo, p.y));"
+            + "  return half4(clamp(half3(0.1176) * a + d, 0.0, a), a) * f;"
+            + "}";
+    private static boolean sKeyFailed;
+    /**
+     * Where the page ends, in screen pixels: [BOTTOM] of the height, or above the trip's own row
+     * - the island opened into its notification at the foot of the lock screen - whichever is
+     * higher, this much clear of it.
+     */
+    private static final float ROW_CLEAR_DP = 14f;
+    /** How the strip of legs goes: its gaps, where it breaks, what is cut down, how tall it is. */
+    static final class LegsPlan {
+        final boolean[] dot;
+        final boolean[] bare;
+        float gap;
+        int split;
+        float height;
 
-    /** The ground: the line's colour at the top into near-black, and the still landmark. */
+        LegsPlan(int n) {
+            dot = new boolean[n];
+            bare = new boolean[n];
+            split = n;
+        }
+    }
+
+    /** At most this many rows of stops, folds included, and at least this many. */
+    private static final int MAX_ROWS = 5;
+    private static final int MIN_ROWS = 3;
+    private static final float ROW_DP = 38f;
+    /** Clear space under the clock, where a clock style reaches below [WORDS_TOP]. */
+    private static final float CLOCK_GAP_DP = 18f;
+
+    /**
+     * The ground: graphite with a breath of the line's colour, the line itself as a glow behind
+     * the words at the top and a fainter one along the foot, and the still landmark.
+     *
+     * Graphite because of what OPPO's pictures are drawn for: each one stands on a grey city block
+     * of its own (about #424245, fading out to clear at its edges), made to melt into the dark
+     * neutral card ColorOS shows it on. On the line's colour mixed into black - this page before -
+     * that block read as a patch of grey fog. Every picture is drawn whole: a default used to go
+     * on at 43%, which greyed the night picture's lit entrance out, and the light is the picture's
+     * own - there is none painted here.
+     */
     static final class Ground {
         private Ground() {
         }
 
-        private static final int BOTTOM = 0xff07080b;
+        private static final int TOP = 0xff0b0c0f;
+        private static final int MIDDLE = 0xff0d0e11;
+        private static final int BOTTOM = 0xff050506;
 
-        /** At half the screen's size: it is a soft gradient, and the still is shown under a veil. */
-        static Bitmap make(int w, int h, int lineBg, Art.Pick pick, Bitmap still) {
+        /** At half the screen's size: soft gradients and glows, grained so none of it bands. */
+        static Bitmap make(int w, int h, int lineBg, Bitmap still, RectF artBox, float fadeFrom,
+                           float fadeTo) {
             int bw = Math.max(1, w / 2);
             int bh = Math.max(1, h / 2);
             Bitmap b = Bitmap.createBitmap(bw, bh, Bitmap.Config.ARGB_8888);
             Canvas c = new Canvas(b);
             Paint p = new Paint(Paint.DITHER_FLAG);
             p.setShader(new LinearGradient(0, 0, 0, bh,
-                    new int[] {blend(lineBg, BOTTOM, 0.62f), blend(lineBg, BOTTOM, 0.86f), BOTTOM},
-                    new float[] {0f, 0.45f, 1f}, Shader.TileMode.CLAMP));
+                    new int[] {blend(lineBg, TOP, 0.84f), blend(lineBg, MIDDLE, 0.94f), BOTTOM},
+                    new float[] {0f, 0.5f, 1f}, Shader.TileMode.CLAMP));
             c.drawRect(0, 0, bw, bh, p);
-            if (still != null) {
-                RectF r = artRect(bw, bh);
+            glow(c, bw * 0.5f, bh * 0.10f, bw * 1.0f, bh * 0.34f, lineBg, 0.34f, 1.4f);
+            glow(c, bw * 0.5f, bh * 1.04f, bw * 0.85f, bh * 0.20f, lineBg, 0.20f, 1.3f);
+            grain(b);
+            float k = bw / (float) w;
+            if (still != null && artBox != null && !artBox.isEmpty()) {
+                RectF box = new RectF(artBox.left * k, artBox.top * k, artBox.right * k, artBox.bottom * k);
                 Paint ip = new Paint(Paint.FILTER_BITMAP_FLAG | Paint.DITHER_FLAG);
-                ip.setAlpha(pick.fallback ? FALLBACK_ALPHA : 255);
-                c.drawBitmap(still, null, r, ip);
+                int layer = c.saveLayer(box, null);
+                c.drawBitmap(still, null, box, ip);
+                if (!Float.isNaN(fadeFrom) && fadeTo > fadeFrom) {
+                    // The view's fade, so the still has nothing behind the words either.
+                    Paint mask = new Paint();
+                    mask.setXfermode(new android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.DST_IN));
+                    mask.setShader(new LinearGradient(0f, fadeFrom * k, 0f, fadeTo * k,
+                            0x00000000, 0xff000000, Shader.TileMode.CLAMP));
+                    c.drawRect(box, mask);
+                }
+                c.restoreToCount(layer);
             }
             return b;
         }
+
+        /**
+         * An elliptical glow of [colour], [alpha] at its centre and nothing at its rim, falling
+         * off as a smoothstep raised to [ease]: a radial gradient stretched to the ellipse.
+         */
+        private static void glow(Canvas c, float cx, float cy, float rx, float ry, int colour,
+                                 float alpha, float ease) {
+            int n = 9;
+            int[] colours = new int[n];
+            float[] stops = new float[n];
+            for (int i = 0; i < n; i++) {
+                float d = i / (float) (n - 1);
+                float t = 1f - d;
+                float a = alpha * (float) Math.pow(t * t * (3f - 2f * t), ease);
+                stops[i] = d;
+                colours[i] = Color.argb(Math.round(a * 255f), Color.red(colour), Color.green(colour),
+                        Color.blue(colour));
+            }
+            RadialGradient g = new RadialGradient(0f, 0f, 1f, colours, stops, Shader.TileMode.CLAMP);
+            Matrix m = new Matrix();
+            m.setScale(rx, ry);
+            m.postTranslate(cx, cy);
+            g.setLocalMatrix(m);
+            Paint p = new Paint(Paint.DITHER_FLAG);
+            p.setShader(g);
+            c.drawRect(cx - rx, cy - ry, cx + rx, cy + ry, p);
+        }
+
+        /** A level or so of noise on every channel: dark gradients this long band without it. */
+        private static void grain(Bitmap b) {
+            int w = b.getWidth();
+            int h = b.getHeight();
+            int[] px = new int[w * h];
+            b.getPixels(px, 0, w, 0, 0, w, h);
+            long s = 0x9E3779B97F4A7C15L;
+            for (int i = 0; i < px.length; i++) {
+                s ^= s << 13;
+                s ^= s >>> 7;
+                s ^= s << 17;
+                int d = (int) ((s >>> 40) % 3) - 1;
+                int c = px[i];
+                int r = Math.min(255, Math.max(0, ((c >> 16) & 0xff) + d));
+                int g = Math.min(255, Math.max(0, ((c >> 8) & 0xff) + d));
+                int bl = Math.min(255, Math.max(0, (c & 0xff) + d));
+                px[i] = 0xff000000 | (r << 16) | (g << 8) | bl;
+            }
+            b.setPixels(px, 0, w, 0, 0, w, h);
+        }
     }
 
-    static RectF artRect(float w, float h) {
-        float side = w * 0.04f;
-        float aw = w - 2f * side;
-        float ah = aw * ART_ASPECT;
-        float cy = h * ART_CENTRE;
-        return new RectF(side, cy - ah / 2f, side + aw, cy + ah / 2f);
+    /**
+     * The title and the summary as their ink stands: the baselines that put the title's ink at
+     * the words' top - its [lines] [TITLE_LINE_GAP_DP] apart - and the summary's [GAP_HEAD_DP]
+     * under it, and how tall the two are together. Measured on fixed words of the same faces -
+     * every Chinese line inks alike - so a title's size, not its words, decides where things go.
+     */
+    static final class Header {
+        final float titleBase;
+        final float titleStep;
+        final float summaryBase;
+        final float height;
+
+        private Header(float titleBase, float titleStep, float summaryBase, float height) {
+            this.titleBase = titleBase;
+            this.titleStep = titleStep;
+            this.summaryBase = summaryBase;
+            this.height = height;
+        }
+
+        private static Header sLast;
+        private static String sLastKey;
+
+        static synchronized Header of(float dp, float titleSp, int lines) {
+            String key = dp + "/" + titleSp + "/" + lines;
+            if (sLast != null && key.equals(sLastKey)) return sLast;
+            android.graphics.Rect r = new android.graphics.Rect();
+            Paint t = new Paint(Paint.ANTI_ALIAS_FLAG);
+            t.setTypeface(Typeface.create("sans-serif-medium", Typeface.BOLD));
+            t.setTextSize(titleSp * dp);
+            t.getTextBounds("前往南锣鼓巷", 0, 6, r);
+            float titleBase = -r.top;
+            float step = r.height() + TITLE_LINE_GAP_DP * dp;
+            float titleH = r.height() + (lines - 1) * step;
+            t.setTypeface(Typeface.create("sans-serif", Typeface.NORMAL));
+            t.setTextSize(SUMMARY_SP * dp);
+            t.getTextBounds("全程分钟换乘次", 0, 7, r);
+            float sumTop = titleH + GAP_HEAD_DP * dp;
+            sLast = new Header(titleBase, step, sumTop - r.top, sumTop + r.height());
+            sLastKey = key;
+            return sLast;
+        }
     }
+
+    /**
+     * Where the page's words start, in screen pixels: [WORDS_TOP] of the height, or under the
+     * clock where its style draws lower than that - a stacked or a large style can, small as the
+     * immersive page makes it.
+     *
+     * The clock is where it rests in the lock screen's own pixels (ClockCollapse
+     * .contentBottomOnScreen: the small clock's ink and any signature bar it carries), not where
+     * it is drawn: through a doze HyperOS holds keyguard_root_view at 0.95 and the clock is drawn
+     * lower, and words that followed it jumped up as the screen came on. Main.glyphBox is no
+     * substitute - it is the clock before it is made small, 240px further down. With no small
+     * clock of ours, the date line, unzoomed the same way. A clock that seems to reach past the
+     * middle of the screen is a measurement to distrust, not a clock.
+     */
+    static float wordsTop(int h, float dp) {
+        float top = h * WORDS_TOP;
+        try {
+            float clock = ClockCollapse.contentBottomShown();
+            View d = Main.visibleDate();
+            if (d != null && d.isShown() && d.getAlpha() > 0.01f) {
+                int[] at = new int[2];
+                d.getLocationOnScreen(at);
+                float b = ClockCollapse.unzoomY(d, at[1] + d.getHeight() * d.getScaleY());
+                clock = Float.isNaN(clock) ? b : Math.max(clock, b);
+            }
+            if (!Float.isNaN(clock) && clock < h * 0.5f) top = Math.max(top, clock + CLOCK_GAP_DP * dp);
+        } catch (Throwable ignored) {
+            // no clock to read: the share stands
+        }
+        return top;
+    }
+
+    /**
+     * See ROW_CLEAR_DP. The row where it is drawn: the stack places its rows by their translation,
+     * so that is part of where it is, not a motion to look past - taken off, it put the row at
+     * -37px and the page fell back to its share, under the row (2026-10-07). A row somewhere a
+     * resting row cannot be (above the middle, past the foot) is one still on its way in.
+     */
+    static float pageLimit(int h, float dp) {
+        float limit = h * BOTTOM;
+        String why;
+        try {
+            String key = LockIslands.INSTANCE.openSceneKey();
+            View row = isTripKey(key) ? MiniPlayerRuntime.rowOf(key) : null;
+            if (row == null) {
+                why = "no row (key=" + key + ")";
+            } else if (!row.isShown() || row.getHeight() <= 0) {
+                why = "row not shown";
+            } else {
+                int[] at = new int[2];
+                row.getLocationOnScreen(at);
+                why = "row at " + at[1];
+                if (at[1] > h * 0.45f && at[1] < h * 0.97f) {
+                    limit = Math.min(limit, at[1] - ROW_CLEAR_DP * dp);
+                } else {
+                    why += " (moving, not taken)";
+                }
+            }
+        } catch (Throwable t) {
+            why = "failed: " + t;
+        }
+        sLimitWhy = why;
+        return limit;
+    }
+
+    /** What pageLimit last found, for the probe. */
+    private static volatile String sLimitWhy = "-";
 
     static int blend(int a, int b, float t) {
         int r = Math.round(Color.red(a) + (Color.red(b) - Color.red(a)) * t);
@@ -645,109 +1026,250 @@ final class AmapTransitScene implements ImmersiveScene {
     }
 
     /**
-     * The station overview (cardStationOverview): two or three stops on a bar in the line's
-     * colour, filled up to the train - between the first two on 下一站, at the middle one
-     * otherwise - a transfer stop a ⇄ pill with the next line's badge over it, the names below.
+     * What the page says, worked out of the whole trip: where it goes, how long and how far, the
+     * legs in order, and the stops of the leg on show. That leg is the one ridden now, else the
+     * next one to ride (the walk to a station, a transfer's walk), else the last one ridden (an
+     * arrival).
      */
-    static final class Track {
-        final float dp;
-        private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final TextPaint node = new TextPaint(Paint.ANTI_ALIAS_FLAG);
-        private final RectF rect = new RectF();
+    static final class Route {
+        static final int DONE = 0;
+        static final int NOW = 1;
+        static final int AHEAD = 2;
 
-        Track(float dp) {
-            this.dp = dp;
-            node.setTypeface(Typeface.create("sans-serif", Typeface.NORMAL));
-            node.setTextAlign(Paint.Align.CENTER);
+        /** A leg in the strip: a ride's line, or a walk's length. */
+        static final class Leg {
+            final boolean ride;
+            final String text;
+            final int color;
+            final int state;
+
+            Leg(boolean ride, String text, int color, int state) {
+                this.ride = ride;
+                this.text = text;
+                this.color = color;
+                this.state = state;
+            }
         }
 
-        void draw(Canvas canvas, AmapTransitCard.Card c, float left, float right, float y) {
-            List<AmapTransitCard.Node> nodes = c.stations;
-            if (nodes == null || nodes.isEmpty()) return;
-            int n = nodes.size();
-            float[] xs = new float[n];
-            for (int i = 0; i < n; i++) {
-                xs[i] = n == 1 ? (left + right) / 2f : left + (right - left) * i / (n - 1);
+        /** A row of the stops: one stop, or [count] of them folded into one line. */
+        static final class Row {
+            final int index;
+            final int count;
+
+            Row(int index, int count) {
+                this.index = index;
+                this.count = count;
             }
-            // curIndex is 1: the train is at the second stop, or on its way to it.
-            int cur = Math.min(1, n - 1);
-            float trainX = c.atStation || cur == 0 ? xs[cur] : (xs[cur - 1] + xs[cur]) / 2f;
-            fill.setStyle(Paint.Style.FILL);
-            fill.setStrokeCap(Paint.Cap.ROUND);
-            fill.setStrokeWidth(5f * dp);
-            fill.setColor(0x33ffffff);
-            canvas.drawLine(left, y, right, y, fill);
-            fill.setColor(c.lineBg);
-            canvas.drawLine(left, y, trainX, y, fill);
-            node.setTextSize(13f * dp);
-            Paint.FontMetrics fn = node.getFontMetrics();
-            float slot = (right - left) / Math.max(1, n - 1) - 6f * dp;
-            for (int i = 0; i < n; i++) {
-                AmapTransitCard.Node s = nodes.get(i);
-                boolean reached = xs[i] <= trainX + 0.5f;
-                int tint = reached ? s.color : 0xff4a4d55;
-                if (s.transfer) {
-                    float rw = 15f * dp;
-                    float rh = 11f * dp;
-                    rect.set(xs[i] - rw, y - rh, xs[i] + rw, y + rh);
-                    fill.setStyle(Paint.Style.FILL);
-                    fill.setColor(tint);
-                    canvas.drawRoundRect(rect, rh, rh, fill);
-                    fill.setStyle(Paint.Style.STROKE);
-                    fill.setStrokeWidth(1.6f * dp);
-                    fill.setColor(0xffffffff);
-                    canvas.drawRoundRect(rect, rh, rh, fill);
-                    fill.setStyle(Paint.Style.FILL);
-                    drawTransferGlyph(canvas, xs[i], y, 6f * dp);
+
+            boolean fold() {
+                return count > 0;
+            }
+        }
+
+        String dest = "";
+        String summary = "";
+        final List<Leg> legs = new ArrayList<>();
+        /** The leg on show's stops, getting on to getting off; empty with nothing to ride. */
+        final List<String> stops = new ArrayList<>();
+        /** The most stops any leg of the trip has: what the page keeps room for, all trip long. */
+        int mostStops;
+        /** Its line's colour. */
+        int color;
+        /** The stop the train is at ([at]) or coming to. */
+        int here;
+        boolean at;
+        String hereTag = "";
+        String endTag = "";
+        int endColor;
+
+        static Route of(AmapTransitCard.Trip t, AmapTransitCard.Card c) {
+            Route r = new Route();
+            List<AmapTransitCard.Leg> navi = t.navi;
+            int cur = t.currentIndex();
+            int show = -1;
+            if (t.current != null && t.current.rides()) show = cur;
+            for (int i = Math.max(0, cur); show < 0 && i < navi.size(); i++) {
+                if (navi.get(i).rides()) show = i;
+            }
+            for (int i = navi.size() - 1; show < 0 && i >= 0; i--) {
+                if (navi.get(i).rides()) show = i;
+            }
+            AmapTransitCard.Leg last = null;
+            int rides = 0;
+            for (AmapTransitCard.Leg l : navi) {
+                if (!l.rides()) continue;
+                last = l;
+                rides++;
+            }
+
+            r.dest = AmapTransitCard.trim(t.destStation);
+            if (r.dest.isEmpty() && last != null) r.dest = AmapTransitCard.trim(last.offName);
+
+            List<String> parts = new ArrayList<>();
+            if (t.totalDuration > 0) {
+                parts.add("全程 " + Math.max(1, Math.round(t.totalDuration / 60.0)) + " 分钟");
+            }
+            double metres = number(t.totalDistance);
+            if (metres > 0) parts.add(distance(metres, " "));
+            if (rides > 1) parts.add("换乘 " + (rides - 1) + " 次");
+            r.summary = TextUtils.join(" · ", parts);
+
+            // The walks at either end are the map's business: only a change's walk is the trip's.
+            int firstRide = -1;
+            int lastRide = -1;
+            for (int i = 0; i < navi.size(); i++) {
+                if (!navi.get(i).rides()) continue;
+                if (firstRide < 0) firstRide = i;
+                lastRide = i;
+            }
+            for (int i = Math.max(0, firstRide); i <= lastRide; i++) {
+                AmapTransitCard.Leg l = navi.get(i);
+                if (l.rides()) r.mostStops = Math.max(r.mostStops, l.via.size() + 2);
+                int state = cur < 0 ? AHEAD : i < cur ? DONE : i == cur ? NOW : AHEAD;
+                if (l.rides()) {
+                    r.legs.add(new Leg(true, shortName(l.lineName), AmapTransitCard.color(l.lineBg), state));
                 } else {
-                    float r = i == cur ? 6.5f : 5f;
-                    fill.setColor(tint);
-                    canvas.drawCircle(xs[i], y, r * dp, fill);
-                    fill.setColor(Color.WHITE);
-                    canvas.drawCircle(xs[i], y, r * 0.42f * dp, fill);
+                    double m = number(l.walkLength);
+                    if (m > 0) r.legs.add(new Leg(false, distance(m, ""), 0, state));
                 }
-                if (!s.badge.isEmpty()) drawBadge(canvas, s.badge, s.badgeColor, xs[i], y - 15f * dp);
-                node.setColor(i == cur ? 0xf2ffffff : 0x99ffffff);
-                node.setFakeBoldText(i == cur);
-                String name = TextUtils.ellipsize(s.name, node, slot, TextUtils.TruncateAt.END).toString();
-                canvas.drawText(name, xs[i], y + 16f * dp - fn.top, node);
             }
-            node.setFakeBoldText(false);
-            fill.setStrokeWidth(5f * dp);
+
+            if (show < 0) return r;
+            AmapTransitCard.Leg l = navi.get(show);
+            r.color = AmapTransitCard.color(l.lineBg);
+            r.stops.add(AmapTransitCard.trim(l.onName));
+            for (AmapTransitCard.Station s : l.via) r.stops.add(AmapTransitCard.trim(s.name));
+            r.stops.add(AmapTransitCard.trim(l.offName));
+            int n = r.stops.size();
+            if (show == cur) {
+                int remain = l.remain == null ? n - 1 : l.remain;
+                r.at = c.atStation;
+                r.here = r.at ? n - 1 - remain : n - remain;
+                r.hereTag = r.at ? "当前站" : "下一站";
+            } else if (show > cur) {
+                r.here = 0;
+                r.at = true;
+                r.hereTag = "上车";
+            } else {
+                r.here = n - 1;
+                r.at = true;
+            }
+            r.here = Math.max(0, Math.min(n - 1, r.here));
+
+            // Getting off: the line changed to and where it goes, else the exit.
+            AmapTransitCard.Leg next = null;
+            for (int i = show + 1; i < navi.size(); i++) {
+                if (navi.get(i).rides()) {
+                    next = navi.get(i);
+                    break;
+                }
+            }
+            if (next != null) {
+                String dir = AmapTransitCard.trim(next.lineDirection);
+                r.endTag = "下车 · 换乘 " + shortName(next.lineName) + (dir.isEmpty() ? "" : " 往" + dir);
+                r.endColor = AmapTransitCard.color(next.lineBg);
+            } else {
+                String exit = AmapTransitCard.trim(t.exitName);
+                r.endTag = exit.isEmpty() ? "下车" : "下车 · " + exit + "出站";
+                r.endColor = r.color;
+            }
+            return r;
         }
 
-        /** The interchange arrows (⇄) at a transfer stop, white. */
-        private void drawTransferGlyph(Canvas canvas, float cx, float cy, float s) {
-            fill.setColor(0xffffffff);
-            fill.setStyle(Paint.Style.STROKE);
-            fill.setStrokeWidth(1.4f * dp);
-            float g = 2.4f * dp;
-            canvas.drawLine(cx - s, cy - g, cx + s * 0.6f, cy - g, fill);
-            canvas.drawLine(cx + s * 0.6f, cy - g - 2f * dp, cx + s, cy - g, fill);
-            canvas.drawLine(cx + s * 0.6f, cy - g + 2f * dp, cx + s, cy - g, fill);
-            canvas.drawLine(cx + s, cy + g, cx - s * 0.6f, cy + g, fill);
-            canvas.drawLine(cx - s * 0.6f, cy + g - 2f * dp, cx - s, cy + g, fill);
-            canvas.drawLine(cx - s * 0.6f, cy + g + 2f * dp, cx - s, cy + g, fill);
-            fill.setStyle(Paint.Style.FILL);
+        /**
+         * The stops as at most [max] rows: getting off, the stop at or coming to and the one after
+         * it always; getting on while it is near; the stop just passed where it still fits; and
+         * every other run of two or more folded into a line of its own.
+         */
+        List<Row> rows(int max) {
+            int n = stops.size();
+            List<Row> rows = new ArrayList<>();
+            if (n == 0 || max <= 0) return rows;
+            boolean[] keep = new boolean[n];
+            keep[n - 1] = true;
+            keep[here] = true;
+            if (here + 1 < n - 1) keep[here + 1] = true;
+            if (here <= 1) keep[0] = true;
+            rows = fold(keep);
+            if (here >= 1 && !keep[here - 1]) {
+                keep[here - 1] = true;
+                List<Row> more = fold(keep);
+                if (more.size() <= max) rows = more;
+                else keep[here - 1] = false;
+            }
+            // Over the limit: give up, in turn, the stop after the next, getting on, the folds'
+            // own lines, then stops from the top - getting off and this one stay to the last.
+            if (rows.size() > max && here + 1 < n - 1 && keep[here + 1]) {
+                keep[here + 1] = false;
+                rows = fold(keep);
+            }
+            if (rows.size() > max && here > 0 && keep[0]) {
+                keep[0] = false;
+                rows = fold(keep);
+            }
+            if (rows.size() > max) {
+                List<Row> stopsOnly = new ArrayList<>();
+                for (Row r : rows) if (!r.fold()) stopsOnly.add(r);
+                rows = stopsOnly;
+            }
+            while (rows.size() > max) {
+                int drop = 0;
+                while (drop < rows.size() - 1 && (rows.get(drop).index == here
+                        || rows.get(drop).index == n - 1)) drop++;
+                rows.remove(drop);
+            }
+            return rows;
         }
 
-        /** A line-number square in its colour, white number: 五一路's green 5. */
-        private void drawBadge(Canvas canvas, String code, int color, float cx, float bottom) {
-            node.setTextSize(11f * dp);
-            node.setFakeBoldText(true);
-            node.setColor(0xffffffff);
-            float tw = node.measureText(code);
-            float pad = 4f * dp;
-            float bw = Math.max(16f * dp, tw + 2f * pad);
-            float bh = 16f * dp;
-            rect.set(cx - bw / 2f, bottom - bh, cx + bw / 2f, bottom);
-            fill.setStyle(Paint.Style.FILL);
-            fill.setColor(color);
-            canvas.drawRoundRect(rect, 4f * dp, 4f * dp, fill);
-            Paint.FontMetrics fm = node.getFontMetrics();
-            canvas.drawText(code, cx, rect.centerY() - (fm.ascent + fm.descent) / 2f, node);
-            node.setFakeBoldText(false);
+        private static List<Row> fold(boolean[] keep) {
+            List<Row> out = new ArrayList<>();
+            int n = keep.length;
+            int i = 0;
+            while (i < n) {
+                if (keep[i]) {
+                    out.add(new Row(i, 0));
+                    i++;
+                    continue;
+                }
+                int j = i;
+                while (j < n && !keep[j]) j++;
+                if (j - i >= 2) {
+                    out.add(new Row(i, j - i));
+                } else {
+                    for (int q = i; q < j; q++) out.add(new Row(q, 0));
+                }
+                i = j;
+            }
+            return out;
         }
+
+        /** 「1号线(西单-四惠东)」 is 1号线: the bracket is the strip's room, not the line's name. */
+        static String shortName(String name) {
+            String s = AmapTransitCard.trim(name);
+            String cut = s.replaceAll("[(（][^)）]*[)）]", "").trim();
+            return cut.isEmpty() ? s : cut;
+        }
+
+        private static double number(String s) {
+            try {
+                return Double.parseDouble(AmapTransitCard.trim(s));
+            } catch (Throwable t) {
+                return 0;
+            }
+        }
+
+        /** 420米 / 4.1公里, with [space] between the figure and the unit. */
+        private static String distance(double metres, String space) {
+            if (metres < 1000) return Math.round(metres) + space + "米";
+            double km = Math.round(metres / 100.0) / 10.0;
+            String v = km == Math.floor(km) ? String.valueOf((long) km) : String.valueOf(km);
+            return v + space + "公里";
+        }
+    }
+
+    /** Whether white on [c] would not read: 13号线's yellow and the like. */
+    static boolean light(int c) {
+        return (0.299f * Color.red(c) + 0.587f * Color.green(c) + 0.114f * Color.blue(c)) / 255f > 0.62f;
     }
 
     // ---------------------------------------------------------------- the page
@@ -756,18 +1278,30 @@ final class AmapTransitScene implements ImmersiveScene {
     final class TransitView extends View {
 
         private final float mDp;
-        private final TextPaint mPrimary = new TextPaint(Paint.ANTI_ALIAS_FLAG);
-        private final TextPaint mSecondary = new TextPaint(Paint.ANTI_ALIAS_FLAG);
-        private final TextPaint mLine = new TextPaint(Paint.ANTI_ALIAS_FLAG);
-        private final TextPaint mDirection = new TextPaint(Paint.ANTI_ALIAS_FLAG);
+        private final TextPaint mTitle = new TextPaint(Paint.ANTI_ALIAS_FLAG);
+        private final TextPaint mSummary = new TextPaint(Paint.ANTI_ALIAS_FLAG);
+        private final TextPaint mChip = new TextPaint(Paint.ANTI_ALIAS_FLAG);
+        private final TextPaint mWalk = new TextPaint(Paint.ANTI_ALIAS_FLAG);
+        private final TextPaint mName = new TextPaint(Paint.ANTI_ALIAS_FLAG);
+        private final TextPaint mNameBig = new TextPaint(Paint.ANTI_ALIAS_FLAG);
+        private final TextPaint mTag = new TextPaint(Paint.ANTI_ALIAS_FLAG);
+        private final TextPaint mTagPlain = new TextPaint(Paint.ANTI_ALIAS_FLAG);
+        private final TextPaint mFold = new TextPaint(Paint.ANTI_ALIAS_FLAG);
         private final Paint mFill = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final RectF mRect = new RectF();
-        private final Track mTrack;
+        private final int[] mAt = new int[2];
 
         private AmapTransitCard.Card mC;
+        private Route mRoute;
         private Drawable mArt;
         private Bitmap mStill;
-        private Drawable mLabel;
+        private android.graphics.RenderNode mArtNode;
+        private android.graphics.RuntimeShader mKey;
+        private float mKeyFrom = Float.NaN;
+        private float mKeyTo = Float.NaN;
+        /** The picture's solid part, as shares of its box's height (Art.solid). */
+        private float mSolidTop = ART_SOLID_TOP;
+        private float mSolidBottom = ART_SOLID_BOTTOM;
         private boolean mLive;
 
         TransitView(Context ctx) {
@@ -775,20 +1309,26 @@ final class AmapTransitScene implements ImmersiveScene {
             mDp = ctx.getResources().getDisplayMetrics().density;
             Typeface bold = Typeface.create("sans-serif-medium", Typeface.BOLD);
             Typeface plain = Typeface.create("sans-serif", Typeface.NORMAL);
-            mPrimary.setTypeface(bold);
-            mPrimary.setColor(0xf2ffffff);
-            mPrimary.setTextAlign(Paint.Align.CENTER);
-            mSecondary.setTypeface(plain);
-            mSecondary.setColor(0xb3ffffff);
-            mLine.setTypeface(bold);
-            mDirection.setTypeface(plain);
-            mDirection.setColor(0xccffffff);
-            mTrack = new Track(mDp);
+            mTitle.setTypeface(bold);
+            mTitle.setColor(0xf7ffffff);
+            mTitle.setTextAlign(Paint.Align.CENTER);
+            mSummary.setTypeface(plain);
+            mSummary.setColor(0x94ffffff);
+            mSummary.setTextAlign(Paint.Align.CENTER);
+            mChip.setTypeface(bold);
+            mChip.setTextAlign(Paint.Align.CENTER);
+            mWalk.setTypeface(plain);
+            mName.setTypeface(plain);
+            mNameBig.setTypeface(bold);
+            mTag.setTypeface(bold);
+            mTagPlain.setTypeface(plain);
+            mFold.setTypeface(plain);
         }
 
         /** The new card; a different one plays the landmark once more. */
-        void setCard(AmapTransitCard.Card c, boolean again) {
+        void setCard(AmapTransitCard.Card c, Route route, boolean again) {
             mC = c;
+            mRoute = route;
             if (again) replayArt();
             invalidate();
         }
@@ -798,7 +1338,8 @@ final class AmapTransitScene implements ImmersiveScene {
             if (mArt != null) mArt.setCallback(null);
             mArt = set.ground;
             mStill = set.still;
-            mLabel = set.label;
+            mSolidTop = set.solidTop;
+            mSolidBottom = set.solidBottom;
             if (mArt != null) mArt.setCallback(this);
             startArt();
             invalidate();
@@ -807,6 +1348,7 @@ final class AmapTransitScene implements ImmersiveScene {
         Bitmap stillArt() {
             return mStill;
         }
+
 
         boolean animating() {
             return mLive && mArt instanceof AnimatedImageDrawable;
@@ -861,7 +1403,7 @@ final class AmapTransitScene implements ImmersiveScene {
 
         String describe() {
             return "art=" + (mArt == null ? "-" : mArt.getClass().getSimpleName())
-                    + " label=" + (mLabel != null) + " live=" + mLive;
+                    + " live=" + mLive;
         }
 
         // ------------------------------------------------------------ fading
@@ -925,97 +1467,516 @@ final class AmapTransitScene implements ImmersiveScene {
         @Override
         protected void onDraw(Canvas canvas) {
             AmapTransitCard.Card c = mC;
+            Route rt = mRoute;
             int w = getWidth();
             int h = getHeight();
-            if (c == null || w <= 0 || h <= 0) return;
+            if (c == null || rt == null || w <= 0 || h <= 0) return;
             float cx = w / 2f;
             float maxW = w - 48f * mDp;
+            // Under the clock, however low its style draws it, and clear of the trip's own row
+            // at the foot; the ground follows a change.
+            getLocationOnScreen(mAt);
+            int screenH = getResources().getDisplayMetrics().heightPixels;
+            float screenTop = wordsTop(screenH, mDp);
+            // The limit only goes up while the page is up: a row that grows (its progress bar
+            // arriving) moves the page, one that shrinks does not pull it back and forth.
+            float screenLimit = pageLimit(screenH, mDp);
+            if (!Float.isNaN(mLimit)) screenLimit = Math.min(screenLimit, mLimit);
+            if (Float.isNaN(mTop) || Math.abs(screenTop - mTop) > mDp
+                    || Math.abs(screenLimit - mLimit) > mDp) {
+                // The words follow at once; the ground, a picture made on the main thread, once
+                // the clock and the row have stopped moving (both settle as the page comes in).
+                mTop = screenTop;
+                mLimit = screenLimit;
+                mMain.removeCallbacks(mRepaint);
+                mMain.postDelayed(mRepaint, 200);
+            }
+            float top = mTop - mAt[1];
+            float limit = mLimit - mAt[1];
+            String[] titles = fitTitle(rt.dest.isEmpty() ? c.lockTitle : "前往 " + rt.dest, maxW);
+            Header hd = Header.of(mDp, mTitle.getTextSize() / mDp, titles.length);
+            LegsPlan legs = legsPlan(rt, maxW);
+            // One solve for the whole page, top to limit. The rows the trip can ever take - its
+            // longest leg's stops, MAX_ROWS at most - are asked for whatever leg and stop it is
+            // at, so nothing moves along the trip; what is left is the picture's, up to
+            // ART_WIDTH. Short of room, in turn: the rows down to MIN_ROWS, the picture down to
+            // ART_MIN_WIDTH, no picture, the rows down to getting off alone. Whatever is still
+            // over goes half above, half below, so a short trip does not leave the foot empty.
+            float rh = ROW_DP * mDp;
+            float pad = 12f * mDp;
+            float stripBlock = legs.height > 0f ? legs.height + GAP_BODY_DP * mDp : 0f;
+            float at = top + hd.height + GAP_HEAD_DP * mDp;
+            float solidShare = (mSolidBottom - mSolidTop) * ART_ASPECT;
+            int rows = Math.min(MAX_ROWS, Math.max(rt.mostStops, rt.stops.size()));
+            float aw;
+            while (true) {
+                float room = limit - at - (GAP_BODY_DP * mDp + stripBlock + rowsHeight(rows) + pad);
+                float fit = Math.min(w * ART_WIDTH, room / solidShare);
+                if (fit >= w * ART_MIN_WIDTH) {
+                    aw = fit;
+                    break;
+                }
+                if (rows > MIN_ROWS) {
+                    rows--;
+                    continue;
+                }
+                aw = 0f;
+                while (rows > 1 && top + hd.height + GAP_BODY_DP * mDp + stripBlock
+                        + rowsHeight(rows) + pad > limit) {
+                    rows--;
+                }
+                break;
+            }
+            float ah = aw * ART_ASPECT;
+            RectF art = new RectF((w - aw) / 2f, at - ah * mSolidTop, (w + aw) / 2f, at - ah * mSolidTop + ah);
+            float strip = (aw > 0f ? art.top + ah * mSolidBottom : top + hd.height) + GAP_BODY_DP * mDp;
+            float stops = strip + stripBlock + ROW_HALF_DP * mDp;
+            float end = strip + stripBlock + rowsHeight(rows);
+            float shift = Math.max(0f, (limit - pad - end) / 2f);
+            top += shift;
+            art.offset(0f, shift);
+            strip += shift;
+            stops += shift;
+            // Nothing of the picture behind the words: its clear top - the city block's faint
+            // grey fading out round it - comes in from under the summary to where it is solid.
+            float fadeFrom = top + hd.height + FADE_CLEAR_DP * mDp;
+            float fadeTo = Math.max(fadeFrom + mDp, art.top + ah * mSolidTop + FADE_INTO_DP * mDp);
+            RectF screenArt = new RectF(art);
+            screenArt.offset(mAt[0], mAt[1]);
+            if (mArtBox == null || Math.abs(mArtBox.top - screenArt.top) > mDp
+                    || Math.abs(mArtBox.width() - screenArt.width()) > mDp
+                    || Float.isNaN(mFadeFrom) || Math.abs(mFadeFrom - (fadeFrom + mAt[1])) > mDp) {
+                mArtBox = screenArt;
+                mFadeFrom = fadeFrom + mAt[1];
+                mFadeTo = fadeTo + mAt[1];
+                mMain.removeCallbacks(mRepaint);
+                mMain.postDelayed(mRepaint, 200);
+            }
 
             // The landmark, moving, over the ground's own still of it.
-            if (animating()) {
-                RectF r = artRect(w, h);
-                mArt.setBounds(Math.round(r.left), Math.round(r.top), Math.round(r.right),
-                        Math.round(r.bottom));
-                mArt.setAlpha(mPick.fallback ? FALLBACK_ALPHA : 255);
-                mArt.draw(canvas);
+            if (animating() && !art.isEmpty()) drawArt(canvas, art, fadeFrom, fadeTo);
+
+            // Where to, large; how long and how far under it.
+            float y = top;
+            for (int i = 0; i < titles.length; i++) {
+                canvas.drawText(titles[i], cx, y + hd.titleBase + i * hd.titleStep, mTitle);
             }
-            if (mLabel != null) {
-                RectF r = artRect(w, h);
-                float lw = Math.min(r.width() * 0.5f, 220f * mDp);
-                float lh = lw * LABEL_ASPECT;
-                float top = r.bottom + 4f * mDp;
-                mLabel.setBounds(Math.round(cx - lw / 2f), Math.round(top),
-                        Math.round(cx + lw / 2f), Math.round(top + lh));
-                mLabel.draw(canvas);
+            if (!rt.summary.isEmpty()) {
+                mSummary.setTextSize(SUMMARY_SP * mDp);
+                String sum = TextUtils.ellipsize(rt.summary, mSummary, maxW, TextUtils.TruncateAt.END).toString();
+                canvas.drawText(sum, cx, y + hd.summaryBase, mSummary);
             }
 
-            float y = h * WORDS_TOP;
-            mLine.setTextSize(14f * mDp);
-            mDirection.setTextSize(14f * mDp);
-            Paint.FontMetrics fm = mLine.getFontMetrics();
-            float pillH = (fm.bottom - fm.top) + 8f * mDp;
-            // The line's pill and where it is going, one row, centred - for a ride.
-            if (!c.line.isEmpty()) {
-                float lineW = mLine.measureText(c.line) + 20f * mDp;
-                String dir = TextUtils.ellipsize(c.direction, mDirection,
-                        Math.max(0f, maxW - lineW - 8f * mDp), TextUtils.TruncateAt.END).toString();
-                float dirW = dir.isEmpty() ? 0f : mDirection.measureText(dir);
-                float x = cx - (lineW + (dirW > 0 ? 8f * mDp + dirW : 0f)) / 2f;
-                float baseline = y + pillH / 2f - (fm.ascent + fm.descent) / 2f;
-                mRect.set(x, y, x + lineW, y + pillH);
-                mFill.setColor(c.lineBg);
-                canvas.drawRoundRect(mRect, pillH / 2f, pillH / 2f, mFill);
-                mLine.setColor(c.lineText);
-                canvas.drawText(c.line, x + 10f * mDp, baseline, mLine);
-                if (dirW > 0) canvas.drawText(dir, x + lineW + 8f * mDp, baseline, mDirection);
-            }
-            y += pillH + 14f * mDp;
-
-            // The card's primary line.
-            mPrimary.setTextSize(30f * mDp);
-            Paint.FontMetrics fp = mPrimary.getFontMetrics();
-            String primary = TextUtils.ellipsize(c.primary.isEmpty() ? c.lockTitle : c.primary,
-                    mPrimary, maxW, TextUtils.TruncateAt.END).toString();
-            canvas.drawText(primary, cx, y - fp.top, mPrimary);
-            y += fp.bottom - fp.top + 6f * mDp;
-
-            // The secondary line: the line-coloured chip ColorOS puts first (the next line at a
-            // transfer, the exit at 到站), then the words; on the waiting card, the next train.
-            mSecondary.setTextSize(15f * mDp);
-            String words = c.secondary.trim();
-            String chip = c.secondaryLine.trim();
-            int chipColor = c.secondaryLineColor;
-            if (c.waiting != null && !c.waiting.isEmpty()) {
-                // The vehicle row (ya.m.c): the line in its colour, where it goes, the next train.
-                AmapTransitCard.WaitLine wl = c.waiting.get(0);
-                chip = wl.name.trim();
-                chipColor = wl.color;
-                words = (wl.direction.isEmpty() ? "" : wl.direction + "  ") + wl.realtime1;
-            }
-            Paint.FontMetrics fs = mSecondary.getFontMetrics();
-            float chipW = chip.isEmpty() ? 0f : mSecondary.measureText(chip) + 14f * mDp;
-            String sec = TextUtils.ellipsize(words, mSecondary,
-                    Math.max(0f, maxW - chipW - (chipW > 0 ? 8f * mDp : 0f)), TextUtils.TruncateAt.END).toString();
-            float secW = sec.isEmpty() ? 0f : mSecondary.measureText(sec);
-            float rowW = chipW + (chipW > 0 && secW > 0 ? 8f * mDp : 0f) + secW;
-            float x = cx - rowW / 2f;
-            float rowH = (fs.bottom - fs.top) + 6f * mDp;
-            float base = y + rowH / 2f - (fs.ascent + fs.descent) / 2f;
-            if (chipW > 0) {
-                mRect.set(x, y, x + chipW, y + rowH);
-                mFill.setColor(chipColor);
-                canvas.drawRoundRect(mRect, 6f * mDp, 6f * mDp, mFill);
-                mSecondary.setColor(Color.WHITE);
-                canvas.drawText(chip, x + 7f * mDp, base, mSecondary);
-                x += chipW + 8f * mDp;
-            }
-            if (secW > 0) {
-                mSecondary.setColor(0xb3ffffff);
-                canvas.drawText(sec, x, base, mSecondary);
-            }
-
-            if (c.stations != null) mTrack.draw(canvas, c, w * 0.17f, w * 0.83f, h * TRACK_Y);
+            // The trip, leg by leg, as the picture's caption; then this leg's stops.
+            drawLegs(canvas, rt, cx, strip, legs);
+            drawStops(canvas, rt, cx, stops, Math.max(1, rows), maxW);
         }
+
+        /** [rows] rows of stops, from the first one's halo to the last one's. */
+        private float rowsHeight(int rows) {
+            return rows > 0 ? (rows - 1) * ROW_DP * mDp + 2f * ROW_HALF_DP * mDp : 0f;
+        }
+
+        /**
+         * The moving landmark with its ground keyed out. OPPO's animations are opaque, rendered on
+         * ColorOS's card colour (#1E1E1E) out to their box's edges, where the stills are clear
+         * round their block: drawn as they are, a grey slab with a hard edge sat in the page
+         * (2026-10-07). Each frame goes through KEY on the GPU, in a RenderNode of its own, which
+         * takes the card colour back out - see KEY. Without a hardware canvas, drawn as it is.
+         */
+        private void drawArt(Canvas canvas, RectF box, float fadeFrom, float fadeTo) {
+            int bw = Math.round(box.width());
+            int bh = Math.round(box.height());
+            if (canvas.isHardwareAccelerated() && !sKeyFailed) {
+                try {
+                    if (mArtNode == null) {
+                        mArtNode = new android.graphics.RenderNode("mc-landmark");
+                        mKey = new android.graphics.RuntimeShader(KEY);
+                    }
+                    // The fade's rows in the node's own coordinates; a new effect only when they move.
+                    float from = fadeFrom - Math.round(box.top);
+                    float to = fadeTo - Math.round(box.top);
+                    if (from != mKeyFrom || to != mKeyTo) {
+                        mKey.setFloatUniform("fadeFrom", from);
+                        mKey.setFloatUniform("fadeTo", to);
+                        mArtNode.setRenderEffect(android.graphics.RenderEffect.createRuntimeShaderEffect(
+                                mKey, "content"));
+                        mKeyFrom = from;
+                        mKeyTo = to;
+                    }
+                    mArtNode.setPosition(0, 0, bw, bh);
+                    android.graphics.RecordingCanvas rc = mArtNode.beginRecording(bw, bh);
+                    try {
+                        mArt.setBounds(0, 0, bw, bh);
+                        mArt.draw(rc);
+                    } finally {
+                        mArtNode.endRecording();
+                    }
+                    canvas.save();
+                    canvas.translate(Math.round(box.left), Math.round(box.top));
+                    canvas.drawRenderNode(mArtNode);
+                    canvas.restore();
+                    return;
+                } catch (Throwable t) {
+                    sKeyFailed = true;
+                    Xp.log(TAG + "landmark key unavailable, drawn as it is: " + t);
+                }
+            }
+            mArt.setBounds(Math.round(box.left), Math.round(box.top), Math.round(box.left) + bw,
+                    Math.round(box.top) + bh);
+            mArt.draw(canvas);
+        }
+
+        /**
+         * The legs in a row: a ride its line in a pill - filled with the line's colour while it is
+         * ridden, an outline of it otherwise - a change's walk a small walker and its length, a
+         * chevron between, a flag at the end. What is done is dimmed. The type stays as it is;
+         * too wide for the page, the gaps close up, then it goes on two lines as even as they can
+         * be, then a done leg is a dot and a walk its walker alone. Returns how tall it came out.
+         */
+        /**
+         * The title as it goes on the page: whole, never cut. At TITLE_SP if it fits, else a size
+         * smaller at a time down to TITLE_MIN_SP, else at that size on two lines broken where they
+         * come out most even - after the space of 「前往 」 or a stop's punctuation where that is
+         * near as even. Leaves mTitle at the size it settled on.
+         */
+        private String[] fitTitle(String title, float maxW) {
+            float sp = TITLE_SP;
+            mTitle.setTextSize(sp * mDp);
+            while (mTitle.measureText(title) > maxW && sp > TITLE_MIN_SP) {
+                sp -= 1f;
+                mTitle.setTextSize(sp * mDp);
+            }
+            if (mTitle.measureText(title) <= maxW || title.length() < 2) return new String[] {title};
+            int best = title.length() / 2;
+            float bestScore = Float.MAX_VALUE;
+            for (int k = 1; k < title.length(); k++) {
+                float a = mTitle.measureText(title, 0, k);
+                float b = mTitle.measureText(title, k, title.length());
+                float score = Math.max(a, b);
+                char before = title.charAt(k - 1);
+                // A break at a space or a mark is worth a little unevenness.
+                if (before == ' ' || before == '.' || before == '·' || before == '(' || before == '（'
+                        || before == ')' || before == '）') {
+                    score -= 12f * mDp;
+                }
+                if (score < bestScore) {
+                    bestScore = score;
+                    best = k;
+                }
+            }
+            String one = title.substring(0, best).trim();
+            String two = title.substring(best).trim();
+            // Two lines still too wide is a name past any screen: the second line gives.
+            two = TextUtils.ellipsize(two, mTitle, maxW, TextUtils.TruncateAt.END).toString();
+            return new String[] {one, two};
+        }
+
+        private LegsPlan legsPlan(Route rt, float maxW) {
+            List<Route.Leg> legs = rt.legs;
+            int n = legs.size();
+            LegsPlan plan = new LegsPlan(n);
+            if (n == 0) return plan;
+            mChip.setTextSize(15f * mDp);
+            mWalk.setTextSize(14f * mDp);
+            boolean[] dot = plan.dot;
+            boolean[] bare = plan.bare;
+            float gap = 20f * mDp;
+            int split = n;
+            if (legsWidth(legs, 0, n, gap, dot, bare) > maxW) gap = 14f * mDp;
+            if (legsWidth(legs, 0, n, gap, dot, bare) > maxW) split = evenSplit(legs, gap, dot, bare);
+            if (widest(legs, split, gap, dot, bare) > maxW) {
+                for (int i = 0; i < n; i++) dot[i] = legs.get(i).state == Route.DONE;
+            }
+            if (widest(legs, split, gap, dot, bare) > maxW) {
+                for (int i = 0; i < n; i++) bare[i] = !legs.get(i).ride;
+            }
+            plan.gap = gap;
+            plan.split = split;
+            float pillH = STRIP_DP * mDp;
+            plan.height = split < n ? 2f * pillH + LINE_GAP_DP * mDp : pillH;
+            return plan;
+        }
+
+        private void drawLegs(Canvas canvas, Route rt, float cx, float top, LegsPlan plan) {
+            List<Route.Leg> legs = rt.legs;
+            int n = legs.size();
+            if (n == 0) return;
+            mChip.setTextSize(15f * mDp);
+            mWalk.setTextSize(14f * mDp);
+            drawLegLine(canvas, legs, 0, plan.split, plan.gap, plan.dot, plan.bare, cx, top, plan.split == n);
+            if (plan.split < n) {
+                drawLegLine(canvas, legs, plan.split, n, plan.gap, plan.dot, plan.bare, cx,
+                        top + (STRIP_DP + LINE_GAP_DP) * mDp, true);
+            }
+        }
+
+
+        /** Where the legs break for two lines as even as they can be. */
+        private int evenSplit(List<Route.Leg> legs, float gap, boolean[] dot, boolean[] bare) {
+            int n = legs.size();
+            int best = n;
+            float bestW = Float.MAX_VALUE;
+            for (int k = 1; k < n; k++) {
+                float w = Math.max(legsWidth(legs, 0, k, gap, dot, bare), legsWidth(legs, k, n, gap, dot, bare));
+                if (w < bestW) {
+                    bestW = w;
+                    best = k;
+                }
+            }
+            return best;
+        }
+
+        private float widest(List<Route.Leg> legs, int split, float gap, boolean[] dot, boolean[] bare) {
+            int n = legs.size();
+            return Math.max(legsWidth(legs, 0, split, gap, dot, bare),
+                    split < n ? legsWidth(legs, split, n, gap, dot, bare) : 0f);
+        }
+
+        /** Legs [from, to) on a line with their chevrons, and the flag where the trip ends. */
+        private float legsWidth(List<Route.Leg> legs, int from, int to, float gap, boolean[] dot, boolean[] bare) {
+            float w = 0f;
+            for (int i = from; i < to; i++) w += legWidth(legs.get(i), dot[i], bare[i]) + gap;
+            return w + 12f * mDp;
+        }
+
+        private float legWidth(Route.Leg l, boolean dot, boolean bare) {
+            if (dot) return 8f * mDp;
+            if (l.ride) return mChip.measureText(l.text) + 26f * mDp;
+            return 14f * mDp + (bare ? 0f : mWalk.measureText(l.text));
+        }
+
+        private void drawLegLine(Canvas canvas, List<Route.Leg> legs, int from, int to, float gap,
+                                 boolean[] dot, boolean[] bare, float cx, float top, boolean last) {
+            float pillH = STRIP_DP * mDp;
+            float total = legsWidth(legs, from, to, gap, dot, bare) - (last ? 0f : 12f * mDp);
+            float x = cx - total / 2f;
+            float mid = top + pillH / 2f;
+            for (int i = from; i < to; i++) {
+                Route.Leg l = legs.get(i);
+                float w = legWidth(l, dot[i], bare[i]);
+                float dim = l.state == Route.DONE ? 0.38f : 1f;
+                if (dot[i]) {
+                    mFill.setStyle(Paint.Style.FILL);
+                    mFill.setColor(l.ride ? alpha(l.color, 0.5f) : 0x59ffffff);
+                    canvas.drawCircle(x + w / 2f, mid, 3f * mDp, mFill);
+                } else if (l.ride) {
+                    mRect.set(x, top, x + w, top + pillH);
+                    Paint.FontMetrics fm = mChip.getFontMetrics();
+                    float base = mid - (fm.ascent + fm.descent) / 2f;
+                    if (l.state == Route.NOW) {
+                        mFill.setStyle(Paint.Style.FILL);
+                        mFill.setColor(l.color);
+                        canvas.drawRoundRect(mRect, pillH / 2f, pillH / 2f, mFill);
+                        mChip.setColor(light(l.color) ? 0xff1a1a1c : Color.WHITE);
+                    } else {
+                        float sw = 1.5f * mDp;
+                        mRect.inset(sw / 2f, sw / 2f);
+                        mFill.setStyle(Paint.Style.STROKE);
+                        mFill.setStrokeWidth(sw);
+                        mFill.setColor(alpha(l.color, 0.95f * dim));
+                        canvas.drawRoundRect(mRect, pillH / 2f, pillH / 2f, mFill);
+                        mFill.setStyle(Paint.Style.FILL);
+                        mChip.setColor(alpha(Color.WHITE, 0.88f * dim));
+                    }
+                    canvas.drawText(l.text, x + w / 2f, base, mChip);
+                } else {
+                    int col = alpha(Color.WHITE, 0.62f * dim);
+                    drawWalker(canvas, x, mid, col);
+                    if (!bare[i]) {
+                        mWalk.setColor(col);
+                        Paint.FontMetrics fm = mWalk.getFontMetrics();
+                        canvas.drawText(l.text, x + 14f * mDp, mid - (fm.ascent + fm.descent) / 2f, mWalk);
+                    }
+                }
+                x += w + gap;
+                if (i == to - 1 && last) break;
+                // The chevron to the next, the line's last one leading on to the next line.
+                float mx = x - gap / 2f;
+                mFill.setStyle(Paint.Style.STROKE);
+                mFill.setStrokeWidth(1.6f * mDp);
+                mFill.setStrokeCap(Paint.Cap.ROUND);
+                mFill.setColor(0x52ffffff);
+                canvas.drawLine(mx - 2.5f * mDp, mid - 4f * mDp, mx + 1.5f * mDp, mid, mFill);
+                canvas.drawLine(mx + 1.5f * mDp, mid, mx - 2.5f * mDp, mid + 4f * mDp, mFill);
+                mFill.setStyle(Paint.Style.FILL);
+            }
+            if (!last) return;
+            // The flag at the end, after the last leg's chevron.
+            float mx = x - gap / 2f;
+            mFill.setStyle(Paint.Style.STROKE);
+            mFill.setStrokeWidth(1.6f * mDp);
+            mFill.setStrokeCap(Paint.Cap.ROUND);
+            mFill.setColor(0x52ffffff);
+            canvas.drawLine(mx - 2.5f * mDp, mid - 4f * mDp, mx + 1.5f * mDp, mid, mFill);
+            canvas.drawLine(mx + 1.5f * mDp, mid, mx - 2.5f * mDp, mid + 4f * mDp, mFill);
+            mFill.setColor(0xbfffffff);
+            mFill.setStrokeWidth(1.8f * mDp);
+            canvas.drawLine(x, mid - 8.5f * mDp, x, mid + 9f * mDp, mFill);
+            mFill.setStyle(Paint.Style.FILL);
+            Path flag = new Path();
+            flag.moveTo(x, mid - 8.5f * mDp);
+            flag.lineTo(x + 11f * mDp, mid - 4.5f * mDp);
+            flag.lineTo(x, mid - 0.5f * mDp);
+            flag.close();
+            canvas.drawPath(flag, mFill);
+        }
+
+        /** A walker mid-stride, 9dp wide, standing on the row's middle line. */
+        private void drawWalker(Canvas canvas, float x, float mid, int col) {
+            mFill.setStyle(Paint.Style.FILL);
+            mFill.setColor(col);
+            canvas.drawCircle(x + 4.5f * mDp, mid - 5.5f * mDp, 2.5f * mDp, mFill);
+            mFill.setStyle(Paint.Style.STROKE);
+            mFill.setStrokeCap(Paint.Cap.ROUND);
+            mFill.setStrokeWidth(2f * mDp);
+            canvas.drawLine(x + 4.5f * mDp, mid - 2f * mDp, x + 3f * mDp, mid + 7f * mDp, mFill);
+            mFill.setStrokeWidth(1.6f * mDp);
+            canvas.drawLine(x + 4f * mDp, mid + 2f * mDp, x + 8f * mDp, mid + 6f * mDp, mFill);
+            mFill.setStyle(Paint.Style.FILL);
+        }
+
+        /**
+         * This leg's stops down a bar in the line's colour as far as the train, grey after it: the
+         * stop at or coming to large with a ringed dot and its tag, getting off large with a filled
+         * tag in the colour of what comes next, the stops passed dimmed, folds as three dots and a
+         * count. No wider than [maxW] - a tag too long loses its direction, then its end - and
+         * centred on its widest row; as many rows as fit above [limit].
+         */
+        private void drawStops(Canvas canvas, Route rt, float cx, float top, int maxRows, float maxW) {
+            int n = rt.stops.size();
+            if (n == 0) return;
+            float rh = ROW_DP * mDp;
+            List<Route.Row> rows = rt.rows(maxRows);
+            mName.setTextSize(18f * mDp);
+            mNameBig.setTextSize(22f * mDp);
+            mTag.setTextSize(13f * mDp);
+            mTagPlain.setTextSize(13f * mDp);
+            mFold.setTextSize(14f * mDp);
+            String[] tags = new String[rows.size()];
+            float widest = 0f;
+            for (int k = 0; k < rows.size(); k++) {
+                Route.Row r = rows.get(k);
+                float w = rowWidth(rt, r);
+                String tag = tagOf(rt, r);
+                if (!tag.isEmpty()) {
+                    tags[k] = fitTag(tag, r.index == n - 1 ? mTag : mTagPlain, maxW - w - 28f * mDp);
+                    w += 28f * mDp + (r.index == n - 1 ? mTag : mTagPlain).measureText(tags[k]);
+                }
+                widest = Math.max(widest, Math.min(w, maxW));
+            }
+            float bx = cx - widest / 2f;
+            int col = rt.color;
+
+            float hereY = top;
+            for (int k = 0; k < rows.size(); k++) {
+                if (!rows.get(k).fold() && rows.get(k).index == rt.here) hereY = top + k * rh;
+            }
+            float trainY = rt.at ? hereY : Math.max(top, hereY - rh / 2f);
+            float lastY = top + (rows.size() - 1) * rh;
+            mFill.setStyle(Paint.Style.STROKE);
+            mFill.setStrokeCap(Paint.Cap.ROUND);
+            mFill.setStrokeWidth(5f * mDp);
+            mFill.setColor(col);
+            if (trainY > top) canvas.drawLine(bx, top, bx, trainY, mFill);
+            mFill.setColor(0x26ffffff);
+            if (lastY > trainY) canvas.drawLine(bx, trainY, bx, lastY, mFill);
+            mFill.setStyle(Paint.Style.FILL);
+
+            float textX = bx + 22f * mDp;
+            for (int k = 0; k < rows.size(); k++) {
+                Route.Row r = rows.get(k);
+                float yy = top + k * rh;
+                if (r.fold()) {
+                    boolean passed = r.index < rt.here;
+                    mFill.setColor(passed ? 0x99ffffff : 0x59ffffff);
+                    for (int q = -1; q <= 1; q++) canvas.drawCircle(bx, yy + q * 6f * mDp, 1.4f * mDp, mFill);
+                    mFold.setColor(0x6bffffff);
+                    centreText(canvas, (passed ? "已过 " : "还有 ") + r.count + " 站", textX, yy, mFold);
+                    continue;
+                }
+                int i = r.index;
+                boolean here = i == rt.here;
+                boolean end = i == n - 1;
+                boolean passed = i < rt.here;
+                if (here) {
+                    mFill.setColor(alpha(col, 0.31f));
+                    canvas.drawCircle(bx, yy, 11f * mDp, mFill);
+                    mFill.setColor(Color.WHITE);
+                    canvas.drawCircle(bx, yy, 7.5f * mDp, mFill);
+                    mFill.setColor(col);
+                    canvas.drawCircle(bx, yy, 3.8f * mDp, mFill);
+                } else {
+                    mFill.setColor(passed ? col : 0xff4a4c54);
+                    canvas.drawCircle(bx, yy, (end ? 6.5f : 5.5f) * mDp, mFill);
+                    mFill.setColor(0xebffffff);
+                    canvas.drawCircle(bx, yy, 2.4f * mDp, mFill);
+                }
+                TextPaint p = here || end ? mNameBig : mName;
+                p.setColor(alpha(Color.WHITE, passed ? 0.4f : here || end ? 1f : 0.78f));
+                String name = TextUtils.ellipsize(rt.stops.get(i), p, maxW - 22f * mDp,
+                        TextUtils.TruncateAt.END).toString();
+                centreText(canvas, name, textX, yy, p);
+                String tag = tags[k];
+                if (tag == null || tag.isEmpty()) continue;
+                float tx = textX + p.measureText(name) + 10f * mDp;
+                TextPaint tp = end ? mTag : mTagPlain;
+                float tw = tp.measureText(tag) + 18f * mDp;
+                mRect.set(tx, yy - 11f * mDp, tx + tw, yy + 11f * mDp);
+                if (end) {
+                    mFill.setColor(rt.endColor);
+                    canvas.drawRoundRect(mRect, 11f * mDp, 11f * mDp, mFill);
+                    tp.setColor(light(rt.endColor) ? 0xff1a1a1c : Color.WHITE);
+                } else {
+                    float sw = 1.3f * mDp;
+                    mRect.inset(sw / 2f, sw / 2f);
+                    mFill.setStyle(Paint.Style.STROKE);
+                    mFill.setStrokeWidth(sw);
+                    mFill.setColor(0x52ffffff);
+                    canvas.drawRoundRect(mRect, 11f * mDp, 11f * mDp, mFill);
+                    mFill.setStyle(Paint.Style.FILL);
+                    tp.setColor(0xbfffffff);
+                }
+                centreText(canvas, tag, tx + 9f * mDp, yy, tp);
+            }
+        }
+
+        private String tagOf(Route rt, Route.Row r) {
+            if (r.fold()) return "";
+            if (r.index == rt.stops.size() - 1) return rt.endTag;
+            return r.index == rt.here ? rt.hereTag : "";
+        }
+
+        /** [tag] in [room]: whole, else without the direction (「 往…」), else cut short. */
+        private String fitTag(String tag, TextPaint p, float room) {
+            if (p.measureText(tag) <= room) return tag;
+            int dir = tag.lastIndexOf(" 往");
+            if (dir > 0) {
+                String shorter = tag.substring(0, dir);
+                if (p.measureText(shorter) <= room) return shorter;
+                tag = shorter;
+            }
+            return TextUtils.ellipsize(tag, p, Math.max(0f, room), TextUtils.TruncateAt.END).toString();
+        }
+
+        /** A row's width without its tag (the tag is fitted to what is left; see drawStops). */
+        private float rowWidth(Route rt, Route.Row r) {
+            if (r.fold()) return 22f * mDp + mFold.measureText("还有 " + r.count + " 站");
+            int i = r.index;
+            boolean end = i == rt.stops.size() - 1;
+            boolean here = i == rt.here;
+            return 22f * mDp + (here || end ? mNameBig : mName).measureText(rt.stops.get(i));
+        }
+
+        /** [text] from [x], its middle on [y]. */
+        private void centreText(Canvas canvas, String text, float x, float y, TextPaint p) {
+            Paint.FontMetrics fm = p.getFontMetrics();
+            canvas.drawText(text, x, y - (fm.ascent + fm.descent) / 2f, p);
+        }
+    }
+
+    private static int alpha(int colour, float a) {
+        return (Math.round(Math.max(0f, Math.min(1f, a)) * 255f) << 24) | (colour & 0xffffff);
     }
 
     // ---------------------------------------------------------------- the demo

@@ -254,6 +254,25 @@ final class ClockCollapse {
     }
 
     /**
+     * contentBottomOnScreen(), counting only the signature bars that are showing: one a style
+     * carries but has hidden still has its height, and taken whole it put the bottom some 150px
+     * below a small clock with nothing under it. For laying out against the clock as it looks.
+     */
+    static float contentBottomShown() {
+        float ink = inkBottomOnScreen();
+        if (Float.isNaN(ink)) return Float.NaN;
+        float bottom = ink;
+        Live m = LIVE;
+        for (int i = 0; i < m.sigN; i++) {
+            Sig s = m.sig[i];
+            if (s.v == null || !s.v.isShown() || s.v.getAlpha() <= 0.01f) continue;
+            float b = ink + s.gap + s.v.getHeight();
+            if (b > bottom) bottom = b;
+        }
+        return bottom;
+    }
+
+    /**
      * contentBottomOnScreen(), but where it is actually drawn right now: the ink box and the
      * signature bars mapped through every view's own transform up to the window.
      *
