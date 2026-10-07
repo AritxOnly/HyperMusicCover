@@ -6506,6 +6506,15 @@ public class Main extends XposedModule {
         return Looper.myLooper() == Looper.getMainLooper() && coverMorphEligible();
     }
 
+    /** Each part of miniPlayerMorphAllowed, for a morph it refused. */
+    static String miniPlayerMorphWhy() {
+        View c = sContainer;
+        return "main=" + (Looper.myLooper() == Looper.getMainLooper())
+                + " clock=" + (c == null ? "null" : c.isAttachedToWindow() + "/" + c.isShown())
+                + " screen=" + sScreenOn + " kg=" + keyguardShowing()
+                + " bouncer=" + bouncerUp() + " cc=" + controlCenterUp();
+    }
+
     /**
      * The lock screen's own media presentation holds: the card is up, no cover scene, the
      * keyguard up. Awake or dozing, pad or no pad - those only stop the pill taking touches.
@@ -8625,7 +8634,9 @@ public class Main extends XposedModule {
     private static void exitFromTapNow(String why) {
         int from = LockLyrics.wantsAttached()
                 ? CoverMorphRoute.LYRICS : CoverMorphRoute.COVER;
-        if (MiniPlayerRuntime.prepareSceneExit()) {
+        boolean pillMorph = MiniPlayerRuntime.prepareSceneExit();
+        if (!pillMorph) MiniPlayerRuntime.noteTouch("cover exit without the pill's morph: " + why);
+        if (pillMorph) {
             beginMiniMorph(false, from == CoverMorphRoute.COVER);
         } else if (CoverMorphRoute.shouldMorph(from, CoverMorphRoute.NORMAL)) {
             beginMorph(false);

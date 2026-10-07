@@ -1182,8 +1182,9 @@ object MiniPlayerRuntime {
         // The media card pulled down with other islands in the row: the music comes home as a
         // flight, as a notification's row does, and the others make room for it.
         if (fromNative && live().any { it.musicCollapses() }) return collapseRow(MUSIC_ISLAND, ev)
-        val owner = live().firstOrNull { it.canDrag(fromNative, small) } ?: return false
-        val span = owner.dragSpan() ?: return false
+        val owner = live().firstOrNull { it.canDrag(fromNative, small) }
+            ?: return refused("drag", live().joinToString(",") { it.dragRefusal(fromNative, small) })
+        val span = owner.dragSpan() ?: return refused("drag", "no span")
         if (!owner.beginDragMorph(fromNative)) return false
         dragCaught = false
         val density = owner.density()
@@ -1381,6 +1382,17 @@ object MiniPlayerRuntime {
             touchLog.addLast("${android.os.SystemClock.uptimeMillis() % 100000} $what")
             while (touchLog.size > 40) touchLog.removeFirst()
         }
+    }
+
+    /**
+     * A pull or a scene that found no morph to run, and why: the card then went without one and
+     * the pill turned up on its own a moment later (the user, 2026-10-07, not reproduced). Into
+     * `op mini`'s touches and the log, whose clock lines it up with the swipe.
+     */
+    internal fun refused(what: String, why: String): Boolean {
+        noteTouch("$what refused: $why")
+        Xp.log("MCMini: $what refused: $why")
+        return false
     }
 
     /**
@@ -3533,6 +3545,12 @@ private class MiniPlayerController(
      * Sets the row up for the media card's morph and makes the music's morph, not started yet:
      * [toNative] the music goes up into the card, else the card comes down into the row.
      */
+    /** Why prepareGroup gave none, read after it: the parts of its state that refuse one. */
+    private fun groupRefusal(toNative: Boolean): String =
+        "usable=${controller?.let(::isUsable)} note=${noteMorphKey != null} flight=${flight != null} " +
+            "xchg=${exchange != null} sel=${selectedIsland?.takeLast(6)} small=${smallKey?.takeLast(6)} " +
+            "keys=${islandKeys.joinToString(",") { it.takeLast(6) }} toNative=$toNative"
+
     private fun prepareGroup(native: View, toNative: Boolean): MiniCardMorph? {
         musicComingDown = !toNative
         try {
@@ -8400,24 +8418,28 @@ private class MiniPlayerController(
                 }
             }
         }
-        val view = player ?: return false
-        val token = controller?.sessionToken ?: return false
+        val what = if (scene) "scene morph" else "switch morph"
+        val view = player ?: return MiniPlayerRuntime.refused(what, "no pill")
+        val token = controller?.sessionToken ?: return MiniPlayerRuntime.refused(what, "no session")
         // The card already chosen: nothing to become.
         if (scene && MiniPlayerRuntime.nativeRequested(token)) return false
-        if (!view.isAttachedToWindow || !Main.miniPlayerMorphAllowed()) return false
-        val native = transitionHeader() ?: return false
+        if (!view.isAttachedToWindow) return MiniPlayerRuntime.refused(what, "pill detached")
+        if (!Main.miniPlayerMorphAllowed()) {
+            return MiniPlayerRuntime.refused(what, "not allowed " + Main.miniPlayerMorphWhy())
+        }
+        val native = transitionHeader() ?: return MiniPlayerRuntime.refused(what, "no card")
         if (scene && othersBesideMusic()) return startSceneFlight(native, toNative)
         // A switch still settling is finished where it was headed: the card morph has the pill.
-        val next = prepareGroup(native, toNative) ?: return false
+        val next = prepareGroup(native, toNative)
+            ?: return MiniPlayerRuntime.refused(what, "no group " + groupRefusal(toNative))
         morph = next
         morphScene = scene
         if (!next.start()) {
             morph = null
             morphScene = false
             endGroup(!toNative)
-            Xp.log("MCMini: no geometry for a morph; switching in place")
             updateVisibility()
-            return false
+            return MiniPlayerRuntime.refused(what, "no geometry; switching in place")
         }
         return true
     }
@@ -8562,6 +8584,19 @@ private class MiniPlayerController(
         return MiniPlayerRuntime.nativeRequested(token) == fromNative
     }
 
+    /** Which of canDrag's answers it was, for [MiniPlayerRuntime.refused]. */
+    fun dragRefusal(fromNative: Boolean, small: Boolean): String = when {
+        !config.getBoolean(MiniPlayerConfig.ENABLED) -> "off"
+        morph != null -> "morph running"
+        spread != null -> "spread"
+        musicFlies() -> "music flies"
+        exchange != null -> "exchange"
+        !fromNative && (if (small) smallKey != MUSIC_ISLAND else !selectedIsMusic()) -> "not the music"
+        controller?.sessionToken == null -> "no session"
+        !Main.miniPlayerMorphAllowed() -> "not allowed " + Main.miniPlayerMorphWhy()
+        else -> "nativeRequested=${MiniPlayerRuntime.nativeRequested(controller?.sessionToken)}"
+    }
+
     /** How far apart the pill and the card are: what a full pull covers. */
     fun dragSpan(): Float? {
         if (noteMorphKey != null) return noteSpan.takeIf { it > 0f }
@@ -8572,17 +8607,18 @@ private class MiniPlayerController(
     }
 
     fun beginDragMorph(fromNative: Boolean): Boolean { android.os.Trace.beginSection("MC beginDragMorph"); try {
-        if (player == null) return false
-        val native = transitionHeader() ?: return false
+        if (player == null) return MiniPlayerRuntime.refused("drag", "no pill")
+        val native = transitionHeader() ?: return MiniPlayerRuntime.refused("drag", "no card")
         // Starts at the end it was pulled from; release() aims it once the lift decides.
-        val next = prepareGroup(native, toNative = !fromNative) ?: return false
+        val next = prepareGroup(native, toNative = !fromNative)
+            ?: return MiniPlayerRuntime.refused("drag", "no group " + groupRefusal(!fromNative))
         morph = next
         morphScene = false
         if (!next.startDragging()) {
             morph = null
             endGroup(toNative = fromNative)
             updateVisibility()
-            return false
+            return MiniPlayerRuntime.refused("drag", "no geometry")
         }
         return true
     } finally { android.os.Trace.endSection() } }
