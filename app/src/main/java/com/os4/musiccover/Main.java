@@ -951,6 +951,8 @@ public class Main extends XposedModule {
         // 高德's ride card is a focus notification of its own only once the cloud list that
         // decides who may have one answers for it (AmapFocus).
         AmapFocus.install(cl);
+        // A ride code opened or a card's fare taken, for the trip card's 到站 (RideCodeExit).
+        RideCodeExit.INSTANCE.install(cl);
 
         try {
             sContainerCls = Xp.findClass(CLS_CONTAINER, cl);

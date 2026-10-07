@@ -1,18 +1,14 @@
 package com.os4.musiccover
 
 /**
- * 高德's own walking navigation, started from here instead of by hand.
+ * 高德's own walking navigation of one walk of a trip, for the walking card's 「步行导航」 button.
  *
- * A bus or subway trip in 高德 has a walk at the front and one at the back, and each of those
- * walks has a navigation of its own - the 「步行导航 ▸」 beside it in the trip's page. The
- * 「开始导航」 at the bottom right starts the transit navigation only, so reaching the walk's own
- * navigation takes a second tap somewhere else. ColorOS starts it for you: its walking card's
- * button is routed to `BaiduPublicTransportRouterActivity`-style handler that, before opening the
- * map app, calls its own `beginWalkAndBikeInTripNaviOnSilentClick` with the walk's entity - and
- * that only works there because the OPPO build of 高德 hands SceneService a
- * `GaoDeWalkingAndCyclingIntentEntity` for the walk. This phone's 高德 never sends one (the same
- * script that leaves `bizBegin(10200)` alone), so the same thing is done through 高德's own entry
- * instead of a card of our own:
+ * A bus or subway trip in 高德 has walks before, between and after its rides, and each has a
+ * navigation of its own - the 「步行导航 ▸」 beside it in the trip's page; 「开始导航」 starts the
+ * transit navigation only. ColorOS's silent walking card (ya.n.f) carries a 「步行导航」 button
+ * (onGaodePtNaviBeginNaviBtnClick) that has 高德 start it - `beginWalkAndBikeInTripNaviOnSilentClick`,
+ * over the OPPO build's own channel, which this phone's 高德 never opens. So the same is done
+ * through 高德's own entry, on the button only: 高德 itself never starts it with the trip.
  *
  *   IFootNaviService.startNaviPage(PageBundle)      - com.autonavi.minimap.route.foot.impl
  *     GeoPoint end = bundle.getObject("endPoint");  - IOpenRoutePage's own keys

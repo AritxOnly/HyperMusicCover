@@ -25,7 +25,12 @@ import org.json.JSONObject
  *
  *   - the milestone, read off which leg 高德's card is on and the stops left of it
  *     (AmapTransitMilestones), with GaoDePtRideCodeDeferBindManager's five minutes for a subway's
- *     到站 before the walk after it.
+ *     到站 before the walk after it - cut short by the way out of the station: a ride code opened
+ *     or a transit card's fare taken (RideCodeExit, from SystemUI), or 高德's walking navigation.
+ *   - 到达起始站附近 (status 1), which 高德 decides itself for ColorOS: a walk within 200 m of the
+ *     station of the ride after it (near()).
+ *   - the walks: the silent card, with its 「步行导航」 button (startWalk), and 高德's walking
+ *     navigation of the walk (channel 101) as the same card while it runs (walkNavi).
  *   - GaoDePtFinalDestCardManager: a trip whose last leg is a ride gets its end card five minutes
  *     (subway) or 35 s (bus) after that ride's 到站.
  *   - the end card (ya.a) the moment 高德 says the trip has arrived, for 30 s; nothing after it.
@@ -52,6 +57,20 @@ internal object AmapTransitShare {
     private const val LIVE_BIZ = 113
     private const val PLAN_TYPE = 24
     private const val RIDE_TYPE = 25
+    /**
+     * 高德's walking navigation (its walking island's own feed): inside a trip it is ColorOS's
+     * GaoDeWalkingAndCyclingIntentEntity - `trigger_source` 1, `isFromBus` - status 1 while it
+     * runs, 0 with `isArrived` when it ends.
+     */
+    private const val WALK_BIZ = 101
+    /** A walking navigation this long without a frame has gone. */
+    private const val WALK_NAVI_STALE_MS = 60_000L
+    /**
+     * 到达起始站附近 (status 1): a walk into a ride's station this close to its end. 高德 decides
+     * it for ColorOS and never says how; this is ours. It lets go again past [FAR_M].
+     */
+    private const val NEAR_M = 200
+    private const val FAR_M = 300
 
     /** GaoDePtNaviSceneRouter.h: how long a card lasts without another word. */
     private const val SILENCE_MS = 30 * 60_000L
@@ -67,6 +86,9 @@ internal object AmapTransitShare {
     private const val WALK_ISLAND_STALE_MS = 5_000L
 
     private val worker: Handler = Handler(HandlerThread("mc-transit").apply { start() }.looper)
+
+    /** What a line on rails has in its name, where its type does not say so (AmapTransitScene). */
+    private val RAIL = arrayOf("号线", "地铁", "城际", "轨道", "铁路", "有轨", "APM", "轻轨", "磁浮", "云巴")
 
     // ------------------------------------------------------------------ what 高德 has sent
 
@@ -90,12 +112,15 @@ internal object AmapTransitShare {
     private val exits = HashMap<Int, String>()
     private var finalShown = false
     private var finalAt = 0L
-
-    /** The opening walk: whether there is one, and whether it has been handed to 高德 yet. */
-    private var opening = false
-    private var walked = false
+    /** The end card waits on a subway's way out too (GaoDePtFinalDestCardManager's waitRideCode). */
+    private var finalOnExit = false
 
     @Volatile private var walkIslandAt = 0L
+    /** 高德's walking navigation of the current walk, its last frame, and when that came. */
+    private var walkMsg: JSONObject? = null
+    private var walkMsgAt = 0L
+    /** The walk (its capsule) close enough to the station after it for 到达起始站附近, or -1. */
+    private var nearLeg = -1
 
     /** A trip being played from its own plan (`transit sim`): 高德's own payloads wait meanwhile. */
     @Volatile private var simulating = false
@@ -132,6 +157,8 @@ internal object AmapTransitShare {
                         if (name == "sendMessage") {
                             if (text != null && (biz == RIDE_BIZ || biz == LIVE_BIZ)) {
                                 worker.post { if (!simulating) take(biz, text) }
+                            } else if (text != null && biz == WALK_BIZ) {
+                                worker.post { if (!simulating) walkNavi(text) }
                             }
                         } else if (biz == RIDE_BIZ) {
                             val closed = name == "bizEnd"
@@ -158,6 +185,77 @@ internal object AmapTransitShare {
     fun walkIslandUp(): Boolean =
         !simulating && walkIslandAt != 0L && SystemClock.uptimeMillis() - walkIslandAt < WALK_ISLAND_STALE_MS
 
+    /** 高德's walking navigation of a walk of this trip is running (its channel 101). */
+    private fun walkNaviUp(): Boolean =
+        walkMsg != null && SystemClock.uptimeMillis() - walkMsgAt < WALK_NAVI_STALE_MS
+
+    /**
+     * A frame of 高德's walking navigation. One of this trip's walks only - `trigger_source` 1 /
+     * `isFromBus`, ColorOS's test for the public transport card - and only while a trip is up.
+     * Running, it is the walking card (GaoDePtWalkRideHandler.d); ended short of the walk's end,
+     * the silent card is back (keepSilentCardAfterInAppExit); ended at it, the trip goes on - ColorOS
+     * tells 高德 to resume its transit navigation, which on HyperOS never stopped (10-05: 103
+     * kept coming all through the walk).
+     */
+    private fun walkNavi(text: String) {
+        val msg = try {
+            JSONObject(text).optJSONObject("message")
+        } catch (t: Throwable) {
+            null
+        } ?: return
+        if (!msg.optBoolean("isFromBus", false) && msg.optInt("trigger_source", 0) != 1) return
+        if (capsules == null) return
+        if (msg.optInt("status", -1) == 0) {
+            if (walkMsg == null) return
+            walkMsg = null
+            Xp.log(TAG + "walking navigation over (arrived=" + msg.optBoolean("isArrived", false) + ")")
+        } else {
+            if (walkMsg == null) Xp.log(TAG + "walking navigation under way")
+            walkMsg = msg
+            walkMsgAt = SystemClock.uptimeMillis()
+        }
+        update()
+    }
+
+    /**
+     * The walking card's 「步行导航」 (onGaodePtNaviBeginNaviBtnClick): 高德's walking navigation to
+     * where the current walk ends - the next ride's way in, or the trip's end.
+     */
+    fun startWalk() {
+        worker.post {
+            val caps = capsules ?: return@post
+            val at = milestones.legAt
+            if (at !in 0 until caps.length() || !walking(caps, at)) {
+                Xp.log(TAG + "walk button, but leg $at is not a walk")
+                return@post
+            }
+            val plan = plans.firstOrNull { AmapTransitEntity.fits(it, caps) }
+            var name = ""
+            var lat: Double? = null
+            var lng: Double? = null
+            if (at + 1 < caps.length() && !walking(caps, at + 1)) {
+                val seg = plan?.optJSONArray("segmentlist")?.optJSONObject(rideNumber(caps, at + 1))
+                name = seg?.optJSONObject("on_station")?.optString("name")?.trim().orEmpty()
+                val c = seg?.optJSONObject("inport")?.optJSONObject("coord")
+                    ?: seg?.optJSONObject("driver_coord_list")?.optJSONObject("start")
+                lat = c?.optString("lat")?.toDoubleOrNull()
+                lng = (c?.optString("lon")?.ifEmpty { null } ?: c?.optString("lng"))?.toDoubleOrNull()
+            } else {
+                val e = plan?.optJSONObject("epoi")
+                name = e?.optString("name")?.trim().orEmpty()
+                val c = e?.optJSONObject("coord")
+                lat = c?.optString("lat")?.toDoubleOrNull()
+                lng = c?.optString("lon")?.toDoubleOrNull()
+            }
+            val cl = AmapImmerse.loader()
+            if (lat == null || lng == null || cl == null) {
+                Xp.log(TAG + "walk button: nowhere to walk to (plan=" + (plan != null) + ")")
+                return@post
+            }
+            Xp.log(TAG + "walk to $name -> " + AmapFootNavi.start(cl, lat, lng, name))
+        }
+    }
+
     /** Runs [r] on the trip's own thread. */
     fun post(r: Runnable) {
         worker.post(r)
@@ -176,15 +274,8 @@ internal object AmapTransitShare {
                     capsules = caps
                     lastCaps = caps
                 }
-                if (data.optString("title").trim().isEmpty()) {
-                    // The card a navigation starts with: the capsules and nothing else. They say
-                    // whether the trip opens with a walk, which is handed to 高德 at once.
-                    if (caps != null && caps.length() > 0) {
-                        opening = AmapTransitEntity.walking(caps.getJSONObject(0))
-                        walkToFirstStop()
-                    }
-                    return
-                }
+                // The card a navigation starts with: the capsules and nothing else.
+                if (data.optString("title").trim().isEmpty()) return
                 card = data
                 index(data)?.let { cardFor[it] = data }
             } else {
@@ -196,7 +287,6 @@ internal object AmapTransitShare {
                         PLAN_TYPE -> {
                             plans.addFirst(d)
                             while (plans.size > 4) plans.removeLast()
-                            walkToFirstStop()
                         }
                         RIDE_TYPE -> live = d
                     }
@@ -250,8 +340,9 @@ internal object AmapTransitShare {
         exits.clear()
         finalShown = false
         finalAt = 0L
-        opening = false
-        walked = false
+        finalOnExit = false
+        walkMsg = null
+        nearLeg = -1
     }
 
     // ------------------------------------------------------------------ the trip
@@ -275,21 +366,34 @@ internal object AmapTransitShare {
         val at = index(c) ?: return
         if (at !in 0 until n) return
         val plan = plans.firstOrNull { AmapTransitEntity.fits(it, caps) }
-        if (at == 0 && walking(caps, 0)) walkToFirstStop()
 
         milestones.moveTo(at, n, now, { walking(caps, it) }, { subway(caps, it, plan) })
-        val held = milestones.held(now, walkIslandUp())
-        val shown = held?.leg ?: at
-        val legCard = cardFor[shown] ?: c
+        // A walking navigation starting ends a subway's 到站 as 高德's walking island does
+        // (GaoDePtRideCodeDeferBindManager.d "walk_ride_intent_share").
+        val walkOn = walkNaviUp()
+        val held = milestones.held(now, walkIslandUp() || walkOn)
+        var shown = held?.leg ?: at
+        var legCard = cardFor[shown] ?: c
         val status: String
         var info: AmapTransitEntity.Live? = null
         var wake = 0L
+        var walkNavi: JSONObject? = null
         if (held != null) {
             status = held.status
             info = AmapTransitEntity.Live(0, 1.0, "", JSONArray())
             wake = held.until
+        } else if (walking(caps, at) && plan != null && near(caps, at)) {
+            // 到达起始站附近: the ride after the walk, its stops all ahead, on ColorOS's waiting card.
+            shown = at + 1
+            legCard = c
+            val seg = plan.optJSONArray("segmentlist")?.optJSONObject(rideNumber(caps, shown))
+            val total = (seg?.optJSONArray("via_st_list")?.length() ?: -1) + 1
+            info = AmapTransitEntity.Live(total.coerceAtLeast(0), -1.0, "",
+                arrivals(seg, !subway(caps, shown, plan)))
+            status = AmapTransitCard.ARRIVE_ORIGIN_NEARBY
         } else if (walking(caps, at)) {
             status = ""
+            if (walkOn) walkNavi = walkMsg
         } else {
             info = ride(at, caps, plan, legCard, now)
             val group = live?.optJSONObject("locationData")?.optInt("groupIndex", -1) ?: -1
@@ -301,19 +405,50 @@ internal object AmapTransitShare {
             wake = step.wakeAt
         }
         if (wake > now) worker.postDelayed(tick, wake - now)
-        val exit = AmapTransitEntity.exit(legCard).also { if (it.isNotEmpty()) exits[shown] = it }
-            .ifEmpty { exits[shown].orEmpty() }
+        // Near the station the card is still the walk's: its 「(E口)」 is the way in, not the ride's exit.
+        val nearby = status == AmapTransitCard.ARRIVE_ORIGIN_NEARBY
+        val exit = if (nearby) "" else AmapTransitEntity.exit(legCard)
+            .also { if (it.isNotEmpty()) exits[shown] = it }.ifEmpty { exits[shown].orEmpty() }
         val entity = AmapTransitEntity.build(plan, caps, legCard, shown, status, info,
             if (plan == null) AmapTransitEntity.Fallback(ArrayList(milestones.seen), milestones.boardRemain)
-            else null, exit, AmapTransitEntity.sentence(legCard), tripId)
+            else null, exit, if (nearby) "" else AmapTransitEntity.sentence(legCard), tripId, walkNavi)
         // The last ride's 到站, with nothing after it: the end card follows (FinalDestCardManager).
         if (status == AmapTransitCard.ARRIVE_LINE_DESTINATION && shown == n - 1 && finalAt == 0L) {
-            val wait = if (subway(caps, shown, plan)) SUBWAY_LAST_MS else BUS_LAST_MS
+            finalOnExit = subway(caps, shown, plan)
+            val wait = if (finalOnExit) SUBWAY_LAST_MS else BUS_LAST_MS
             finalAt = now + wait
             worker.postDelayed(finalCard, wait)
         }
         tell(entity.toString(), status)
         silence(status)
+    }
+
+    /**
+     * Whether walk [at] is close enough to the station of the ride after it for 到达起始站附近:
+     * within [NEAR_M] of the walk's end by 高德's live data (`groupRemainDistance` of its own
+     * leg, which counts as the capsules do), and so until it is past [FAR_M] again. Every walk
+     * into a ride, the first and the changes. A walk whose distance does not move - 10-05's first
+     * one stood at 745 m under 「信号弱」 - never gets there and goes straight to 候车, as before.
+     */
+    private fun near(caps: JSONArray, at: Int): Boolean {
+        if (at + 1 >= caps.length() || walking(caps, at + 1)) {
+            nearLeg = -1
+            return false
+        }
+        if (nearLeg != at && nearLeg != -1) nearLeg = -1
+        val loc = live?.optJSONObject("locationData")
+        val left = if (loc != null && loc.optInt("groupIndex", -1) == at)
+            loc.optInt("groupRemainDistance", -1) else -1
+        if (left >= 0) {
+            if (left <= NEAR_M && nearLeg != at) {
+                nearLeg = at
+                Xp.log(TAG + "near the station after walk $at (${left} m)")
+            } else if (left > FAR_M && nearLeg == at) {
+                nearLeg = -1
+                Xp.log(TAG + "away from the station after walk $at again (${left} m)")
+            }
+        }
+        return nearLeg == at
     }
 
     /** What the ride under way says about itself, and the milestones told of it. */
@@ -384,6 +519,23 @@ internal object AmapTransitShare {
             if (id.isNotEmpty() && o.optString(key).trim() == id) return o
         }
         return if (list.length() == 1) list.optJSONObject(0) else null
+    }
+
+    /**
+     * GaoDePtRideCodeDeferBindManager.n: a ride code opened or a card swiped on the way out
+     * ([why]) ends a subway's 到站 at once, and the walk after it is shown; a trip that ends on
+     * the subway gets its end card at once instead. Nothing else is held for it - ColorOS
+     * listens only while one of those is waiting.
+     */
+    private fun exited(why: String) {
+        // GaoDePtFinalDestCardManager.j: a last ride on the subway, its end card waiting.
+        if (finalPending() && finalOnExit) {
+            showFinal("out of the station ($why)")
+            return
+        }
+        if (!milestones.exited()) return
+        Xp.log(TAG + "out of the station ($why)")
+        update()
     }
 
     /** The trip has arrived: ColorOS's end card (ya.a), for 30 s, and nothing after it. */
@@ -466,32 +618,6 @@ internal object AmapTransitShare {
         }
     }
 
-    // ------------------------------------------------------------------ the opening walk
-
-    /**
-     * Hands the trip's opening walk to 高德's own walking navigation, out of the plan: the first
-     * ride's stop (`on_station`) and the way into it (`inport`, with its coordinate). 高德's card
-     * that names the walk comes 26-59 s after 「开始导航」; the plan is there 30 ms after it.
-     * ColorOS starts the same walk from its card's button (beginWalkAndBikeInTripNaviOnSilentClick),
-     * with an entity this phone's 高德 does not send.
-     */
-    private fun walkToFirstStop() {
-        if (!opening || walked) return
-        // Only a plan whose rides are this trip's: the newest one is not necessarily it (a route
-        // page sends one per plan shown, and a replay leaves its own behind).
-        val caps = capsules ?: return
-        val plan = plans.firstOrNull { AmapTransitEntity.fits(it, caps) } ?: return
-        val seg = plan.optJSONArray("segmentlist")?.optJSONObject(0) ?: return
-        val to = seg.optJSONObject("on_station")?.optString("name")?.trim().orEmpty()
-        val c = seg.optJSONObject("inport")?.optJSONObject("coord")
-        val lat = c?.optString("lat")?.toDoubleOrNull()
-        val lng = c?.optString("lon")?.toDoubleOrNull()
-        val cl = AmapImmerse.loader()
-        if (to.isEmpty() || lat == null || lng == null || cl == null) return
-        walked = true
-        Xp.log(TAG + "walk to $to -> " + AmapFootNavi.start(cl, lat, lng, to))
-    }
-
     // ------------------------------------------------------------------ telling
 
     /** Passes the entity on; the same one again only once KEEPALIVE_MS has gone. */
@@ -521,6 +647,45 @@ internal object AmapTransitShare {
         } catch (t: Throwable) {
             Xp.log(TAG + "tell failed: $t")
         }
+        tellMetro(ctx, entity != null)
+    }
+
+    /**
+     * The ride-code island in 小爱建议 (MetroCodeIsland) the stations this trip boards and leaves
+     * the subway at: ColorOS puts the code up at a trip's first station and then only where its
+     * route changes or gets off (MetroIntentManager.d, remindType 0 / 1). Said with every word to
+     * SystemUI - at least each KEEPALIVE_MS - so a restarted 小爱建议 has it again; and its end.
+     */
+    private fun tellMetro(ctx: android.content.Context, on: Boolean) {
+        val stops = if (on) metroStops() else emptyArray()
+        try {
+            val i = Intent(MetroCodeIsland.ACTION_TRIP).setPackage(MetroCodeIsland.PKG)
+            if (stops.isEmpty()) i.putExtra("do", "end")
+            else i.putExtra("do", "plan").putExtra("stops", stops)
+            ProbeGuard.send(ctx, i)
+        } catch (t: Throwable) {
+            Xp.log(TAG + "metro not told: $t")
+        }
+    }
+
+    /** Every rail ride's boarding and leaving station, out of the plan that fits the trip. */
+    private fun metroStops(): Array<String> {
+        val caps = capsules ?: return emptyArray()
+        val plan = plans.firstOrNull { AmapTransitEntity.fits(it, caps) } ?: return emptyArray()
+        val segs = plan.optJSONArray("segmentlist") ?: return emptyArray()
+        val out = LinkedHashSet<String>()
+        for (i in 0 until caps.length()) {
+            if (walking(caps, i)) continue
+            val line = caps.optJSONObject(i)?.optString("text")?.trim().orEmpty()
+            // An intercity or outer-loop line 高德 types as a bus is still one with gates.
+            if (!subway(caps, i, plan) && RAIL.none { line.contains(it) }) continue
+            val seg = segs.optJSONObject(rideNumber(caps, i)) ?: continue
+            for (end in arrayOf("on_station", "off_station")) {
+                val name = seg.optJSONObject(end)?.optString("name")?.trim().orEmpty()
+                if (name.isNotEmpty()) out += name
+            }
+        }
+        return out.toTypedArray()
     }
 
     /** SystemUI started over: the last state again, if the trip has not ended since. */
@@ -543,6 +708,8 @@ internal object AmapTransitShare {
      *   fast / slow    the milestones' own times (a stop's 30 s, a subway's 5 min) at a tenth, or
      *                  back, for a replay that does not take the ride's length
      *   sim            the last trip navigated, played stop by stop out of its plan (simulate)
+ *   exited         the way out of a station was taken - a ride code opened, a card's fare
+ *                  taken (RideCodeExit sends it, `--es why <what>`): a subway's 到站 ends
      */
     fun probe(what: String, json: String): String {
         when (what) {
@@ -554,6 +721,7 @@ internal object AmapTransitShare {
             "fast" -> worker.post { milestones.scale = 0.1 }
             "slow" -> worker.post { milestones.scale = 1.0 }
             "sim" -> worker.post { simulate() }
+            "exited" -> worker.post { exited(json.ifEmpty { "probe" }) }
         }
         return describe()
     }
@@ -695,6 +863,8 @@ internal object AmapTransitShare {
             .append(" hold=").append(milestones.hold?.let { it.status + "@" + it.leg } ?: "-")
             .append(" final=").append(if (finalShown) "shown" else if (finalPending()) "pending" else "-")
             .append(" walkIsland=").append(walkIslandUp())
+            .append(" walkNavi=").append(walkNaviUp())
+            .append(" near=").append(nearLeg)
             .append(" live=").append(lastSent != null)
         sb.append('\n').append(AmapTransitIsland.describe())
         sb.append('\n').append(AmapOppoBridge.describe())

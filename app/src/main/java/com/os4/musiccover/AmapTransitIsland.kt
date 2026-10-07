@@ -20,6 +20,7 @@ import android.graphics.Typeface
 import android.graphics.drawable.Icon
 import android.net.Uri
 import android.os.Bundle
+import org.json.JSONArray
 import org.json.JSONObject
 
 /**
@@ -60,6 +61,19 @@ internal object AmapTransitIsland {
     private const val PIC_VEHICLE = "miui.focus.pic_mc_vehicle"
     private const val PIC_PIN = "miui.focus.pic_mc_pin"
     private const val PIC_FLAG = "miui.focus.pic_mc_flag"
+    /** The walking navigation's bar: a walker on it (ColorOS's progress_walk). */
+    private const val PIC_WALKER = "miui.focus.pic_mc_walker"
+    /** 高德's own walking island's turn: its pic_forward_v2, the same picture as its pic_large. */
+    private const val AMAP_TURN = "miui.focus.pic_forward_v2"
+    private const val AMAP_TURN_LARGE = "miui.focus.pic_large"
+    /**
+     * The silent walking card's 「步行导航」 (onGaodePtNaviBeginNaviBtnClick): 高德 brought up with
+     * this extra, and the walk's navigation asked for once its page is in front - 高德 pushes the
+     * walking page only into a page stack that is showing (10-07: pressed from the background, the
+     * walk began only when 高德 was opened by hand).
+     */
+    private const val EXTRA_WALK = "mc_transit_walk"
+    private const val ACTION_WALK_KEY = "miui.focus.action_mc_walk"
 
     /**
      * The car the progress bar's thumb is drawn with, after the design: a white shell going grey
@@ -126,27 +140,45 @@ internal object AmapTransitIsland {
     /** The widest a capsule's line chip is drawn, as a multiple of its height. */
     private const val MAX_CHIP = 2.4f
 
-    /** A new milestone floats once: the stop before the end, a transfer, the arrivals. */
-    private val FLOAT_AT = setOf(AmapTransitCard.NEXT_DESTINATION,
-        AmapTransitCard.ARRIVE_TRANSFER_STATION, AmapTransitCard.ARRIVE_LINE_DESTINATION,
-        AmapTransitCard.ARRIVE_FINAL_DESTINATION)
+    /**
+     * A new milestone floats once where ColorOS reminds strongly (GaoDePtNaviSceneRouter.j's
+     * isStrongRemind - remindType 12 and requestShowPanel): a transfer and an arrival, nothing else.
+     * The end card is not one (showFinalDestCard posts it without).
+     */
+    private val FLOAT_AT = setOf(AmapTransitCard.ARRIVE_TRANSFER_STATION,
+        AmapTransitCard.ARRIVE_LINE_DESTINATION)
 
     @Volatile private var posted = false
     @Volatile private var lastStatus: String? = null
     @Volatile private var lastKey: String? = null
     @Volatile private var lastError: String? = null
     @Volatile private var held = 0
+    /** Whether the island up is the walking navigation's card: 高德's own walking island waits. */
+    @Volatile private var naviShown = false
+    @Volatile private var heldWalk = 0
+    /** 高德's last turn picture, from its own walking island. */
+    @Volatile private var turn: Icon? = null
+    /** 高德 was brought up by the walk button and has not shown a page since. */
+    @Volatile private var walkAsked = false
 
     /**
      * 高德's own notifications: its 1237 is not posted while the trip's card is up, and its walking
-     * island (1236) is watched, since while it is up it is the trip's walking card.
+     * island (1236) is watched - and held back while the trip's card is the walking navigation's
+     * own: ColorOS shows one card for the walk, its own, and that card takes 1236's turn picture.
      */
     fun handle() {
         try {
             Xp.hookAll(NotificationManager::class.java, "notify") { chain ->
                 val a = chain.args
                 val id = a.firstOrNull { it is Int } as Int?
-                if (id == AMAP_WALK_ID) AmapTransitShare.walkIsland(true)
+                if (id == AMAP_WALK_ID) {
+                    AmapTransitShare.walkIsland(true)
+                    (a.firstOrNull { it is Notification } as Notification?)?.let { keepTurn(it) }
+                    if (posted && naviShown) {
+                        if (heldWalk++ == 0) Xp.log(TAG + "holding back 高德's own $AMAP_WALK_ID")
+                        return@hookAll null
+                    }
+                }
                 if (!posted || id != AMAP_UA_ID) return@hookAll chain.proceed()
                 if (held++ == 0) Xp.log(TAG + "holding back 高德's own $AMAP_UA_ID")
                 null
@@ -159,6 +191,40 @@ internal object AmapTransitIsland {
         } catch (t: Throwable) {
             Xp.log(TAG + "notification hooks failed: $t")
         }
+        // The walk button's 高德, as it comes to the front: a new intent to a running page, or
+        // the page an intent started. The walk is asked for once it is resumed.
+        try {
+            val instr = android.app.Instrumentation::class.java
+            Xp.hookAll(instr, "callActivityOnNewIntent") { chain ->
+                (chain.args.firstOrNull { it is Intent } as Intent?)?.let { takeWalk(it) }
+                chain.proceed()
+            }
+            Xp.hookAll(instr, "callActivityOnResume") { chain ->
+                val out = chain.proceed()
+                (chain.args.firstOrNull() as? android.app.Activity)?.intent?.let { takeWalk(it) }
+                if (walkAsked) {
+                    walkAsked = false
+                    Xp.log(TAG + "「步行导航」: 高德 in front")
+                    AmapTransitShare.startWalk()
+                }
+                out
+            }
+        } catch (t: Throwable) {
+            Xp.log(TAG + "walk button not watched: $t")
+        }
+    }
+
+    private fun takeWalk(i: Intent) {
+        if (!i.getBooleanExtra(EXTRA_WALK, false)) return
+        i.removeExtra(EXTRA_WALK)
+        walkAsked = true
+    }
+
+    @Suppress("DEPRECATION")
+    private fun keepTurn(n: Notification) {
+        val pics = n.extras?.getBundle("miui.focus.pics") ?: return
+        (pics.getParcelable(AMAP_TURN) as? Icon ?: pics.getParcelable(AMAP_TURN_LARGE) as? Icon)
+            ?.let { turn = it }
     }
 
     /** The trip's island for [entity] - none for null - and the kind of card it is. */
@@ -174,7 +240,13 @@ internal object AmapTransitIsland {
                 cancel(ctx)
                 return card.kind + " (高德's own)"
             }
+            val navi = card.kind == AmapTransitCard.Card.KIND_WALK_NAVI
             post(ctx, trip, card)
+            if (navi && !naviShown) {
+                // 高德's own walking island is this card now: what it has up goes.
+                ctx.getSystemService(NotificationManager::class.java)?.cancel(AMAP_WALK_ID)
+            }
+            naviShown = navi
             lastError = null
             card.kind
         } catch (t: Throwable) {
@@ -187,6 +259,7 @@ internal object AmapTransitIsland {
     private fun cancel(ctx: Context) {
         if (!posted) return
         posted = false
+        naviShown = false
         lastStatus = null
         lastKey = null
         ctx.getSystemService(NotificationManager::class.java)?.cancel(ID)
@@ -196,6 +269,8 @@ internal object AmapTransitIsland {
     fun describe(): String {
         val sb = StringBuilder("island: posted=").append(posted)
         if (held > 0) sb.append(" held1237=").append(held)
+        if (heldWalk > 0) sb.append(" held1236=").append(heldWalk)
+        if (naviShown) sb.append(" walkNavi")
         lastError?.let { sb.append(" error=").append(it) }
         return sb.toString()
     }
@@ -214,6 +289,7 @@ internal object AmapTransitIsland {
             })
         }
         val walk = c.kind == AmapTransitCard.Card.KIND_WALK
+        val walkNavi = c.kind == AmapTransitCard.Card.KIND_WALK_NAVI
         // ColorOS's walking card puts where the walk starts and where it goes side by side, a
         // route with an arrow between (cardPrimaryInfo / cardSecondaryInfo); in the template's
         // title and lines that read as 「我的位置」 for a heading. The walk is said the way its
@@ -222,9 +298,16 @@ internal object AmapTransitIsland {
         // The waiting card's second row is its vehicle list (cardWaitingInformation, ya.m): the
         // line in its colour, where it goes, the next train and the one after.
         val wait = c.waiting?.firstOrNull()
-        val title = if (walk) c.lockTitle else c.primary.ifEmpty { c.lockTitle }
+        // The walking navigation's: 高德's two lines (the first can be empty, 「直行97米」 then
+        // alone), and how much is left, as the bar's own label.
+        val title = when {
+            walk -> c.lockTitle
+            walkNavi -> c.primary.ifEmpty { c.secondary }
+            else -> c.primary.ifEmpty { c.lockTitle }
+        }
         val content = when {
             walk -> c.lockSubtitle
+            walkNavi -> if (c.primary.isEmpty()) c.rightWhite else c.secondary
             // One line is all a floating card has for this and the next (screenshot 10-06): the
             // next train only, as the capsule's right half has it.
             wait != null -> wait.realtime1
@@ -232,7 +315,9 @@ internal object AmapTransitIsland {
                 .filter { it.isNotEmpty() }.joinToString(" ")
         }
         val lineRow = when {
-            walk -> listOf(c.primary, c.secondary).filter { it.isNotEmpty() }.joinToString(" → ")
+            // Not 「我的位置 → 大学城南」 under it: the title says where already (user, 10-07).
+            walk -> ""
+            walkNavi -> c.progressFrom
             // The line is the badge beside it already; only where it goes.
             wait != null -> wait.direction.ifEmpty { wait.name }
             else -> listOf(c.line, c.direction).filter { it.isNotEmpty() }.joinToString(" ")
@@ -244,14 +329,27 @@ internal object AmapTransitIsland {
         val dp = Resources.getSystem().displayMetrics.density
         val icon = when {
             c.line.isNotEmpty() -> badge(c.line, c.lineBg, c.lineText)
-            walk -> walker()
+            walk || walkNavi -> walker()
             else -> appIcon(ctx)
         }
+        // The card's own picture: 高德's turn while it navigates the walk (ColorOS's entity.icon),
+        // the weak-signal one when 高德 says the GPS is weak (cardShowWeakInternet / weakSignal.png).
+        val main = when {
+            c.weakSignal -> Icon.createWithBitmap(weakSignal())
+            walkNavi -> turn ?: Icon.createWithBitmap(icon)
+            else -> Icon.createWithBitmap(icon)
+        }
         val pics = Bundle().apply {
-            putParcelable(PIC, Icon.createWithBitmap(icon))
-            putParcelable("miui.focus.pic_large", Icon.createWithBitmap(icon))
-            putParcelable(PIC_LEFT, Icon.createWithBitmap(
-                if (c.leftLine.isNotEmpty()) chip(c.leftLine, c.leftLineColor, dp) else icon))
+            putParcelable(PIC, main)
+            putParcelable("miui.focus.pic_large", main)
+            // The capsule's left picture: the walking navigation's is the card's (capsuleLeftIcon);
+            // a ride's keeps its line, its weak signal being the card's only.
+            putParcelable(PIC_LEFT, when {
+                c.leftLine.isNotEmpty() -> Icon.createWithBitmap(chip(c.leftLine, c.leftLineColor, dp))
+                walkNavi -> main
+                else -> Icon.createWithBitmap(icon)
+            })
+            if (c.progress >= 0) putParcelable(PIC_WALKER, Icon.createWithBitmap(walker()))
             if (c.rightLine.isNotEmpty()) {
                 putParcelable(PIC_RIGHT, Icon.createWithBitmap(chip(c.rightLine, c.rightLineColor, dp)))
             }
@@ -265,6 +363,19 @@ internal object AmapTransitIsland {
         val extras = Bundle()
         extras.putString("miui.focus.param", JSONObject().put("param_v2", param).toString())
         extras.putBundle("miui.focus.pics", pics)
+        if (c.button.isNotEmpty()) {
+            // The silent walking card's 「步行导航」: 高德 itself, which starts the walk once in front
+            // (handle). From the lock screen that asks for the unlock first.
+            val launch = (ctx.packageManager.getLaunchIntentForPackage(ctx.packageName) ?: Intent()
+                .setPackage(ctx.packageName))
+                .putExtra(EXTRA_WALK, true)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            val press = PendingIntent.getActivity(ctx, ID + 1, launch,
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+            extras.putBundle("miui.focus.actions", Bundle().apply {
+                putParcelable(ACTION_WALK_KEY, Notification.Action.Builder(main, c.button, press).build())
+            })
+        }
         val open = Intent(Intent.ACTION_VIEW,
             Uri.parse(trip.deepLink.ifEmpty { "amapuri://amap?clearStack=0&keepStack=1" }))
             .setPackage(ctx.packageName)
@@ -348,6 +459,24 @@ internal object AmapTransitIsland {
                 .put("content", content)
                 .put("subContent", lineRow))
             .put("picInfo", JSONObject().put("type", 1).put("pic", PIC))
+        if (c.button.isNotEmpty()) {
+            // ColorOS's cardButtonText on cardButtonBgColor rgba(255,255,255,0.1); type 2 is the
+            // template's button that is its title on a plate.
+            o.put("actions", JSONArray().put(JSONObject()
+                .put("action", ACTION_WALK_KEY)
+                .put("actionTitle", c.button)
+                .put("type", 2)
+                .put("actionTitleColor", "#FFFFFF")
+                .put("actionBgColor", "#1AFFFFFF")))
+        }
+        if (c.progress >= 0) {
+            // ya.n.y: the walk as a bar (cardProgressPercent), a walker on it.
+            o.put("progressInfo", JSONObject()
+                .put("progress", c.progress.coerceIn(0, 100))
+                .put("colorProgress", WALK_BLUE)
+                .put("colorProgressEnd", hex(AmapTransitScene.blend(0xff4a86ff.toInt(), 0xff000000.toInt(), 0.25f)))
+                .put("picForward", PIC_WALKER))
+        }
         val leg = trip.current
         if (c.stations != null && leg != null) {
             // 高德's own share of the leg (`location.persent`) where it gave one, else the stops
@@ -372,6 +501,31 @@ internal object AmapTransitIsland {
     }
 
     // ------------------------------------------------------------------ pictures
+
+    private const val WALK_BLUE = "#4A86FF"
+
+    /**
+     * ColorOS's weakSignal: three bars rising, the first lit and the others faint, on 高德's own
+     * red for 「信号弱」.
+     */
+    private fun weakSignal(): Bitmap {
+        val size = 96
+        val b = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val c = Canvas(b)
+        val p = Paint(Paint.ANTI_ALIAS_FLAG)
+        p.color = 0xffe5484d.toInt()
+        c.drawCircle(48f, 48f, 48f, p)
+        val w = 12f
+        val gap = 7f
+        val left = 48f - (3 * w + 2 * gap) / 2f
+        for (i in 0 until 3) {
+            p.color = if (i == 0) Color.WHITE else 0x59ffffff
+            val x = left + i * (w + gap)
+            val top = 66f - (i + 1) * 12f
+            c.drawRoundRect(RectF(x, top, x + w, 68f), 3f, 3f, p)
+        }
+        return b
+    }
 
     /**
      * The line-coloured half of a capsule half (ColorOS's capsule*TextLine): the text in white on

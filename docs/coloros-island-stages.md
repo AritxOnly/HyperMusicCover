@@ -96,10 +96,12 @@
 |---|---|---|
 | `GaoDePtNaviSceneRouter.j` | 偏航 → 终点(8) → 端内结束(9) → 步行/骑行 → 打车 → 公交地铁 | `AmapTransitCard.of` 同序 |
 | `GaoDePtNaviSceneRouter.h` | 无新数据：status 8 30 s、status 7 15 min、其余 30 min 后撤卡 | `AmapTransitShare.silence` |
-| `GaoDePtRideCodeDeferBindManager` | 地铁 status 7 且下一段是步行：步行卡推迟 5 min，刷乘车码或步行导航开始则提前 | `AmapTransitMilestones` 的到站保留；高德步行岛（1236）出现即提前 |
+| `GaoDePtRideCodeDeferBindManager` | 地铁 status 7 且下一段是步行：步行卡推迟 5 min，刷乘车码或步行导航开始则提前 | `AmapTransitMilestones` 的到站保留；乘车码页面到前台、小米智能卡出站扣费通知（`RideCodeExit`）或高德步行岛（1236）出现即提前 |
 | `GaoDePtFinalDestCardManager` | 最后一段是公共交通且 status 7：地铁 5 min / 公交 35 s 后出终点卡 | `AmapTransitShare.finalCard` |
 | `GaoDePtNaviIntentHandler.l` + `ya.a` | 终点卡 30 s；之后同一行程的数据全部忽略 | `showFinal` + `finalShown` |
 | `GaoDePtDismissHandler.b` | 删除意图：终点卡在/待出、或正在最后一段步行时忽略 | `bizEnd(103)` 时同样判断 |
-| `GaoDePtWalkRideHandler` / `ya.n.f` | 步行段：静默步行卡「步行至 XX / 共步行N米，M分钟」 | 步行段卡片；高德自己的步行岛在时让出 |
+| `GaoDePtWalkRideHandler` / `ya.n.f` | 步行段：静默步行卡「步行至 XX / 共步行N米，M分钟」，「步行导航」按钮 | 步行段卡片 + 按钮（`AmapFootNavi`） |
+| `GaoDePtWalkRideHandler.d` / `ya.n.d` | 步行导航进行中：同一张卡换成导航卡（转向、剩余、进度条、弱 GPS 版） | 读高德 101 通道；拦下高德的 1236 |
+| `GaoDePtNaviSceneRouter.j` isStrongRemind | 只有 6、7 强提醒（remindType 12 + 展开面板） | `AmapTransitIsland.FLOAT_AT` = 6、7 |
 
 ColorOS 的 status 由高德给；澎湃上高德不给，`AmapTransitMilestones` 从「卡片在哪段 + 剩几站」推（见 `amap-transit-island.md` §6.2）。

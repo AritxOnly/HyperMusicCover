@@ -188,6 +188,94 @@ class AmapTransitCardTest {
         assertEquals("walk", c.kind)
     }
 
+    @Test fun aSubwayArrivalEndsOnTheWayOut() {
+        step(ridePlan, rideCaps, rideCard(1, 0.7), 1, 0, 3, "大学城南")
+        step(ridePlan, rideCaps, rideCard(1, 0.7), 1, 100, 1, "员岗")
+        val cards = mapOf(1 to rideCard(1, 0.7))
+        var c = step(ridePlan, rideCaps, walkCard(2, "步行至 汕黄牛.牛肉海鲜自助"), 2, 200, cards = cards)
+        assertEquals("arrival", c.kind)
+        assertTrue(m.exited())
+        assertTrue(!m.exited())
+        c = step(ridePlan, rideCaps, walkCard(2, "步行至 汕黄牛.牛肉海鲜自助"), 2, 210, cards = cards)
+        assertEquals("walk", c.kind)
+    }
+
+    /** The entity for capsule [current] with [status], as AmapTransitShare builds it. */
+    private fun cardFor(card: JSONObject, current: Int, status: String,
+                        live: AmapTransitEntity.Live?, walkNavi: JSONObject? = null): AmapTransitCard.Card {
+        val entity = AmapTransitEntity.build(ridePlan, rideCaps, card, current, status, live, null,
+            "", AmapTransitEntity.sentence(card), "t", walkNavi)
+        return AmapTransitCard.of(AmapTransitCard.Trip.parse(JSONObject(entity.toString())))!!
+    }
+
+    @Test fun nearTheStationIsTheWaitingCard() {
+        // 到达起始站附近: the ride after the walk, its stops all ahead, the walk's card for the rest.
+        val c = cardFor(walkCard(0, "步行至 大学城南地铁站"), 1, AmapTransitCard.ARRIVE_ORIGIN_NEARBY,
+            AmapTransitEntity.Live(3, -1.0, "", subwayTimes))
+        assertEquals("waiting", c.kind)
+        assertEquals(AmapTransitCard.ARRIVE_ORIGIN_NEARBY, c.status)
+        assertEquals("大学城南", c.lockTitle)
+    }
+
+    @Test fun theSilentWalkHasItsButton() {
+        val c = cardFor(walkCard(0, "步行至 大学城南地铁站"), 0, "", null)
+        assertEquals("walk", c.kind)
+        assertEquals("步行导航", c.button)
+        assertEquals("步行至大学城南", c.lockTitle)
+    }
+
+    @Test fun theWalkingNavigationIsTheWalksCard() {
+        // 10-05's channel 101, the first frame and one under way.
+        val first = JSONObject("""{"status":1,"icon":9,"first_desc":"","second_desc":"直行97米",
+            "remain_length":97,"remain_time":523,"route_total_dist":566,"route_remain_dist":566,
+            "route_remain_time":523,"trigger_source":1,"isFromBus":true}""")
+        var c = cardFor(walkCard(0, "步行至 大学城南地铁站"), 0, "", null, first)
+        assertEquals("walk_navi", c.kind)
+        assertEquals("", c.primary)
+        assertEquals("直行97米", c.secondary)
+        assertEquals("97米", c.rightWhite)
+        assertEquals(0, c.progress)
+        assertEquals("剩余566米，约9分钟", c.progressFrom)
+        assertEquals("目的地", c.progressTo)
+        assertTrue(!c.weakSignal)
+        assertEquals("", c.button)
+        val later = JSONObject("""{"status":1,"icon":9,"first_desc":"沿尚法街","second_desc":"直行270米",
+            "remain_length":270,"route_total_dist":566,"route_remain_dist":299,"route_remain_time":279,
+            "trigger_source":1,"isFromBus":true}""")
+        c = cardFor(walkCard(0, "步行至 大学城南地铁站"), 0, "", null, later)
+        assertEquals("沿尚法街", c.primary)
+        assertEquals("直行270米", c.secondary)
+        assertEquals(47, c.progress)
+        assertEquals("剩余299米，约5分钟", c.progressFrom)
+    }
+
+    @Test fun aWeakGpsSaysSoOnTheWalk() {
+        val weak = JSONObject("""{"status":1,"first_desc":"沿尚法街","second_desc":"直行270米",
+            "remain_length":270,"route_total_dist":566,"route_remain_dist":299,"route_remain_time":279,
+            "gpsSignalStatus":0,"trigger_source":1,"isFromBus":true}""")
+        val c = cardFor(walkCard(0, "步行至 大学城南地铁站"), 0, "", null, weak)
+        assertTrue(c.weakSignal)
+        assertEquals("步行至大学城南", c.primary)
+        assertEquals("卫星信号弱，请步行到开阔地带", c.secondary)
+        assertEquals("步行至", c.leftWhite)
+        assertEquals("大学城南", c.rightWhite)
+    }
+
+    @Test fun aWeakGpsMarksOnlyTheMovingCards() {
+        val card = rideCard(2, 0.4).put("gpsSignalStatus", 0)
+        val moving = cardFor(card, 1, AmapTransitCard.NEXT_STATION,
+            AmapTransitEntity.Live(2, 0.4, "板桥", subwayTimes))
+        assertTrue(moving.weakSignal)
+        val waiting = cardFor(card, 1, AmapTransitCard.WAITING,
+            AmapTransitEntity.Live(3, -1.0, "", subwayTimes))
+        assertTrue(!waiting.weakSignal)
+    }
+
+    @Test fun theWayOutHoldsNothingElse() {
+        step(ridePlan, rideCaps, rideCard(1, 0.7), 1, 0, 3, "大学城南")
+        assertTrue(!m.exited())
+    }
+
     @Test fun withoutAPlanTheRideNamesOnlyWhatItHasSeen() {
         assertEquals("waiting", step(null, rideCaps, rideCard(3, 0.02), 1, 0, 3, "大学城南").kind)
         var c = step(null, rideCaps, rideCard(2, 0.44), 1, 400, 2, "板桥")

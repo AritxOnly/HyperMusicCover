@@ -176,14 +176,16 @@ NativesModuleWearable ── 103 卡 / 113 计划+实时 ──┐
 
 | 情形 | status | 说明 |
 |---|---|---|
+| 步行段（开头或换乘）离下一程车站不到 200 m（113 `groupRemainDistance`，回到 300 m 以上撤回） | 1 到达起始站附近 | 高德的阈值读不到，这是我们定的；GPS 弱距离不动时不出现，直接候车 |
 | 第一次看到某个乘车段，且剩余站数 = 全部站数 | 2 候车 | 直到第一站过去 |
 | 剩余站数减少（到了一站） | 5 当前站 | 停 30 s（`DWELL_MS`，不是 ColorOS 的数，模仿停站） |
 | 之后 | 3 下一站 | 剩 1 站时 4 下一站即终点（ColorOS 的 `W()` 遇到换乘会改回 3） |
 | 卡片离开一个乘车段、后面还有乘车 | 6 到达换乘站 | 保留 30 s，然后是换乘步行 / 下一条线的候车 |
-| 卡片离开一个乘车段、后面没有乘车 | 7 到站 | 地铁保留 **5 min**（`GaoDePtRideCodeDeferBindManager`），高德的步行导航岛（1236）一出现就结束；公交 30 s |
+| 卡片离开一个乘车段、后面没有乘车 | 7 到站 | 地铁保留 **5 min**（`GaoDePtRideCodeDeferBindManager`），刷码/刷卡出站（`RideCodeExit`）或高德的步行导航岛（1236）出现就提前结束；公交 30 s |
 | 最后一段就是乘车，且高德说坐完（剩 0 / `tipType 48`） | 7 | 地铁 5 min、公交 35 s 后出终点卡（`GaoDePtFinalDestCardManager`） |
 | 卡片 `arrived` / 「已到达 X」 | 8 终点 | 终点卡 30 s，之后什么都不收 |
-| 当前段是步行 | — | ColorOS 的静默步行卡（`ya.n.f`）；高德自己的步行岛在时让给它 |
+| 当前段是步行 | — | ColorOS 的静默步行卡（`ya.n.f`），带「步行导航」按钮（`AmapFootNavi`，只在按下时启动） |
+| 步行段且高德步行导航在跑（101 通道 `trigger_source 1`） | — | ColorOS 的步行导航卡（`ya.n.d`，弱 GPS 时 `E()`），同一张岛；高德自己的 1236 拦下，转向图取自 1236；点开是高德的锁屏地图 |
 | 卡片 `offRoute` | — | 偏航卡（`ya.f`） |
 
 没有计划时，下一站的名字不知道，就停在「当前站 X」而不是猜一个。
@@ -251,7 +253,9 @@ adb shell am broadcast -a com.os4.musiccover.PROBE -p com.android.systemui --es 
 | `AmapTransitEntity.kt` | 高德 | 计划 + 胶囊 + 卡片 + 实时 → `GaoDePtIntentEntity` |
 | `AmapTransitCard.java` | 两边 | SceneService 卡片构建器的移植 |
 | `AmapTransitIsland.kt` | 高德 | 焦点通知（id 1239）与进度条三张图 |
-| `AmapFootNavi.kt` | 高德 | 开始导航时直接进高德自己的步行导航（开头那段步行） |
+| `AmapFootNavi.kt` | 高德 | 步行卡「步行导航」按钮：经 `IFootNaviService.startNaviPage` 让高德导航这段步行 |
+| `RideCodeExit.kt` | SystemUI | 出站信号：乘车码页面到前台、小米智能卡的出站扣费通知 → 高德 `transit exited`、小爱建议 `METRO_TRIP do=exit` |
+| `MetroCodeIsland.kt` | 小爱建议 | 乘车码岛；按 ColorOS 的行程规则只在起点、高德计划的上下车站弹（`AmapTransitShare.tellMetro` 发站名） |
 | `AmapFocus.java` | SystemUI | 焦点插件授权放行 |
 | `AmapTransitScene.java` | SystemUI | 锁屏页、地标图下载缓存 |
 | `AmapTransitLandmarks.java` | 两边 | OPPO 地标表、CDN、0.8 km 匹配、按坐标认城市 |
@@ -260,7 +264,7 @@ adb shell am broadcast -a com.os4.musiccover.PROBE -p com.android.systemui --es 
 
 - **高德不给 status**：候车何时结束、停站多久、换乘/到站显示多久，都是推出来的（§6.2），不是 ColorOS 的原样。
   地铁站与站之间没有任何实时信号，所以「候车」会一直到第一站过去。
-- **乘车码**：ColorOS 刷乘车码出站会提前结束地铁到站卡，这里没有对应信号，只能等 5 分钟或高德步行导航开始。
+- **出站信号**：ColorOS 靠 OplusAppSwitchManager 认乘车码页面（小程序按 appId）、靠 OPPO 钱包的 `bus/swipe` 认刷卡。这里用 SystemUI 的 `MiuiTopActivityObserver` 认前台页面——拿不到小程序 appId，所以微信是「任一小程序」、支付宝是「打开就算」；刷卡认小米智能卡出站扣费后发的通知（正文「A -> B：x元」）。都只在地铁到站保留期间生效。开始导航不再自动进高德步行导航（原版高德也不进）。
 - **真机只验过 10-05 那一次地铁行程的载荷**；公交（`realtime.buses` 的字段）、换乘、偏航、只有乘车没有末段步行的行程都没有真机记录，
   代码按 ColorOS 写，载荷读法是推测。
 - 计划只在开始导航时发；模块或高德中途重启会丢计划，走没有计划的退化路径。

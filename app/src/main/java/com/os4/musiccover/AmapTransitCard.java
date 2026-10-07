@@ -29,7 +29,8 @@ import java.util.regex.Pattern;
  *   ya.k   the overview as the card reads it (isCurStation, isTwoStation, the transfer badge)
  *   ya.a   ArriveFinalDestinationParser: the card for the trip's end
  *   ya.f   OffRouteParser
- *   ya.n   the silent walking card between two rides (f())
+ *   ya.n   the silent walking card between two rides (f()), and the walking navigation's own
+ *          card while 高德 navigates that walk (d(), with its weak-GPS form E())
  *   GaoDePtNaviSceneRouter.j: which of those an entity gets
  * The strings are SceneService's own (gaode_pt_*), word for word.
  *
@@ -253,6 +254,42 @@ final class AmapTransitCard {
         }
     }
 
+    /**
+     * GaoDeWalkingAndCyclingIntentEntity, the parts ya.n.d reads: 高德's walking navigation for a
+     * walk of the trip. On HyperOS it is 高德's channel 101 (`trigger_source` 1, `isFromBus`), the
+     * same body ColorOS's legacy transformer turns into that entity; AmapTransitShare hands it over
+     * as the trip's `walkNavi`.
+     */
+    static final class WalkNavi {
+        String firstDesc = "";
+        String secondDesc = "";
+        Integer remainLength;
+        Integer routeTotal;
+        Integer routeRemain;
+        Integer routeRemainTime;
+        Integer gpsSignalStatus;
+        boolean bike;
+
+        static WalkNavi of(JSONObject o) {
+            WalkNavi w = new WalkNavi();
+            w.firstDesc = o.optString("first_desc");
+            w.secondDesc = o.optString("second_desc");
+            w.remainLength = integer(o, "remain_length");
+            w.routeTotal = integer(o, "route_total_dist");
+            w.routeRemain = integer(o, "route_remain_dist");
+            w.routeRemainTime = integer(o, "route_remain_time");
+            w.gpsSignalStatus = integer(o, "gpsSignalStatus");
+            // GaoDeWalkRideRouteType: 0 a walk, 1 a ride by bike.
+            w.bike = o.optInt("route_type", 0) == 1;
+            return w;
+        }
+
+        private static Integer integer(JSONObject o, String k) {
+            if (!o.has(k) || o.isNull(k)) return null;
+            return number(o.optString(k));
+        }
+    }
+
     /** GaoDePtIntentEntity, the parts the card reads. */
     static final class Trip {
         String status = "";
@@ -275,6 +312,8 @@ final class AmapTransitCard {
         final List<Leg> navi = new ArrayList<>();
         /** The one marked current (g.b), or null. */
         Leg current;
+        /** 高德's walking navigation for the current walk, while it runs; else null. */
+        WalkNavi walkNavi;
 
         int currentIndex() {
             return current == null ? -1 : navi.indexOf(current);
@@ -297,6 +336,8 @@ final class AmapTransitCard {
             t.totalDistance = o.optString("totalDistance");
             t.totalDuration = o.optDouble("totalDuration", 0);
             t.legPercent = o.optDouble("legPercent", -1);
+            JSONObject walk = o.optJSONObject("walkNavi");
+            if (walk != null) t.walkNavi = WalkNavi.of(walk);
             JSONArray navi = o.optJSONArray("naviInfo");
             for (int i = 0; navi != null && i < navi.length(); i++) {
                 JSONObject n = navi.optJSONObject(i);
@@ -346,6 +387,7 @@ final class AmapTransitCard {
         static final String KIND_FINAL = "final";
         static final String KIND_OFF_ROUTE = "off_route";
         static final String KIND_WALK = "walk";
+        static final String KIND_WALK_NAVI = "walk_navi";
 
         String kind = "";
         /** The milestone after W(): what the card was built for. */
@@ -395,6 +437,19 @@ final class AmapTransitCard {
         /** An arrival card: the exit's landmark, then the city's, then the nation's (ya.b.O). */
         boolean arrivalArt;
 
+        /** cardButtonText: the silent walking card's 「步行导航」, "" for none. */
+        String button = "";
+        /**
+         * cardShowWeakInternet: 高德 says the GPS is weak (gpsSignalStatus 0). On the moving cards
+         * ColorOS puts its weak-signal picture where the card's own icon is; the walking
+         * navigation's card says it in words as well (ya.n.E).
+         */
+        boolean weakSignal;
+        /** The walking navigation's bar: cardProgressPercent, and its two labels. */
+        int progress = -1;
+        String progressFrom = "";
+        String progressTo = "";
+
         boolean subway() {
             return AmapTransitCard.subway(type);
         }
@@ -420,7 +475,10 @@ final class AmapTransitCard {
         } else if (END_NAVI_IN_APP.equals(t.status)) {
             return null;
         } else if (t.current != null && walkOrBike(t.current.type)) {
-            c = walkCard(t);
+            // The walking navigation's card while 高德 navigates the walk (GaoDePtWalkRideHandler.d),
+            // the silent one otherwise - the same card, as ColorOS keeps both on 536879317.
+            c = t.walkNavi != null ? walkNaviCard(t, t.walkNavi) : null;
+            if (c == null) c = walkCard(t);
         } else if (t.current != null && TAXI.equals(trim(t.current.type))) {
             return null;
         } else {
@@ -482,6 +540,11 @@ final class AmapTransitCard {
         if (c == null) return null;
         c.status = eff;
         c.page = page(eff);
+        // ya.b.e: isSignalStrong is gpsSignalStatus != 0; only K() and a() - 3, 4, 5 - show it.
+        if (NEXT_STATION.equals(eff) || NEXT_DESTINATION.equals(eff)
+                || ARRIVE_COMMON_STATION.equals(eff)) {
+            c.weakSignal = t.gpsSignalStatus != null && t.gpsSignalStatus == 0;
+        }
         // ya.d.a: a landmark only while in transit, and only for the stop the card names.
         if (NEXT_STATION.equals(eff) || NEXT_DESTINATION.equals(eff)
                 || ARRIVE_COMMON_STATION.equals(eff)) {
@@ -678,7 +741,91 @@ final class AmapTransitCard {
         c.secondary = to;
         c.lockTitle = blank(to) ? mode + "导航" : mode + "至" + to;
         c.lockSubtitle = summary;
+        // cardButtonText (L0 「%1$s导航」), onGaodePtNaviBeginNaviBtnClick: 高德's own navigation
+        // of this walk, started from the card and never by itself.
+        c.button = mode + "导航";
         return c;
+    }
+
+    /** ya.n.v0: what 高德's first line says once the walk is done. */
+    private static final String NAVI_END = "导航结束";
+
+    /**
+     * ya.n.d: the walking navigation's card - the turn and how far, 高德's two lines, and the walk
+     * as a bar from 「剩余…」 to 「目的地」. b() is d() for the frame that ends it; c() (导航开始)
+     * is for a start 高德 does not send on this channel.
+     */
+    private static Card walkNaviCard(Trip t, WalkNavi w) {
+        String mode = w.bike ? "骑行" : "步行";
+        String left = distance(w.remainLength);
+        if (left.isEmpty()) left = "导航中";
+        // B(): 高德's first and second lines, or the first split at 「#」.
+        String first = trim(w.firstDesc);
+        String second = trim(w.secondDesc);
+        String primary;
+        String secondary;
+        if (second.isEmpty()) {
+            int at = first.indexOf('#');
+            primary = at < 0 ? first : first.substring(0, at);
+            secondary = at < 0 ? "" : first.substring(at + 1);
+        } else {
+            primary = first;
+            secondary = NAVI_END.equals(first) ? "已到达终点" : second;
+        }
+        Card c = new Card();
+        c.kind = Card.KIND_WALK_NAVI;
+        c.page = "pages/walkAndBike";
+        c.leftIcon = true;
+        // E(): the weak-GPS form - where the walk goes, and to find open sky.
+        if (w.gpsSignalStatus != null && w.gpsSignalStatus == 0) {
+            c.weakSignal = true;
+            String to = walkTo(t, t.currentIndex());
+            secondary = "卫星信号弱，请" + mode + "到开阔地带";
+            if (blank(to)) {
+                c.leftWhite = "";
+            } else {
+                primary = mode + "至" + to;
+                c.leftWhite = mode + "至";
+                left = to;
+            }
+        }
+        c.rightWhite = left;
+        c.primary = primary;
+        c.secondary = secondary;
+        c.lockTitle = primary;
+        c.lockSubtitle = blank(secondary) ? left : secondary;
+        c.progress = walkPercent(w, first);
+        c.progressFrom = walkLeft(w);
+        c.progressTo = "目的地";
+        return c;
+    }
+
+    /** ya.n.F: how much of the walk is done, 0..100. */
+    private static int walkPercent(WalkNavi w, String first) {
+        if (NAVI_END.equals(first)) return 100;
+        int total = w.routeTotal == null ? 0 : w.routeTotal;
+        int remain = w.routeRemain == null ? 0 : w.routeRemain;
+        if (total <= 0) return 0;
+        return clamp((int) Math.round(clamp(total - remain, 0, total) * 100.0 / total), 0, 100);
+    }
+
+    /** ya.n.e: 「剩余300米，约4分钟」, or 「开始」 when 高德 has not said how far. */
+    private static String walkLeft(WalkNavi w) {
+        if (w.routeTotal == null || w.routeTotal <= 0) return "开始";
+        Integer remain = w.routeRemain != null ? w.routeRemain : w.remainLength;
+        String d = distance(remain);
+        String m = roundMinutes(w.routeRemainTime);
+        return !d.isEmpty() && !m.isEmpty() ? "剩余" + d + "，约" + m : "开始";
+    }
+
+    /** ya.n.m: minutes to the nearest, as l() writes them. */
+    private static String roundMinutes(Integer seconds) {
+        if (seconds == null || seconds <= 0) return "";
+        int total = (int) Math.rint(seconds / 60.0);
+        if (total < 60) return total + "分钟";
+        int h = total / 60;
+        int m = total % 60;
+        return m > 0 ? h + "小时" + m + "分钟" : h + "小时";
     }
 
     /** ya.n.C: where a walk goes - the next ride's stop, or the trip's destination. */

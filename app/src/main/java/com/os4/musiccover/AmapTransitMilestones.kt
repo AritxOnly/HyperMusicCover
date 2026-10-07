@@ -11,9 +11,9 @@ package com.os4.musiccover
  *   - 高德's card leaving a ride for the next leg is that ride reaching its end: 到达换乘站 (6)
  *     when another ride follows, else 到站 (7) - held up ([Hold]) because 高德 has already moved
  *     on, where ColorOS would still be showing it: a subway's 到站 for the five minutes
- *     GaoDePtRideCodeDeferBindManager holds the walk after it back (cut short when 高德's own
- *     walking navigation comes up, as a walking entity cuts it on ColorOS), the others for
- *     [DWELL_MS];
+ *     GaoDePtRideCodeDeferBindManager holds the walk after it back (cut short by a ride code
+ *     opened or a card swiped on the way out ([exited]), or 高德's own walking navigation coming
+ *     up, as a walking entity cuts it on ColorOS), the others for [DWELL_MS];
  *   - a trip's last leg being a ride, its 到站 is when 高德 says the leg is over.
  *
  * No Android in here, so it can be tried on a computer (AmapTransitCardTest); the times are
@@ -79,6 +79,16 @@ internal class AmapTransitMilestones {
         if (now < h.until && !(h.subwayExit && walkIslandUp)) return h
         hold = null
         return null
+    }
+
+    /**
+     * The way out of the station was taken - a ride code opened, a card's fare taken: a subway's
+     * held 到站 ends now (GaoDePtRideCodeDeferBindManager.n). Whether there was one to end.
+     */
+    fun exited(): Boolean {
+        if (hold?.subwayExit != true) return false
+        hold = null
+        return true
     }
 
     /**

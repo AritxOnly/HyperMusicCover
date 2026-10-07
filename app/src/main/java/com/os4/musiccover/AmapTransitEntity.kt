@@ -82,6 +82,7 @@ internal object AmapTransitEntity {
         exit: String,
         guide: String,
         id: String,
+        walkNavi: JSONObject? = null,
     ): JSONObject {
         val fits = fits(plan, capsules)
         val segs = if (fits) plan!!.optJSONArray("segmentlist") else null
@@ -128,6 +129,8 @@ internal object AmapTransitEntity {
             .put("isPublic", true)
             .put("legPercent", live?.percent ?: -1.0)
         card?.let { if (it.has("gpsSignalStatus")) o.put("gpsSignalStatus", it.optInt("gpsSignalStatus")) }
+        // 高德's walking navigation of the current walk, its channel 101 body (AmapTransitCard.WalkNavi).
+        walkNavi?.let { o.put("walkNavi", it) }
         if (fits) {
             plan!!.optString("allLength").trim().let { if (it.isNotEmpty()) o.put("totalDistance", it) }
             plan.optString("expensetime").trim().toDoubleOrNull()?.let { o.put("totalDuration", it) }

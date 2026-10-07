@@ -62,6 +62,15 @@ final class AmapNavScene extends LiveAlertScene {
     private final Handler mMain = new Handler(Looper.getMainLooper());
     private final Runnable mFlush = this::flushOverview;
 
+    /**
+     * 高德's islands, but not the trip's own (AmapTransitIsland.ID): a tap on that one opens no
+     * page while the trip's page is off, rather than this map in its place.
+     */
+    @Override
+    public boolean servesKey(String key) {
+        return !AmapTransitScene.isTripKey(key);
+    }
+
     /** ColorOS's host grows the map in from 1.1 (a6.l, type 1). */
     @Override
     float enterScale() {

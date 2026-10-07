@@ -132,6 +132,11 @@ final class AmapTransitScene implements ImmersiveScene {
         return describe();
     }
 
+    /** Whether 高德 has a trip on the card now. Main thread. */
+    boolean tripUp() {
+        return mTrip != null;
+    }
+
     private void take(AmapTransitCard.Trip t) {
         AmapTransitCard.Card c = AmapTransitCard.of(t);
         if (c == null) {
@@ -207,18 +212,30 @@ final class AmapTransitScene implements ImmersiveScene {
      * the map (AmapNavScene). Claimed whole, an exchange between the two islands left this page
      * up for both. The key is the notification's, user|pkg|id|tag|uid.
      */
-    private static boolean isTripKey(String key) {
+    static boolean isTripKey(String key) {
         if (key == null) return false;
         String[] parts = key.split("[|]");
         return parts.length > 2 && String.valueOf(AmapTransitIsland.ID).equals(parts[2]);
     }
 
-    /** A card that is not the walking one: a walk is 高德's own navigation, and its map. */
+    /**
+     * A card that is not a walk's: a walk is 高德's own navigation, and its map (AmapNavScene) -
+     * which the trip's island opens then, as ColorOS's walking card opens 高德's immersive map.
+     */
     @Override
     public boolean ready() {
+        if (!PAGE) return false;
         AmapTransitCard.Card c = mCard;
-        return c != null && !AmapTransitCard.Card.KIND_WALK.equals(c.kind);
+        return c != null && !AmapTransitCard.Card.KIND_WALK.equals(c.kind)
+                && !AmapTransitCard.Card.KIND_WALK_NAVI.equals(c.kind);
     }
+
+    /**
+     * Whether the trip's island opens this page at all. Off for now (user, 2026-10-07): a tap on
+     * the island leaves the lock screen as it was, its own wallpaper, until the page is reworked.
+     * Off, it is never ready, so it is never prepared and its ground never drawn.
+     */
+    private static final boolean PAGE = false;
 
     @Override
     public void prepare(ViewGroup slot) {
@@ -1112,6 +1129,9 @@ final class AmapTransitScene implements ImmersiveScene {
             double metres = number(t.totalDistance);
             if (metres > 0) parts.add(distance(metres, " "));
             if (rides > 1) parts.add("换乘 " + (rides - 1) + " 次");
+            // cardShowWeakInternet: ColorOS's weak-signal picture in the card's corner on 3 / 4 / 5;
+            // the page has no corner icon, so 高德's own words for it (its card's tip) end this line.
+            if (c != null && c.weakSignal) parts.add("信号弱");
             r.summary = TextUtils.join(" · ", parts);
 
             // The walks at either end are the map's business: only a change's walk is the trip's.

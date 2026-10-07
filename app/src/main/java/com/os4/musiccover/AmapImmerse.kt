@@ -193,7 +193,8 @@ internal object AmapImmerse {
                         String(android.util.Base64.decode(b64, android.util.Base64.DEFAULT),
                             Charsets.UTF_8)
                     }.getOrDefault("")
-                    resultData = AmapTransitShare.probe(it, json)
+                    // `exited` says why in plain words (RideCodeExit).
+                    resultData = AmapTransitShare.probe(it, json.ifEmpty { i.getStringExtra("why").orEmpty() })
                     return
                 }
                 if (i.getBooleanExtra("ask", false)) {
