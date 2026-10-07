@@ -144,6 +144,7 @@
     <string name="lyrics_provider_got_it">知道了</string>
     <string name="lyrics_provider_got_it_wait">知道了 (%1$d)</string>
     <string name="lyrics_trans">显示翻译</string>
+    <string name="lyrics_roma">显示罗马音</string>
     <string name="lyrics_align">歌词对齐方式</string>
     <string name="lyrics_align_left">居左</string>
     <string name="lyrics_align_center">居中</string>

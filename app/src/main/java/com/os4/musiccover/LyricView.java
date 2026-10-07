@@ -314,13 +314,13 @@ final class LyricView extends View {
     private int buildGen;
     /** The lines and width a layout is on its way for, or -1 with none in the air. */
     private int wantVersion = -1, wantWidth = -1;
-    /** The translation switch the layout in the air is for; -1 above means none is. */
-    private boolean wantTrans;
+    /** The translation and romanisation switches the layout in the air is for (LockLyrics.below()). */
+    private int wantTrans;
     /** The alignment pref the layout in the air is for; only meaningful with a version above. */
     private int wantAlign;
     private LyricStyle wantStyle;
-    /** The translation switch the layout now in use was made under. */
-    private boolean builtTrans = true;
+    /** The translation and romanisation switches the layout now in use was made under. */
+    private int builtTrans = LockLyrics.BELOW_TRANS;
     /** The alignment pref the layout now in use was made under; see LockLyrics.sAlign. */
     private int builtAlign = LockLyrics.ALIGN_LEFT;
     /** Diagnostics: how long the last layout took on its thread. */
@@ -553,7 +553,7 @@ final class LyricView extends View {
                 // row out from under every line, so it is asked for the same way a new lyric set
                 // is. Compared against what the layout in use was built with, not the field, or
                 // the request would still look outstanding the moment it landed.
-                || LockLyrics.sTrans != builtTrans
+                || LockLyrics.below() != builtTrans
                 // The alignment is in the layout too, and asked for the same way: against what
                 // the layout in use was built with, not against the field.
                 || LockLyrics.sAlign != builtAlign
@@ -1483,7 +1483,7 @@ final class LyricView extends View {
     private boolean layOut() {
         final int v = LockLyrics.version();
         final int width = getWidth();
-        final boolean transOn = LockLyrics.sTrans;
+        final int transOn = LockLyrics.below();
         final int alignOn = LockLyrics.sAlign;
         final LyricStyle style = LockLyrics.sStyle;
         final List<LyricLine> ls = LockLyrics.lines();
@@ -1532,7 +1532,7 @@ final class LyricView extends View {
                         // Stale by the time it landed, or asked for and then frozen by the lyrics
                         // being switched off: the next step asks again when it is due.
                         if (v != LockLyrics.version() || width != getWidth()
-                                || transOn != LockLyrics.sTrans
+                                || transOn != LockLyrics.below()
                                 || alignOn != LockLyrics.sAlign
                                 || !style.sameLayout(LockLyrics.sStyle)
                                 || !LockLyrics.wantsAttached()) {
@@ -1552,8 +1552,8 @@ final class LyricView extends View {
     private static final class Built {
         int version, width, w;
         LyricStyle style;
-        /** The translation switch this layout was made under; see LockLyrics.sTrans. */
-        boolean transOn;
+        /** The translation and romanisation switches this layout was made under; see LockLyrics.below(). */
+        int transOn;
         /** The alignment pref this layout was made under; see LockLyrics.sAlign. */
         int align;
         List<LyricLine> lines;
@@ -1578,7 +1578,7 @@ final class LyricView extends View {
 
     /** Touches nothing of the view's but its constants, so it can run off the UI thread. */
     private Built build(int v, int width, List<LyricLine> ls, TextPaint p, TextPaint bp,
-                        TextPaint tp, boolean transOn, int alignOn, LyricStyle style,
+                        TextPaint tp, int transOn, int alignOn, LyricStyle style,
                         float buildTextPx, float buildSidePx) {
         long t0 = SystemClock.uptimeMillis();
         Built b = new Built();
@@ -1633,9 +1633,9 @@ final class LyricView extends View {
             // Left out of the layout entirely when the switch is off, rather than laid out and
             // skipped in the draw: the rows it would have taken are most of a line's height, and
             // a gap there would leave every line floating with a hole under it.
-            if (l.translation != null && transOn) {
-                b.trans[i] = StaticLayout.Builder.obtain(l.translation, 0, l.translation.length(),
-                                tp, w)
+            String under = l.under(transOn);
+            if (under != null) {
+                b.trans[i] = StaticLayout.Builder.obtain(under, 0, under.length(), tp, w)
                         .setAlignment(align)
                         .setIncludePad(false)
                         .build();
@@ -1715,7 +1715,9 @@ final class LyricView extends View {
             LyricLine a = now.get(i), b = next.get(i);
             if (a.start != b.start || !a.text.equals(b.text)) return false;
             if (a.translation != null && !a.translation.equals(b.translation)) return false;
+            if (a.roma != null && !a.roma.equals(b.roma)) return false;
             if (a.translation == null && b.translation != null) gained = true;
+            if (a.roma == null && b.roma != null) gained = true;
         }
         return gained;
     }
@@ -2253,11 +2255,11 @@ final class LyricView extends View {
                 c.restoreToCount(save);
                 below += bgGap + bl.getHeight();
             }
-            if (l.translation != null && LockLyrics.sTrans) {
+            String under = l.under(LockLyrics.below());
+            if (under != null) {
                 tp.setAlpha(Math.round(255f * TRANS_ALPHA));
                 tp.setMaskFilter(mf);
-                StaticLayout t = StaticLayout.Builder.obtain(l.translation, 0,
-                                l.translation.length(), tp, width)
+                StaticLayout t = StaticLayout.Builder.obtain(under, 0, under.length(), tp, width)
                         .setAlignment(align)
                         .setIncludePad(false)
                         .build();

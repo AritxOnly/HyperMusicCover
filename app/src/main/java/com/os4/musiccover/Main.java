@@ -1926,6 +1926,8 @@ public class Main extends XposedModule {
                     // the key did not exist before this setting did, and the lyrics are supposed
                     // to look the way they always have on a file that predates it.
                     + "\nlyrictrans=" + (LockLyrics.sTrans ? 1 : 0)
+                    // Off when absent, which is what every file from before it had.
+                    + "\nlyricroma=" + (LockLyrics.sRoma ? 1 : 0)
                     // 0 left, 1 centre, 2 right, and left when the key is absent: a file from
                     // before this setting is one where the lyrics always sat left.
                     + "\nlyricalign=" + LockLyrics.sAlign
@@ -2034,6 +2036,7 @@ public class Main extends XposedModule {
                         else if ("lyrichidden".equals(k)) LockLyrics.sTapHidden = "1".equals(v);
                         else if ("lyrichdr".equals(k)) LockLyrics.sHdr = "1".equals(v);
                         else if ("lyrictrans".equals(k)) LockLyrics.sTrans = "1".equals(v);
+                        else if ("lyricroma".equals(k)) LockLyrics.sRoma = "1".equals(v);
                         // Clamped in the setter; absent or unreadable means left, see saveState.
                         else if ("lyricalign".equals(k)) LockLyrics.setAlign(Integer.parseInt(v));
                         // The dp lyricoff and lyricgap from before the shares are dropped: what
@@ -2338,6 +2341,11 @@ public class Main extends XposedModule {
                         Xp.log(TAG + "lyrics translations: " + LockLyrics.sTrans);
                         // The view notices the switch itself and lays the lines out again around
                         // it; refresh only has to start the frames that let it.
+                        LockLyrics.refresh();
+                        saveState();
+                    } else if ("lyricroma".equals(op)) {
+                        LockLyrics.sRoma = i.getBooleanExtra("on", !LockLyrics.sRoma);
+                        Xp.log(TAG + "lyrics romanisations: " + LockLyrics.sRoma);
                         LockLyrics.refresh();
                         saveState();
                     } else if ("lyricstyle".equals(op)) {
@@ -2808,6 +2816,7 @@ public class Main extends XposedModule {
                         out.putBoolean("lyrickeep", LockLyrics.sKeepOn);
                         out.putBoolean("lyrichdr", LockLyrics.sHdr);
                         out.putBoolean("lyrictrans", LockLyrics.sTrans);
+                        out.putBoolean("lyricroma", LockLyrics.sRoma);
                         out.putInt("lyricalign", LockLyrics.sAlign);
                         out.putFloat("lyricfill", LockLyrics.sStyle.fill);
                         out.putFloat("lyricpos", LockLyrics.sStyle.pos);

@@ -97,6 +97,18 @@ final class LockLyrics {
      * than leaving a gap where it was.
      */
     static volatile boolean sTrans = true;
+    /**
+     * The fifth: whether a line's romanisation is drawn under it, over the translation. Off by
+     * default and apart from the translation's switch - either can be shown alone (#64). Like
+     * the translation it is laid out, not fetched: switching it redraws what is already there.
+     */
+    static volatile boolean sRoma = false;
+    /** The two switches together, as LyricLine.under() and the layout read them. */
+    static final int BELOW_TRANS = 1, BELOW_ROMA = 2;
+
+    static int below() {
+        return (sTrans ? BELOW_TRANS : 0) | (sRoma ? BELOW_ROMA : 0);
+    }
     /** Where the lines settle in their column: left, centre or right, as the settings offer. */
     static final int ALIGN_LEFT = 0, ALIGN_CENTER = 1, ALIGN_RIGHT = 2;
     /**

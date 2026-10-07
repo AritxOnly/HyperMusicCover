@@ -42,8 +42,8 @@ object LyricParse {
     /**
      * The same again with a romanisation beside the translation - QQ Music, NetEase and Kuwo
      * ship one for Japanese and Korean songs, as a third timed text joined by time like the
-     * translation. It is shown in the translation's place, above the translation when there is
-     * both, and goes with the translation switch.
+     * translation. Kept on the line as its own field, drawn above the translation under a
+     * switch of its own (LockLyrics.sRoma).
      */
     @JvmStatic
     fun parse(body: String, translation: String?, roma: String?): List<LyricLine> {
@@ -54,10 +54,8 @@ object LyricParse {
         val best = assign(lines, ro)
         val out = ArrayList<LyricLine>(lines.size)
         for ((i, line) in lines.withIndex()) {
-            val r = best[i]
-            val merged = if (r == null) null else withRoma(r, line.text, line.translation)
-            out.add(if (merged == null || merged == line.translation) line
-                else withTranslation(line, merged))
+            val r = romaOf(best[i], line.text)
+            out.add(if (r == null || line.roma != null) line else withRoma(line, r))
         }
         return out
     }
@@ -93,26 +91,36 @@ object LyricParse {
         return best
     }
 
+    /** What borrow() took: the lines, how many of them gained each kind, and the account of it. */
+    class Lent(
+        @JvmField val lines: List<LyricLine>,
+        @JvmField val translations: Int,
+        @JvmField val romas: Int,
+        @JvmField val why: String,
+        /** The other copy is this song, whether or not it had anything to lend. */
+        @JvmField val matched: Boolean = false,
+    )
+
     /**
-     * Another copy's translations, hung on our own lines - or null when there is nothing to take.
+     * Another copy's translations or romanisations, hung on our own lines.
      *
-     * The player's own lyric is the best copy there is of the words and their timing, and on
-     * Apple Music it is often the only one with no translation: Apple asks for one in the
-     * system's language and has none for most Japanese and English songs, where the database
-     * and the catalogues do (#62 - the translations went when the lyric started coming from
-     * Apple itself). So the timing and the words stay ours, and only the translations move
-     * across, each to the one line nearest it (assign).
+     * The lyric on screen is the best copy there is of the words and their timing - the
+     * player's, the file's, the database's - and it is often one with no translation: Apple asks
+     * for one in the system's language and has none for most Japanese and English songs (#62),
+     * a file saved without one has none (#64), and a romanisation is rarer still. So the timing
+     * and the words stay ours, and only what was asked for moves across, each entry to the one
+     * line nearest it (assign), and only to a line without one of its own.
      *
      * Only from a copy of the same song: at least two lines in five of ours have to find the
      * same words, give or take punctuation and case, near them in the other copy - which also
-     * says how far that copy is shifted against ours. A translation that only repeats its line
-     * is not one.
+     * says how far that copy is shifted against ours. A translation or a romanisation that only
+     * repeats its line is not one.
      */
     @JvmStatic
-    fun borrowTranslations(own: List<LyricLine>, other: List<LyricLine>): List<LyricLine>? {
-        if (own.isEmpty() || other.isEmpty() || own.any { it.translation != null }) {
-            borrowWhy = "nothing to borrow into or from"
-            return null
+    fun borrow(own: List<LyricLine>, other: List<LyricLine>, translations: Boolean,
+               romas: Boolean): Lent {
+        if (own.isEmpty() || other.isEmpty() || !(translations || romas)) {
+            return Lent(own, 0, 0, "nothing to borrow into or from")
         }
         // Where the other copy's lines sit against ours. Two releases of a song are often
         // offset by a fraction of a second or more (another master, a longer intro), and the
@@ -134,30 +142,34 @@ object LyricParse {
             if (best != Int.MAX_VALUE) gaps.add(best)
         }
         if (gaps.size * 5 < own.size * 2) {
-            borrowWhy = "only ${gaps.size} of ${own.size} lines found in the other copy"
-            return null
+            return Lent(own, 0, 0, "only ${gaps.size} of ${own.size} lines found in the other copy")
         }
         gaps.sort()
         val shift = gaps[gaps.size / 2]
-        val entries = other.mapNotNull { o -> o.translation?.let { (o.start - shift) to it } }
-        if (entries.isEmpty()) {
-            borrowWhy = "the other copy has no translation"
-            return null
-        }
-        val best = assign(own, entries)
-        var taken = 0
+        val tr = if (!translations) null
+            else assign(own, other.mapNotNull { o -> o.translation?.let { (o.start - shift) to it } })
+        val ro = if (!romas) null
+            else assign(own, other.mapNotNull { o -> o.roma?.let { (o.start - shift) to it } })
+        var nt = 0
+        var nr = 0
         val out = own.mapIndexed { i, line ->
-            val t = best[i]
-            if (t == null || letters(t) == letters(line.text)) line
-            else { taken++; withTranslation(line, t) }
+            var l = line
+            val t = tr?.get(i)
+            if (t != null && l.translation == null && letters(t) != letters(l.text)) {
+                l = withTranslation(l, t)
+                nt++
+            }
+            val r = romaOf(ro?.get(i), l.text)
+            if (r != null && l.roma == null) {
+                l = withRoma(l, r)
+                nr++
+            }
+            l
         }
-        borrowWhy = "$taken of ${own.size} lines, the other copy ${shift}ms off"
-        return if (taken == 0) null else out
+        return Lent(if (nt + nr == 0) own else out, nt, nr,
+            "$nt translations, $nr romanisations into ${own.size} lines, the other copy ${shift}ms off",
+            true)
     }
-
-    /** What the last borrowTranslations decided, for the log. */
-    @JvmField
-    var borrowWhy = ""
 
     /** How far apart the two copies may be for a line to count towards their offset. */
     private const val OFFSET_SEARCH_MS = 5000
@@ -195,14 +207,34 @@ object LyricParse {
     }
 
     /**
-     * The romanisation over the translation, as the one text the renderer draws under a line.
-     * Left out when it only repeats the line - a catalogue "romanises" an English song into
-     * itself.
+     * Whether a lyric is in a script a romanisation says anything about: more Han, kana and
+     * hangul than Latin letters. Chinese counts - a Cantonese song's jyutping is one - and an
+     * English song does not, whose "romanisation" in a catalogue is the song again.
      */
-    internal fun withRoma(roma: String?, text: String, translation: String?): String? {
+    @JvmStatic
+    fun romanisable(lines: List<LyricLine>): Boolean {
+        var latin = 0
+        var other = 0
+        for (line in lines) {
+            for (ch in line.text) {
+                when {
+                    ch.code in 0x4E00..0x9FFF || ch.code in 0x3040..0x30FF
+                        || ch.code in 0xAC00..0xD7AF -> other++
+                    ch in 'a'..'z' || ch in 'A'..'Z' -> latin++
+                }
+            }
+        }
+        return other > latin
+    }
+
+    /**
+     * A romanisation fit to put under its line, or null - left out when it only repeats the
+     * line, as a catalogue "romanises" an English song into itself.
+     */
+    internal fun romaOf(roma: String?, text: String): String? {
         val r = roma?.trim()?.replace(Regex("\\s+"), " ")
-        if (r.isNullOrEmpty() || letters(r) == letters(text)) return translation
-        return if (translation.isNullOrBlank()) r else r + "\n" + translation.trim()
+        if (r.isNullOrEmpty() || letters(r) == letters(text)) return null
+        return r
     }
 
     private fun letters(s: String): String =
@@ -252,8 +284,16 @@ object LyricParse {
 
     /** The same line carrying a translation it did not come with. */
     private fun withTranslation(line: LyricLine, text: String): LyricLine {
-        val copy = LyricLine(line.text, text, line.start, line.end, line.opposite,
+        val copy = LyricLine(line.text, text, line.roma, line.start, line.end, line.opposite,
             line.sylStart, line.sylEnd, line.charEnd)
+        copy.bg = line.bg
+        return copy
+    }
+
+    /** The same line carrying a romanisation it did not come with. */
+    private fun withRoma(line: LyricLine, roma: String): LyricLine {
+        val copy = LyricLine(line.text, line.translation, roma, line.start, line.end,
+            line.opposite, line.sylStart, line.sylEnd, line.charEnd)
         copy.bg = line.bg
         return copy
     }
@@ -520,10 +560,10 @@ object LyricParse {
         if (n == 0) return null
         for (k in chars.indices) if (chars[k] > n) chars[k] = n
         closeUntimedTail(starts, ends, line.end, nextStart)
-        // The file's own romanisation - TTML's x-roman, a KRC's language block - joins the
-        // translation the same way a separately shipped one does.
+        // The file's own romanisation - TTML's x-roman, a KRC's language block - kept the same
+        // way a separately shipped one is.
         val shown = text.substring(0, n)
-        return LyricLine(shown, withRoma(line.phonetic, shown, line.translation), line.start,
+        return LyricLine(shown, line.translation, romaOf(line.phonetic, shown), line.start,
             line.end, line.alignment == KaraokeAlignment.End, starts, ends, chars)
     }
 
@@ -647,7 +687,8 @@ object LyricParse {
         if (cut >= line.text.length) return null
         val text = line.text.substring(cut)
         val result = if (line.sylStart == null) {
-            LyricLine(text, line.translation, line.start, line.end, opposite, null, null, null)
+            LyricLine(text, line.translation, line.roma, line.start, line.end, opposite,
+                null, null, null)
         } else {
             // Syllables that lay wholly inside the prefix go with it; the rest shift left.
             val starts = ArrayList<Int>()
@@ -661,7 +702,7 @@ object LyricParse {
                 chars.add(e)
             }
             if (chars.isEmpty()) return null
-            LyricLine(text, line.translation, line.start, line.end, opposite,
+            LyricLine(text, line.translation, line.roma, line.start, line.end, opposite,
                 starts.toIntArray(), ends.toIntArray(), chars.toIntArray())
         }
         result.bg = line.bg

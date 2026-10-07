@@ -331,14 +331,15 @@ object LyriconSource {
                 val s = starts.toIntArray()
                 val e = ends.toIntArray()
                 LyricParse.closeUntimedTail(s, e, line.end.toInt(), nextStart)
-                built = LyricLine(sb.substring(0, n), line.translation, line.begin.toInt(),
+                built = LyricLine(sb.substring(0, n), line.translation,
+                    LyricParse.romaOf(line.roma, sb.substring(0, n)), line.begin.toInt(),
                     line.end.toInt(), line.isAlignedRight, s, e, chars.toIntArray())
             }
         }
         if (built == null) {
             if (text.isEmpty()) return null
-            built = LyricLine(text, line.translation, line.begin.toInt(), line.end.toInt(),
-                line.isAlignedRight, null, null, null)
+            built = LyricLine(text, line.translation, LyricParse.romaOf(line.roma, text),
+                line.begin.toInt(), line.end.toInt(), line.isAlignedRight, null, null, null)
         }
         // The background vocal, which the renderer hangs under the line rather than beside it.
         val second = line.secondary?.trim()
