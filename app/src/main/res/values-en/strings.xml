@@ -173,6 +173,7 @@
     <string name="update_failed">Update failed: %1$s</string>
     <string name="update_status_title">Update</string>
     <string name="update_no_installer">No app on this device can install an APK - install it from a file manager</string>
+    <string name="update_saved_to_downloads">Nothing could open the package, so it was saved as Download/%1$s - install it from a file manager</string>
     <string name="update_confirm">Update</string>
     <string name="update_not_ours">The download was not signed by this project; discarded</string>
     <string name="update_latest">Already on the latest version</string>

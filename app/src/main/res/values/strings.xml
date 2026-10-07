@@ -181,6 +181,7 @@
     <string name="update_failed">更新失败：%1$s</string>
     <string name="update_status_title">更新</string>
     <string name="update_no_installer">没有找到可以安装 APK 的应用，请在文件管理器里手动安装</string>
+    <string name="update_saved_to_downloads">没有应用能直接打开安装包，已保存到「下载/%1$s」，请在文件管理器里安装</string>
     <string name="update_confirm">更新</string>
     <string name="update_not_ours">更新包的签名不是本项目的，已丢弃</string>
     <string name="update_latest">已经是最新版本</string>
