@@ -45,7 +45,7 @@ internal object MiniPlayerScene {
                     before(chain.args)
                     chain.proceed()
                 }
-            }.onFailure { Xp.log("MCMini: scene hook $methodName unavailable: $it") }
+            }.onFailure { Xp.w("MCMini: scene hook $methodName unavailable: $it") }
         }
         hook("com.android.keyguard.injector.KeyguardViewMediatorInjector", "keyguardGoingAway") {
             setKeyguardGoingAway(true)
@@ -71,7 +71,7 @@ internal object MiniPlayerScene {
                 if (state == "COLLAPSED") setControlCenterActive(false)
                 result
             }
-        }.onFailure { Xp.log("MCMini: control centre scene hook unavailable: $it") }
+        }.onFailure { Xp.w("MCMini: control centre scene hook unavailable: $it") }
     }
 
     private fun setEditorActive(active: Boolean) {

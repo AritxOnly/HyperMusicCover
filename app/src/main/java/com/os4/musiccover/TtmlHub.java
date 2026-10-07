@@ -75,7 +75,7 @@ final class TtmlHub {
             Xp.log("[" + TAG + "] " + kind + " " + id + " -> " + e.id + " (" + ttml.length + " bytes)");
             return new String(ttml, "UTF-8");
         } catch (Throwable t) {
-            Xp.log("[" + TAG + "] lookup failed: " + t);
+            Xp.w("[" + TAG + "] lookup failed: " + t);
             return null;
         }
     }

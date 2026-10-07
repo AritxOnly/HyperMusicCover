@@ -210,7 +210,7 @@ final class ShadeBackdrop {
             try {
                 WindowManager.LayoutParams.class.getMethod("setTrustedOverlay").invoke(lp);
             } catch (Throwable t) {
-                Xp.log(TAG + "setTrustedOverlay unavailable, the backdrop is capped at 0.8: " + t);
+                Xp.w(TAG + "setTrustedOverlay unavailable, the backdrop is capped at 0.8: " + t);
             }
 
             ((WindowManager) ctx.getSystemService(Context.WINDOW_SERVICE)).addView(v, lp);
@@ -417,7 +417,7 @@ final class ShadeBackdrop {
                         EGL14.eglMakeCurrent(mDisplay, mSurface, mSurface, mContext);
                         if (mRunning) Choreographer.getInstance().postFrameCallback(Renderer.this);
                     } catch (Throwable t) {
-                        Xp.log(TAG + "GL surface failed: " + t);
+                        Xp.w(TAG + "GL surface failed: " + t);
                     }
                 }
             });

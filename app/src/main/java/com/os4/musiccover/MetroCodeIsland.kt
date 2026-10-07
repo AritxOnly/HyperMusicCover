@@ -194,7 +194,7 @@ internal object MetroCodeIsland {
                 out
             }
         } catch (t: Throwable) {
-            Xp.log(TAG + "application hook failed: $t")
+            Xp.w(TAG + "application hook failed: $t")
         }
         try {
             // Both overloads, (Uri, ...) and (String authority, ...): the method is the second.
@@ -213,7 +213,7 @@ internal object MetroCodeIsland {
                 out
             }
         } catch (t: Throwable) {
-            Xp.log(TAG + "provider hook failed: $t")
+            Xp.w(TAG + "provider hook failed: $t")
         }
         try {
             Xp.hookAll(Xp.findClass(ROUTER, cl), "onCreate") { chain ->
@@ -223,7 +223,7 @@ internal object MetroCodeIsland {
                 out
             }
         } catch (t: Throwable) {
-            Xp.log(TAG + "router hook failed: $t")
+            Xp.w(TAG + "router hook failed: $t")
         }
     }
 
@@ -242,7 +242,7 @@ internal object MetroCodeIsland {
                     }
                 } catch (t: Throwable) {
                     lastError = t.toString()
-                    Xp.log(TAG + "${i.action} failed: $t")
+                    Xp.w(TAG + "${i.action} failed: $t")
                 }
             }
         }
@@ -784,7 +784,7 @@ internal object MetroCodeIsland {
                 .putExtra(EXTRA_INTENT_OPTION, card))
             Xp.log(TAG + "tap: handed to the widget")
         } catch (t: Throwable) {
-            Xp.log(TAG + "tap: the widget's way failed ($t), opening it ourselves")
+            Xp.w(TAG + "tap: the widget's way failed ($t), opening it ourselves")
             val s = shown ?: return
             opener(a, s)?.let { runCatching { a.startActivity(it) } }
         }

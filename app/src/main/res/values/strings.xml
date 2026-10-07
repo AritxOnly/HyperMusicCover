@@ -51,6 +51,11 @@
     <string name="export_settings_summary">将当前设置保存为 JSON 文件</string>
     <string name="import_settings">导入设置</string>
     <string name="import_settings_summary">从 JSON 文件导入设置</string>
+    <string name="settings_debug">调试</string>
+    <string name="log_level">日志等级</string>
+    <string name="log_level_summary">反馈问题前切到「详细」，再复现一次</string>
+    <string name="log_level_normal">普通</string>
+    <string name="log_level_verbose">详细</string>
     <string name="import_success">导入成功，即将重启应用</string>
     <string name="import_failed">导入失败，文件格式不正确</string>
     <string name="export_success">导出成功</string>

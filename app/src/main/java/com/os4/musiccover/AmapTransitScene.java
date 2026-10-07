@@ -1671,7 +1671,7 @@ final class AmapTransitScene implements ImmersiveScene {
                     return;
                 } catch (Throwable t) {
                     sKeyFailed = true;
-                    Xp.log(TAG + "landmark key unavailable, drawn as it is: " + t);
+                    Xp.w(TAG + "landmark key unavailable, drawn as it is: " + t);
                 }
             }
             mArt.setBounds(Math.round(box.left), Math.round(box.top), Math.round(box.left) + bw,

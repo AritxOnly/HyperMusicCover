@@ -622,7 +622,7 @@ final class HyperTweaks {
                         try {
                             showDepth.invoke(panel);
                         } catch (Throwable t) {
-                            Xp.log(TAG + "depth video hand-back failed: " + t);
+                            Xp.w(TAG + "depth video hand-back failed: " + t);
                         }
                     });
                 }

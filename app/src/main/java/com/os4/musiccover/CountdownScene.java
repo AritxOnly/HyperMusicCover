@@ -428,7 +428,7 @@ final class CountdownScene implements ImmersiveScene {
                 String end = clockString("timer_end_island");
                 if (end != null) mEndText = end;
             } catch (Throwable t) {
-                Xp.log(TAG + "clock app resources unavailable: " + t);
+                Xp.w(TAG + "clock app resources unavailable: " + t);
             }
             mDigits.setTypeface(digits != null ? digits : Typeface.create("sans-serif", Typeface.BOLD));
             mDuration.setTypeface(Typeface.create("sans-serif", Typeface.NORMAL));
@@ -951,7 +951,7 @@ final class CountdownScene implements ImmersiveScene {
                         made = CoverCompose.blur(cropped, 64, 4, 3);
                     }
                 } catch (Throwable t) {
-                    Xp.log(TAG + "wallpaper blur failed: " + t);
+                    Xp.w(TAG + "wallpaper blur failed: " + t);
                 }
                 final android.graphics.Bitmap done = made;
                 final long ms = SystemClock.uptimeMillis() - t0;

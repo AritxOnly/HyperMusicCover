@@ -287,7 +287,7 @@ public class WallpaperProbe {
             Xp.log(TAG + "no art here, asked SystemUI for it (" + why + " "
                     + sAsks + "/" + ASK_TRIES + ")");
         } catch (Throwable t) {
-            Xp.log(TAG + "askForArt failed: " + t);
+            Xp.w(TAG + "askForArt failed: " + t);
         }
     }
 
@@ -769,7 +769,7 @@ public class WallpaperProbe {
             });
             Xp.log(TAG + "texture dimension hook installed");
         } catch (Throwable t) {
-            Xp.log(TAG + "texture dimension hook failed: " + t);
+            Xp.w(TAG + "texture dimension hook failed: " + t);
         }
 
         // Measured: of the ~380ms a track change took, 210ms was the OEM's own getBitmap()
@@ -803,7 +803,7 @@ public class WallpaperProbe {
             });
             Xp.log(TAG + "keyguard getBitmap short-circuit installed");
         } catch (Throwable t) {
-            Xp.log(TAG + "getBitmap short-circuit failed: " + t);
+            Xp.w(TAG + "getBitmap short-circuit failed: " + t);
         }
 
         // Runtime refresh. ImageEngineImpl.U() ("preRender", on the GL thread) re-runs
@@ -831,7 +831,7 @@ public class WallpaperProbe {
             });
             Xp.log(TAG + "keyguard engine hooked");
         } catch (Throwable t) {
-            Xp.log(TAG + "keyguard engine hook failed: " + t);
+            Xp.w(TAG + "keyguard engine hook failed: " + t);
         }
 
         // The DESKTOP engine, found without knowing its name.
@@ -858,7 +858,7 @@ public class WallpaperProbe {
                 Xp.log(TAG + "engine base constructors hooked");
             }
         } catch (Throwable t) {
-            Xp.log(TAG + "engine base hook failed: " + t);
+            Xp.w(TAG + "engine base hook failed: " + t);
         }
 
         // The live lock wallpaper's engine, its player and its path. See hookVideoEngines().
@@ -877,7 +877,7 @@ public class WallpaperProbe {
             });
             Xp.log(TAG + "frosting hooked");
         } catch (Throwable t) {
-            Xp.log(TAG + "frosting hook failed: " + t);
+            Xp.w(TAG + "frosting hook failed: " + t);
         }
 
         // The OEM's darkening decision, kept for the original and withheld from the cover. See
@@ -915,7 +915,7 @@ public class WallpaperProbe {
             });
             Xp.log(TAG + "darken hooked");
         } catch (Throwable t) {
-            Xp.log(TAG + "darken hook failed, the cover stays dimmed where the OEM dims: " + t);
+            Xp.w(TAG + "darken hook failed, the cover stays dimmed where the OEM dims: " + t);
         }
 
         // The GPU crossfade's frames. Declared on the base class, which the keyguard renderer
@@ -939,7 +939,7 @@ public class WallpaperProbe {
                     drawGpuFade(chain.getThisObject(), f);
                 } catch (Throwable t) {
                     sGpuFadeBroken = true;
-                    Xp.log(TAG + "gpu fade draw failed, using the CPU fade from now on: "
+                    Xp.w(TAG + "gpu fade draw failed, using the CPU fade from now on: "
                             + Log.getStackTraceString(t));
                     if (f != null) abortGpuFade(f);
                 }
@@ -948,7 +948,7 @@ public class WallpaperProbe {
             sDrawHooked = true;
             Xp.log(TAG + "draw hooked for the gpu fade");
         } catch (Throwable t) {
-            Xp.log(TAG + "draw hook failed, the fade stays on the CPU: " + t);
+            Xp.w(TAG + "draw hook failed, the fade stays on the CPU: " + t);
         }
 
         Xp.hook(Xp.findMethodExact(Application.class, "onCreate"), chain -> {
@@ -956,7 +956,7 @@ public class WallpaperProbe {
             try {
                 register((Application) chain.getThisObject());
             } catch (Throwable t) {
-                Xp.log(TAG + "register failed: " + t);
+                Xp.w(TAG + "register failed: " + t);
             }
             return result;
         });
@@ -1171,7 +1171,7 @@ public class WallpaperProbe {
                 throw new java.io.IOException("rename failed");
             }
         } catch (Throwable t) {
-            Xp.log(TAG + "saveArt failed: " + t);
+            Xp.w(TAG + "saveArt failed: " + t);
         }
     }
 
@@ -1795,7 +1795,7 @@ public class WallpaperProbe {
                 if (!ProbeGuard.admit(this, i)) return;
                 String op = i.getStringExtra("op");
                 byte[] carried = i.getByteArrayExtra("jpg");
-                Xp.log(TAG + "recv op=" + op
+                Xp.d(TAG + "recv op=" + op
                         + (carried == null ? " " + i.getExtras() : " jpg=" + carried.length + "B"));
                 try {
                     if (i.hasExtra("video")) noteLockWallpaper(i.getBooleanExtra("video", false));
@@ -1967,7 +1967,7 @@ public class WallpaperProbe {
                                 sCurrentArtChecksum = 0;
                             }
                             if (b == null) {
-                                Xp.log(TAG + "art decode failed (jpg="
+                                Xp.w(TAG + "art decode failed (jpg="
                                         + (jpg == null ? "null" : jpg.length + "B")
                                         + " file=" + file + ")");
                             } else {
@@ -2053,7 +2053,7 @@ public class WallpaperProbe {
                                 + " | bmp --es name <fqcn>");
                     }
                 } catch (Throwable t) {
-                    Xp.log(TAG + "op failed: " + Log.getStackTraceString(t));
+                    Xp.w(TAG + "op failed: " + Log.getStackTraceString(t));
                 }
             }
         }
@@ -2240,7 +2240,7 @@ public class WallpaperProbe {
             out.putExtra("composes", true);
             ProbeGuard.send(c, out);
         } catch (Throwable t) {
-            Xp.log(TAG + "hello failed: " + t);
+            Xp.w(TAG + "hello failed: " + t);
         }
     }
 
@@ -2322,7 +2322,7 @@ public class WallpaperProbe {
             out.putExtra("op", "wpart");
             ProbeGuard.send(c, out);
         } catch (Throwable t) {
-            Xp.log(TAG + "wpart failed: " + t);
+            Xp.w(TAG + "wpart failed: " + t);
         }
     }
 
@@ -2389,7 +2389,7 @@ public class WallpaperProbe {
                     sTmFrosted = SystemClock.uptimeMillis();
                     saveSourceLater(c, s, cardMode);
                 } catch (Throwable t) {
-                    Xp.log(TAG + "composing from the source failed: " + t);
+                    Xp.w(TAG + "composing from the source failed: " + t);
                     return;
                 }
                 new Handler(Looper.getMainLooper()).post(new Runnable() {
@@ -2425,7 +2425,7 @@ public class WallpaperProbe {
                     if (cardMode) marker.createNewFile();
                     else marker.delete();
                 } catch (Throwable t) {
-                    Xp.log(TAG + "saving the source failed: " + t);
+                    Xp.w(TAG + "saving the source failed: " + t);
                 }
             }
         }, "mc-src-save").start();
@@ -2659,7 +2659,7 @@ public class WallpaperProbe {
         try {
             Xp.callMethod(eng, "u");
         } catch (Throwable t) {
-            Xp.log(TAG + "reload: u() failed: " + t);
+            Xp.w(TAG + "reload: u() failed: " + t);
         }
         // Resolved, never assumed. On the multi-display build this flag is called `w`, and the
         // name `b` that it has on 7.0.7 belongs there to an int holding `which` - so writing `b`
@@ -2673,7 +2673,7 @@ public class WallpaperProbe {
             try {
                 Xp.setBooleanField(eng, flag, true);
             } catch (Throwable t) {
-                Xp.log(TAG + "reload: the pending-surface field '" + flag + "' failed: " + t);
+                Xp.w(TAG + "reload: the pending-surface field '" + flag + "' failed: " + t);
             }
         }
         if (frameRequest(eng, keepAlive)) {
@@ -3076,7 +3076,7 @@ public class WallpaperProbe {
                 Xp.callMethod(p, "seekto", 0.0f, ms, 0);
             }
         } catch (Throwable t) {
-            Xp.log(TAG + "seek failed: " + t);
+            Xp.w(TAG + "seek failed: " + t);
         }
     }
 
@@ -3086,7 +3086,7 @@ public class WallpaperProbe {
             if (isMediaPlayer(p)) ((android.media.MediaPlayer) p).pause();
             else Xp.callMethod(p, "pause");
         } catch (Throwable t) {
-            Xp.log(TAG + "pause failed: " + t);
+            Xp.w(TAG + "pause failed: " + t);
         }
     }
 
@@ -3157,7 +3157,7 @@ public class WallpaperProbe {
                 Xp.log(TAG + "video engine hooked on " + cn.substring(cn.lastIndexOf('.') + 1)
                         + " (" + n + " calls)");
             } catch (Throwable t) {
-                Xp.log(TAG + "video engine hook failed on " + cn + ": " + t);
+                Xp.w(TAG + "video engine hook failed on " + cn + ": " + t);
             }
         }
         // And from the framework's side: every wallpaper Engine is told its visibility by
@@ -3174,7 +3174,7 @@ public class WallpaperProbe {
             });
             Xp.log(TAG + "UniversalEngine.onVisibilityChanged hooked");
         } catch (Throwable t) {
-            Xp.log(TAG + "UniversalEngine.onVisibilityChanged hook failed: " + t);
+            Xp.w(TAG + "UniversalEngine.onVisibilityChanged hook failed: " + t);
         }
         java.util.List<String> getters = new java.util.ArrayList<>();
         java.util.Collections.addAll(getters, CLS_VIDEO_ENGINE_LOCK);
@@ -3183,7 +3183,7 @@ public class WallpaperProbe {
             try {
                 hookVideoPathGetter(Xp.findClass(cn, sCl));
             } catch (Throwable t) {
-                Xp.log(TAG + "video path getter hook failed on " + cn + ": " + t);
+                Xp.w(TAG + "video path getter hook failed on " + cn + ": " + t);
             }
         }
         hookPlayerDataSource();
@@ -3424,7 +3424,7 @@ public class WallpaperProbe {
                 Xp.log(TAG + "lock player data source hooked: " + impl.getSimpleName() + "." + setter);
             }
         } catch (Throwable t) {
-            Xp.log(TAG + "lock player data source hook failed: " + t);
+            Xp.w(TAG + "lock player data source hook failed: " + t);
         }
     }
 
@@ -3441,13 +3441,13 @@ public class WallpaperProbe {
             Xp.hookAll(Xp.findClass(CLS_FASTPLAYER, sCl), "setLoop", LOOP_HOOKER);
             Xp.log(TAG + "FastPlayer.setLoop hooked (lock player only)");
         } catch (Throwable t) {
-            Xp.log(TAG + "FastPlayer.setLoop hook failed: " + t);
+            Xp.w(TAG + "FastPlayer.setLoop hook failed: " + t);
         }
         try {
             Xp.hookAll(android.media.MediaPlayer.class, "setLooping", LOOP_HOOKER);
             Xp.log(TAG + "MediaPlayer.setLooping hooked (lock player only)");
         } catch (Throwable t) {
-            Xp.log(TAG + "MediaPlayer.setLooping hook failed: " + t);
+            Xp.w(TAG + "MediaPlayer.setLooping hook failed: " + t);
         }
     }
 
@@ -3662,7 +3662,7 @@ public class WallpaperProbe {
                         return;
                     }
                     if (!ok || !videoFile.exists() || videoFile.length() == 0) {
-                        Xp.log(TAG + "videoWindowTakeover: cover video encoding failed");
+                        Xp.w(TAG + "videoWindowTakeover: cover video encoding failed");
                         tellSystemUi("videoreload", "the cover video could not be encoded");
                         return;
                     }
@@ -3794,7 +3794,7 @@ public class WallpaperProbe {
                 }
             }
         } catch (Throwable t) {
-            Xp.log(TAG + "crash guard check failed: " + t);
+            Xp.w(TAG + "crash guard check failed: " + t);
         }
     }
 
@@ -3811,7 +3811,7 @@ public class WallpaperProbe {
             out.write(takeoverKey(eng).getBytes("UTF-8"));
             out.close();
         } catch (Throwable t) {
-            Xp.log(TAG + "crash guard mark failed: " + t);
+            Xp.w(TAG + "crash guard mark failed: " + t);
         }
     }
 
@@ -3843,7 +3843,7 @@ public class WallpaperProbe {
             try {
                 Xp.callMethod(eng, "onWallpaperUpdate", "video", isDesktopEngine(eng) ? 1 : 2);
             } catch (Throwable t) {
-                Xp.log(TAG + "reload failed: " + t);
+                Xp.w(TAG + "reload failed: " + t);
                 tellSystemUi("videoreload", "the reload failed");
                 return;
             }
@@ -4010,7 +4010,7 @@ public class WallpaperProbe {
                                 Xp.callMethod(self, "seekto", 0.0f, target, 0);
                                 sPreSeeked = target;
                             } catch (Throwable t) {
-                                Xp.log(TAG + "seek before start failed: " + t);
+                                Xp.w(TAG + "seek before start failed: " + t);
                             }
                         }
                     }
@@ -4019,7 +4019,7 @@ public class WallpaperProbe {
             });
             Xp.log(TAG + "FastPlayer.start hooked (restore seek before start)");
         } catch (Throwable t) {
-            Xp.log(TAG + "FastPlayer.start hook failed: " + t);
+            Xp.w(TAG + "FastPlayer.start hook failed: " + t);
         }
         // The plain shape's player, the same story: its reload is a reset MediaPlayer, and the
         // quarter second from its frame 0 to the seek was frame 0 in every card.
@@ -4038,7 +4038,7 @@ public class WallpaperProbe {
                                         android.media.MediaPlayer.SEEK_CLOSEST);
                                 sPreSeeked = target;
                             } catch (Throwable t) {
-                                Xp.log(TAG + "seek before start failed: " + t);
+                                Xp.w(TAG + "seek before start failed: " + t);
                             }
                         }
                     }
@@ -4047,7 +4047,7 @@ public class WallpaperProbe {
             });
             Xp.log(TAG + "MediaPlayer.start hooked (restore seek before start)");
         } catch (Throwable t) {
-            Xp.log(TAG + "MediaPlayer.start hook failed: " + t);
+            Xp.w(TAG + "MediaPlayer.start hook failed: " + t);
         }
     }
 
@@ -4122,7 +4122,7 @@ public class WallpaperProbe {
             ProbeGuard.send(c, out);
             Xp.log(TAG + "told SystemUI: " + op + " (" + why + ")");
         } catch (Throwable t) {
-            Xp.log(TAG + "tellSystemUi(" + op + ") failed: " + t);
+            Xp.w(TAG + "tellSystemUi(" + op + ") failed: " + t);
         }
     }
 
@@ -4143,7 +4143,7 @@ public class WallpaperProbe {
             ProbeGuard.send(c, out);
             Xp.log(TAG + "told SystemUI: blurshown at " + sBlurSeq + " (" + why + ")");
         } catch (Throwable t) {
-            Xp.log(TAG + "blurshown failed: " + t);
+            Xp.w(TAG + "blurshown failed: " + t);
         }
     }
 
@@ -4312,7 +4312,7 @@ public class WallpaperProbe {
         try {
             fitted = centerCrop(src, w, h);
         } catch (Throwable t) {
-            Xp.log(TAG + "screen-size fit failed: " + t);
+            Xp.w(TAG + "screen-size fit failed: " + t);
             return null;
         }
         // Nothing is recycled here. The old cut used to be freed on the spot, which is right

@@ -829,7 +829,7 @@ final class LyricSource {
                 try {
                     borrow(gen, pkg, ctx, id, dir, q, r, cb);
                 } catch (Throwable t) {
-                    Xp.log("[MCLyric] borrowing a translation failed: " + t);
+                    Xp.w("[MCLyric] borrowing a translation failed: " + t);
                 }
             }
         }, "MCLyricSource").start();
@@ -1276,7 +1276,7 @@ final class LyricSource {
             r.why = r.lines.size() + " lines from the session's own lyricInfo (" + used
                     + (tr != null ? " + translation" : "") + ")";
         } catch (Throwable t) {
-            Xp.log("[MCLyric] lyricInfo parse failed: " + t);
+            Xp.w("[MCLyric] lyricInfo parse failed: " + t);
             r.lines = java.util.Collections.emptyList();
             r.why = "lyricInfo parse error";
         }
@@ -1305,7 +1305,7 @@ final class LyricSource {
             r.source = SRC_LYRICON;
             r.why = lines.size() + " lines from the Lyricon bridge";
         } catch (Throwable t) {
-            Xp.log("[MCLyric] the Lyricon bridge failed: " + t);
+            Xp.w("[MCLyric] the Lyricon bridge failed: " + t);
             r.why = join(before, "Lyricon error");
         }
     }
@@ -1332,7 +1332,7 @@ final class LyricSource {
             r.source = SRC_LOCAL;
             r.why = lines.size() + " lines from " + f.how;
         } catch (Throwable t) {
-            Xp.log("[MCLyric] local lyric failed: " + t);
+            Xp.w("[MCLyric] local lyric failed: " + t);
         }
     }
 
@@ -1364,7 +1364,7 @@ final class LyricSource {
                     : r.lines.size() + " lines from " + dir;
             if (!r.lines.isEmpty()) r.source = SRC_DATABASE;
         } catch (Throwable t) {
-            Xp.log("[MCLyric] database lookup failed: " + t);
+            Xp.w("[MCLyric] database lookup failed: " + t);
             r.why = join(before, "database error");
         }
     }
@@ -1382,7 +1382,7 @@ final class LyricSource {
                     : r.lines.size() + " lines from the TTML Hub";
             if (!r.lines.isEmpty()) r.source = SRC_HUB;
         } catch (Throwable t) {
-            Xp.log("[MCLyric] TTML Hub lookup failed: " + t);
+            Xp.w("[MCLyric] TTML Hub lookup failed: " + t);
             r.why = "TTML Hub error";
         }
     }
@@ -1402,7 +1402,7 @@ final class LyricSource {
             }
             take(f, r, before);
         } catch (Throwable t) {
-            Xp.log("[MCLyric] the by-name lookup failed: " + t);
+            Xp.w("[MCLyric] the by-name lookup failed: " + t);
             r.why = join(before, "by-name error");
         }
     }
@@ -1418,7 +1418,7 @@ final class LyricSource {
             }
             take(f, r, before);
         } catch (Throwable t) {
-            Xp.log("[MCLyric] the second net failed: " + t);
+            Xp.w("[MCLyric] the second net failed: " + t);
             r.why = join(before, "second net error");
         }
     }
@@ -1577,7 +1577,7 @@ final class LyricSource {
                     + "ms (" + dir + "/" + id + ")");
             return new Answer(FOUND, body);
         } catch (Throwable t) {
-            Xp.log("[MCLyric] " + mirror[0] + " failed after "
+            Xp.w("[MCLyric] " + mirror[0] + " failed after "
                     + (android.os.SystemClock.uptimeMillis() - started) + "ms: " + t);
             return new Answer(UNREACHABLE, null);
         } finally {

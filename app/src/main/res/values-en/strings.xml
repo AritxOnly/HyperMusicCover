@@ -51,6 +51,11 @@
     <string name="export_settings_summary">Save current settings as JSON file</string>
     <string name="import_settings">Import Settings</string>
     <string name="import_settings_summary">Import settings from JSON file</string>
+    <string name="settings_debug">Debugging</string>
+    <string name="log_level">Log level</string>
+    <string name="log_level_summary">Switch to Verbose and reproduce the problem before reporting it</string>
+    <string name="log_level_normal">Normal</string>
+    <string name="log_level_verbose">Verbose</string>
     <string name="import_success">Import successful, restarting app</string>
     <string name="import_failed">Import failed, invalid file format</string>
     <string name="export_success">Export successful</string>

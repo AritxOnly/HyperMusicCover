@@ -127,6 +127,10 @@ dependencies {
     // Modern Xposed API. compileOnly on purpose: the framework provides it at runtime and
     // packaging it would shadow the real one. Zero bytes in the APK either way.
     compileOnly("io.github.libxposed:api:102.0.0")
+    // The app's side of it: LSPosed binds this to the app, which then writes the remote
+    // preferences every hooked process reads (the log level) and reads which packages the
+    // module is actually enabled in (重启全部作用域). Only the app uses it.
+    implementation("io.github.libxposed:service:102.0.0")
 
     // The lyric parser. Its classes end up in the same dex as Main.java's, so they are also
     // loaded into SystemUI when the module is - see LyricProbe, which is why it has to stay

@@ -71,7 +71,7 @@ final class Http {
             }
             return new Reply(read(conn.getInputStream()), 200);
         } catch (Throwable t) {
-            Xp.log("[" + tag + "] request failed after "
+            Xp.w("[" + tag + "] request failed after "
                     + (android.os.SystemClock.uptimeMillis() - started) + "ms: " + t);
             // Only a connection that failed is torn down; a healthy one stays pooled.
             if (conn != null) {
@@ -119,7 +119,7 @@ final class Http {
             }
             return new Raw(bytes(conn.getInputStream()), 200);
         } catch (Throwable t) {
-            Xp.log("[" + tag + "] request failed after "
+            Xp.w("[" + tag + "] request failed after "
                     + (android.os.SystemClock.uptimeMillis() - started) + "ms: " + t);
             if (conn != null) {
                 try {

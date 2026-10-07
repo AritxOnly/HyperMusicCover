@@ -189,7 +189,7 @@ internal object AmapTransitIsland {
                 chain.proceed()
             }
         } catch (t: Throwable) {
-            Xp.log(TAG + "notification hooks failed: $t")
+            Xp.w(TAG + "notification hooks failed: $t")
         }
         // The walk button's 高德, as it comes to the front: a new intent to a running page, or
         // the page an intent started. The walk is asked for once it is resumed.

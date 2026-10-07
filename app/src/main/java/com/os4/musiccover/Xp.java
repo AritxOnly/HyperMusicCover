@@ -1,5 +1,6 @@
 package com.os4.musiccover;
 
+import android.content.SharedPreferences;
 import android.util.Log;
 
 import java.lang.reflect.Constructor;
@@ -34,6 +35,7 @@ final class Xp {
 
     static void attach(XposedInterface api) {
         sApi = api;
+        if (!sLevelAsked) readLevel(api);
     }
 
     static XposedInterface api() {
@@ -44,17 +46,73 @@ final class Xp {
 
     // ---------------------------------------------------------------- logging
 
+    /** LogLevel.NORMAL or VERBOSE, as the app last set it; followed live. */
+    private static volatile int sLevel = LogLevel.NORMAL;
+    private static volatile boolean sLevelAsked;
+    /**
+     * Held for the listener's sake: a SharedPreferences may keep its listeners weakly, and one
+     * collected would leave this process on the level it started with.
+     */
+    private static SharedPreferences sLevelPrefs;
+    private static final SharedPreferences.OnSharedPreferenceChangeListener LEVEL_LISTENER =
+            (prefs, key) -> {
+                if (key == null || LogLevel.KEY.equals(key)) {
+                    sLevel = prefs.getInt(LogLevel.KEY, LogLevel.NORMAL);
+                }
+            };
+
+    /**
+     * Once per process. A framework without remote preferences, or a group the app never wrote,
+     * leaves the level at NORMAL - the module logs as a fresh install does.
+     */
+    private static synchronized void readLevel(XposedInterface api) {
+        if (sLevelAsked) return;
+        sLevelAsked = true;
+        try {
+            SharedPreferences prefs = api.getRemotePreferences(LogLevel.GROUP);
+            sLevel = prefs.getInt(LogLevel.KEY, LogLevel.NORMAL);
+            prefs.registerOnSharedPreferenceChangeListener(LEVEL_LISTENER);
+            sLevelPrefs = prefs;
+        } catch (Throwable t) {
+            write(Log.WARN, "[MCLog] log level unavailable, logging at normal: " + t);
+        }
+    }
+
+    /** Whether 详细 is on: for a caller whose message costs something to build. */
+    static boolean verbose() {
+        return sLevel >= LogLevel.VERBOSE;
+    }
+
     /**
      * The framework's log, which is where LSPosed collects module output. Tagged per line the
      * way the old XposedBridge.log was, so `logcat | grep MCProbe` still works.
      */
     static void log(String msg) {
+        write(Log.INFO, msg);
+    }
+
+    /**
+     * Only with 详细 on. Still written at INFO: logd on these phones keeps nothing under it
+     * (persist.logd.limit), so a DEBUG line would be asked for and then dropped. The level is
+     * decided here, not by logd.
+     */
+    static void d(String msg) {
+        if (sLevel < LogLevel.VERBOSE) return;
+        write(Log.INFO, msg);
+    }
+
+    /** Something that did not work: a hook, a lookup, a request. Always written. */
+    static void w(String msg) {
+        write(Log.WARN, msg);
+    }
+
+    private static void write(int priority, String msg) {
         remember(msg);
         XposedInterface api = sApi;
         if (api != null) {
-            api.log(Log.INFO, "LSPosed-Bridge", msg);
+            api.log(priority, "LSPosed-Bridge", msg);
         } else {
-            Log.i("LSPosed-Bridge", msg);
+            Log.println(priority, "LSPosed-Bridge", msg);
         }
     }
 

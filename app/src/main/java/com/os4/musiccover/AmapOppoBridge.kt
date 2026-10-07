@@ -91,7 +91,7 @@ internal object AmapOppoBridge {
             }
             Xp.log(TAG + "standing in for $AUTHORITY")
         } catch (t: Throwable) {
-            Xp.log(TAG + "hooks failed: " + t)
+            Xp.w(TAG + "hooks failed: " + t)
         }
         try {
             val service = Xp.findClass(WEARABLE_SERVICE, cl)
@@ -126,7 +126,7 @@ internal object AmapOppoBridge {
                 }
             }
         } catch (t: Throwable) {
-            Xp.log(TAG + "$method failed: $t")
+            Xp.w(TAG + "$method failed: $t")
             result(CODE_UNSUPPORTED, null)
         }
         return Bundle().apply { putString("result", result.toString()) }
@@ -181,7 +181,7 @@ internal object AmapOppoBridge {
             oppoCard = Xp.findClass(OPPO_CARD, cl)
             hookOppoCard()
         } catch (t: Throwable) {
-            Xp.log(TAG + "OPPO card hooks failed: $t")
+            Xp.w(TAG + "OPPO card hooks failed: $t")
         }
         try {
             val table = Xp.findClass(BIZ_TABLE, cl)
@@ -225,7 +225,7 @@ internal object AmapOppoBridge {
             }
             Xp.log(TAG + "OPPO channel bridge armed on " + begins.size + " module begin(s)")
         } catch (t: Throwable) {
-            Xp.log(TAG + "OPPO channel bridge failed: $t")
+            Xp.w(TAG + "OPPO channel bridge failed: $t")
         }
     }
 
@@ -355,7 +355,7 @@ internal object AmapOppoBridge {
             Xp.log(TAG + "bridged $OPPO_DEVICE for bizType $biz -> bizBegin($OPPO_BIZ)")
         } catch (t: Throwable) {
             setBridged(key, "failed " + t)
-            Xp.log(TAG + "bridge for $biz failed: $t")
+            Xp.w(TAG + "bridge for $biz failed: $t")
         }
     }
 
@@ -384,7 +384,7 @@ internal object AmapOppoBridge {
             synchronized(bridged) { bridged.remove("bizBegin($biz)") }
             Xp.log(TAG + "closed $OPPO_DEVICE with bizType $biz")
         } catch (t: Throwable) {
-            Xp.log(TAG + "close for $biz failed: $t")
+            Xp.w(TAG + "close for $biz failed: $t")
         }
     }
 

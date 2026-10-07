@@ -70,7 +70,7 @@ final class QqLyrics {
         try {
             got = fetch(q, answered);
         } catch (Throwable t) {
-            Xp.log("[" + TAG + "] failed: " + t);
+            Xp.w("[" + TAG + "] failed: " + t);
             answered[0] = false;
         }
         // A miss is remembered only when the search actually answered.

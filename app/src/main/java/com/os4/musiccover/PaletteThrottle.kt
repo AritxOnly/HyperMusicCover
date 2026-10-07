@@ -36,7 +36,7 @@ internal object PaletteThrottle {
 
     fun install(classLoader: ClassLoader) {
         val cls = runCatching { Xp.findClass(CLS, classLoader) }.getOrElse {
-            Xp.log("MCPalette: $CLS unavailable, extraction not throttled: $it")
+            Xp.w("MCPalette: $CLS unavailable, extraction not throttled: $it")
             return
         }
         runCatching {
@@ -64,7 +64,7 @@ internal object PaletteThrottle {
                     try {
                         method.invoke(target, *args)
                     } catch (t: Throwable) {
-                        Xp.log("MCPalette: deferred extraction failed: $t")
+                        Xp.w("MCPalette: deferred extraction failed: $t")
                     } finally {
                         passing = false
                     }

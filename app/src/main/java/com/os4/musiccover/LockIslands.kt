@@ -338,7 +338,7 @@ internal object LockIslands {
             Xp.findClass("com.android.systemui.statusbar.notification.collection.coordinator." +
                 "KeyguardCoordinator\$notifFilter\$1", classLoader)
         }.getOrElse {
-            Xp.log("MCIsland: keyguard filter unavailable, no notification islands: $it")
+            Xp.w("MCIsland: keyguard filter unavailable, no notification islands: $it")
             return
         }
         runCatching {
@@ -347,7 +347,7 @@ internal object LockIslands {
                 runCatching { consider(chain.thisObject, chain.args, hidden) }
                     .getOrDefault(hidden)
             }
-        }.onFailure { Xp.log("MCIsland: filter hook failed: $it"); return }
+        }.onFailure { Xp.w("MCIsland: filter hook failed: $it"); return }
         runCatching {
             val pluggable = Xp.findClass("com.android.systemui.statusbar.notification.collection." +
                 "listbuilder.pluggable.Pluggable", classLoader)
@@ -356,7 +356,7 @@ internal object LockIslands {
                 if (chain.thisObject === filter?.get()) runCatching { commit() }
                 result
             }
-        }.onFailure { Xp.log("MCIsland: run end unavailable: $it") }
+        }.onFailure { Xp.w("MCIsland: run end unavailable: $it") }
         // The countdown reads its timer from locked runs only, and a countdown stopped with the
         // phone unlocked is gone before the next one: locked straight into the doze, every row
         // is hidden and nothing reads it, and the page stayed up with the stopped timer on it
@@ -371,7 +371,7 @@ internal object LockIslands {
                 }
                 result
             }
-        }.onFailure { Xp.log("MCIsland: removals unavailable: $it") }
+        }.onFailure { Xp.w("MCIsland: removals unavailable: $it") }
         NumState.install(classLoader)
         NumState.addListener { folded ->
             if (!nativeStack) return@addListener

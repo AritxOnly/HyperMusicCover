@@ -68,7 +68,7 @@ final class PassBlurScaleFix {
             sCheckSurTexSize.invoke(root);
             if (++sAligned <= 5) Xp.log(TAG + "texture scale " + tex + " -> " + draw);
         } catch (Throwable t) {
-            Xp.log(TAG + "align failed: " + t);
+            Xp.w(TAG + "align failed: " + t);
         }
     }
 }

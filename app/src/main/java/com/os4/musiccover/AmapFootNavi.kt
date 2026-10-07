@@ -61,7 +61,7 @@ object AmapFootNavi {
             Xp.log(TAG + "asked 高德 for a walk to $name ($lat, $lng)")
             "started walk to $name"
         } catch (t: Throwable) {
-            Xp.log(TAG + "start failed: $t")
+            Xp.w(TAG + "start failed: $t")
             "failed: $t"
         }
     }

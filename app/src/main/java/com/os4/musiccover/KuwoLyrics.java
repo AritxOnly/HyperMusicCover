@@ -72,7 +72,7 @@ final class KuwoLyrics {
         try {
             got = fetch(q, answered);
         } catch (Throwable t) {
-            Xp.log("[" + TAG + "] failed: " + t);
+            Xp.w("[" + TAG + "] failed: " + t);
             answered[0] = false;
         }
         if (got != null || answered[0]) {
@@ -138,7 +138,7 @@ final class KuwoLyrics {
             String x = lrcx(rid);
             if (x != null && TIMESTAMP.matcher(x).find()) return x;
         } catch (Throwable t) {
-            Xp.log("[" + TAG + "] lrcx failed: " + t);
+            Xp.w("[" + TAG + "] lrcx failed: " + t);
         }
         Http.Raw r = Http.request(OPEN_LYRIC_URL + "?musicId=" + rid + "&httpsStatus=1", TAG, null,
                 WEB_HEADERS);

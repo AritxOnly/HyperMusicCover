@@ -181,7 +181,7 @@ final class OnlineLyrics {
                     return null;
             }
         } catch (Throwable t) {
-            Xp.log("[MCLyric] " + src + " failed: " + t);
+            Xp.w("[MCLyric] " + src + " failed: " + t);
             return null;
         }
     }

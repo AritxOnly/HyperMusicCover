@@ -87,7 +87,7 @@ final class AmapFocus {
             }
             Xp.log(TAG + "watching for the plugin's loader");
         } catch (Throwable t) {
-            Xp.log(TAG + "watch failed: " + t);
+            Xp.w(TAG + "watch failed: " + t);
         }
     }
 

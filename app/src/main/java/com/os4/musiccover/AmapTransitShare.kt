@@ -302,7 +302,7 @@ internal object AmapTransitShare {
             }
             update()
         } catch (t: Throwable) {
-            Xp.log(TAG + "payload failed: $t " + t.stackTrace.take(3).joinToString(" | "))
+            Xp.w(TAG + "payload failed: $t " + t.stackTrace.take(3).joinToString(" | "))
         }
     }
 
@@ -663,7 +663,7 @@ internal object AmapTransitShare {
             ProbeGuard.send(ctx, i)
             lastKind = AmapTransitIsland.update(ctx, entity)
         } catch (t: Throwable) {
-            Xp.log(TAG + "tell failed: $t")
+            Xp.w(TAG + "tell failed: $t")
         }
     }
 

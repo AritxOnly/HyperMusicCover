@@ -273,7 +273,7 @@ final class NcmLyrics {
         try {
             got = fetch(q);
         } catch (Throwable t) {
-            Xp.log("[MCNcm] failed: " + t);
+            Xp.w("[MCNcm] failed: " + t);
         }
         if (got != null) {
             synchronized (CACHE) {
@@ -476,7 +476,7 @@ final class NcmLyrics {
             Xp.log("[MCNcm] searched \"" + terms + "\" ahead of time in "
                     + (android.os.SystemClock.uptimeMillis() - t0) + "ms");
         } catch (Throwable t) {
-            Xp.log("[MCNcm] searching ahead failed: " + t);
+            Xp.w("[MCNcm] searching ahead failed: " + t);
         }
     }
 
@@ -610,7 +610,7 @@ final class NcmLyrics {
             Xp.log("[MCNcm] \"" + line + "\" is sung by " + best + ", " + bestGap + "ms off");
             return lyricsOf(best, started);
         } catch (Throwable t) {
-            Xp.log("[MCNcm] lyric search failed: " + t);
+            Xp.w("[MCNcm] lyric search failed: " + t);
             return null;
         }
     }
@@ -789,7 +789,7 @@ final class NcmLyrics {
             Xp.log("[MCNcm] album " + album + " (" + q.album + ") -> " + id);
             return id;
         } catch (Throwable t) {
-            Xp.log("[MCNcm] album lookup failed: " + t);
+            Xp.w("[MCNcm] album lookup failed: " + t);
             return null;
         }
     }
