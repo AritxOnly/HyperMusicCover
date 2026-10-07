@@ -118,6 +118,37 @@ class BorrowTranslationsTest {
         assertTrue(LyricParse.romanisable(apple))
         assertTrue(LyricParse.romanisable(listOf(line("我哋一齊走過", 0))))
         assertFalse(LyricParse.romanisable(listOf(line("Welcome to my blue shining", 0))))
+        // Half Korean, half English: more Latin letters than hangul, and still worth one.
+        assertTrue(LyricParse.romanisable(listOf(
+            line("Make a wish, birthday girl, make a wish tonight", 0),
+            line("Blow the candles, close your eyes and make it right", 2000),
+            line("오늘 밤 너의 소원", 4000))))
+        // An English song with its credits in Chinese is not.
+        assertFalse(LyricParse.romanisable(listOf(line("作词 : Rie fu", 0)) +
+            (1..6).map { line("On a boat on a train or in an airplane $it", it * 2000) }))
+    }
+
+    @Test
+    fun aRomanisationGoesToTheLineItRomanises() {
+        // NetEase's romanisation lands nearer the English line before the Japanese one; it is
+        // the Japanese line's (KillKiss, One Last Kiss).
+        val lines = LyricParse.parse(
+            "[00:10.00]Oh, can you give me one last kiss?\n[00:11.20]忘れられない人",
+            null, "[00:10.30]wa su re ra re na i hi to")
+        assertNull(lines[0].roma)
+        assertEquals("wa su re ra re na i hi to", lines[1].roma)
+    }
+
+    @Test
+    fun aSingersNameTakesNoTranslationAndALineIsNotItsOwn() {
+        // NetEase's Everywhere We Go: the name on a line of its own just before the English, and
+        // the English "translated" into itself.
+        val lines = LyricParse.parse(
+            "[00:10.00]应采儿:\n[00:10.80]On a boat on a train or in an airplane\n[00:14.00]除咗佢我个世界",
+            "[00:10.00]On a boat on a train or in an airplane\n[00:14.00]除了他我的世界")
+        assertNull(lines[0].translation)
+        assertNull(lines[1].translation)
+        assertEquals("除了他我的世界", lines[2].translation)
     }
 
     @Test

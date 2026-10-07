@@ -30,7 +30,7 @@ object LyricParse {
         if (translation.isNullOrBlank() || lines.isEmpty()) return lines
         val tr = lrc(translation)
         if (tr.isEmpty()) return lines
-        val texts = assign(lines, tr)
+        val texts = assign(lines, tr, ::translatable)
         val out = ArrayList<LyricLine>(lines.size)
         for ((i, line) in lines.withIndex()) {
             val text = texts[i]
@@ -38,6 +38,26 @@ object LyricParse {
         }
         return out
     }
+
+    /**
+     * A line a translation can belong to: not a singer's name standing alone ("应采儿:"), which
+     * NetEase gives a line of its own just before the voice changes and which, being the nearer,
+     * took the translation of the line it introduces.
+     */
+    private fun translatable(line: LyricLine): Boolean {
+        val m = LABEL.find(line.text) ?: return true
+        return m.range.last + 1 < line.text.length
+    }
+
+    /**
+     * A line a romanisation can belong to: one with letters in a script other than Latin. An
+     * English line in a Japanese song has nothing to romanise, and the nearest one took the
+     * romanisation of the Japanese line beside it - shown under the English and missing under
+     * its own line (KillKiss, One Last Kiss, 2026-10-07).
+     */
+    private fun romanisableLine(line: LyricLine): Boolean = nonLatin(line.text)
+
+    private fun nonLatin(s: String): Boolean = s.any { it.isLetter() && it.code > 0x024F }
 
     /**
      * The same again with a romanisation beside the translation - QQ Music, NetEase and Kuwo
@@ -51,7 +71,7 @@ object LyricParse {
         if (roma.isNullOrBlank() || lines.isEmpty()) return lines
         val ro = lrc(roma)
         if (ro.isEmpty()) return lines
-        val best = assign(lines, ro)
+        val best = assign(lines, ro, ::romanisableLine)
         val out = ArrayList<LyricLine>(lines.size)
         for ((i, line) in lines.withIndex()) {
             val r = romaOf(best[i], line.text)
@@ -65,24 +85,35 @@ object LyricParse {
      * each line taking the nearest entry. A catalogue leaves its credit lines untranslated, and
      * asked the other way round the credits 500ms before the first verse took the verse's
      * translation as their own (QQ's Lemon, 2026-09-24). One entry, one line; the closer of two
-     * claimants keeps it. See TRANSLATION_WINDOW_MS for the window.
+     * claimants keeps it. See TRANSLATION_WINDOW_MS for the window. Only lines that can carry
+     * one are claimants (translatable, romanisableLine): the others are passed over, not given it.
      */
-    private fun assign(lines: List<LyricLine>, entries: List<Pair<Int, String>>): Array<String?> {
-        val starts = IntArray(lines.size) { lines[it].start }
+    private fun assign(lines: List<LyricLine>, entries: List<Pair<Int, String>>,
+                       eligible: (LyricLine) -> Boolean = { true }): Array<String?> {
         val best = arrayOfNulls<String>(lines.size)
         val gaps = IntArray(lines.size) { Int.MAX_VALUE }
+        val open = lines.indices.filter { eligible(lines[it]) }
+        if (open.isEmpty()) return best
+        val starts = IntArray(open.size) { lines[open[it]].start }
+        // An entry that is only some line of the song again - an English line "romanised" or
+        // "translated" into itself - is no entry. Kept, it was drawn under its own line twice
+        // over (Everywhere We Go, 2026-10-07), and with that line passed over it would go to
+        // the nearest line that can take one.
+        val sung = lines.mapTo(HashSet()) { letters(it.text) }
         for ((at, text) in entries) {
-            var i = starts.binarySearch(at)
-            if (i < 0) {
-                val ins = -i - 1
-                i = when {
+            if (letters(text) in sung) continue
+            var k = starts.binarySearch(at)
+            if (k < 0) {
+                val ins = -k - 1
+                k = when {
                     ins == 0 -> 0
                     ins >= starts.size -> starts.size - 1
                     at - starts[ins - 1] <= starts[ins] - at -> ins - 1
                     else -> ins
                 }
             }
-            val gap = kotlin.math.abs(starts[i] - at)
+            val i = open[k]
+            val gap = kotlin.math.abs(starts[k] - at)
             if (gap <= TRANSLATION_WINDOW_MS && gap < gaps[i]) {
                 gaps[i] = gap
                 best[i] = text
@@ -147,9 +178,11 @@ object LyricParse {
         gaps.sort()
         val shift = gaps[gaps.size / 2]
         val tr = if (!translations) null
-            else assign(own, other.mapNotNull { o -> o.translation?.let { (o.start - shift) to it } })
+            else assign(own, other.mapNotNull { o -> o.translation?.let { (o.start - shift) to it } },
+                ::translatable)
         val ro = if (!romas) null
-            else assign(own, other.mapNotNull { o -> o.roma?.let { (o.start - shift) to it } })
+            else assign(own, other.mapNotNull { o -> o.roma?.let { (o.start - shift) to it } },
+                ::romanisableLine)
         var nt = 0
         var nr = 0
         val out = own.mapIndexed { i, line ->
@@ -207,24 +240,26 @@ object LyricParse {
     }
 
     /**
-     * Whether a lyric is in a script a romanisation says anything about: more Han, kana and
-     * hangul than Latin letters. Chinese counts - a Cantonese song's jyutping is one - and an
-     * English song does not, whose "romanisation" in a catalogue is the song again.
+     * Whether a lyric is in a script a romanisation says anything about: a quarter or more of
+     * its lines in a script other than Latin. Chinese counts - a Cantonese song's jyutping is
+     * one - and an English song does not, whose "romanisation" in a catalogue is the song again;
+     * its credit lines in Chinese are fewer than that.
+     *
+     * Counted by lines, not letters: an English word is several letters and a Japanese or Korean
+     * one is one or two characters, so a song half in each read as English, and Make A Wish,
+     * Life Is Like A Boat and KillKiss never asked for the romanisation of their other half
+     * (2026-10-07).
      */
     @JvmStatic
     fun romanisable(lines: List<LyricLine>): Boolean {
-        var latin = 0
+        var total = 0
         var other = 0
         for (line in lines) {
-            for (ch in line.text) {
-                when {
-                    ch.code in 0x4E00..0x9FFF || ch.code in 0x3040..0x30FF
-                        || ch.code in 0xAC00..0xD7AF -> other++
-                    ch in 'a'..'z' || ch in 'A'..'Z' -> latin++
-                }
-            }
+            if (line.text.none { it.isLetter() }) continue
+            total++
+            if (nonLatin(line.text)) other++
         }
-        return other > latin
+        return other > 0 && other * 4 >= total
     }
 
     /**
