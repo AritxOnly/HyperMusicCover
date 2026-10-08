@@ -258,5 +258,5 @@
     <string name="demo_transit_ride_title">逐站提醒</string>
     <string name="demo_transit_alert_title">换乘与到站</string>
     <string name="mini_reduce_aod_updates">息屏时减少内容刷新</string>
-    <string name="mini_reduce_aod_updates_summary">锁屏岛仅在媒体或通知状态变化时更新；歌词改为歌曲封面，亮屏后恢复</string>
+    <string name="mini_reduce_aod_updates_summary">息屏时每 30 秒检查并更新有变化的锁屏岛内容，倒计时显示 --:--，歌词改为封面；亮屏后恢复</string>
 </resources>

@@ -126,6 +126,12 @@ internal object LockIslands {
     class Timer(val type: Int, val whenMs: Long, val systemMs: Long, val totalMs: Long = 0L) {
         val running get() = type == 1 || type == -1 || type == 3 || type == -3
 
+        /** [reducedAod] includes the user's opt-in setting, not just the doze state. */
+        fun aodPlaceholder(reducedAod: Boolean) = reducedAod && type < 0
+
+        fun displayText(reducedAod: Boolean, now: Long = System.currentTimeMillis()): String =
+            if (aodPlaceholder(reducedAod)) "--:--" else text(now)
+
         /** ±3 and ±4 read in minutes and seconds only, the minutes past sixty (NotificationTimeKeeper). */
         val minutes get() = type == 3 || type == 4 || type == -3 || type == -4
 
