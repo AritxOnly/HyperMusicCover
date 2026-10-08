@@ -244,4 +244,6 @@
     <string name="demo_transit_island_title">The super island when unlocked</string>
     <string name="demo_transit_ride_title">Stop by stop</string>
     <string name="demo_transit_alert_title">Transfers and arrival</string>
+    <string name="mini_reduce_aod_updates">Reduce content updates in AOD</string>
+    <string name="mini_reduce_aod_updates_summary">Update islands only when media or notification state changes. Replace lyrics with album artwork and restore them when the screen wakes.</string>
 </resources>

@@ -446,6 +446,10 @@ final class CoverPush {
     }
 
     private static void applyVideoCoverCrossfade(ImageView iv, Bitmap from, Bitmap to, boolean blur) {
+        if (MiniPlayerRuntime.aodContentPaused()) {
+            if (iv != null && to != null && !to.isRecycled()) iv.setImageBitmap(to);
+            return;
+        }
         if (iv == null || from == null || to == null || from == to || from.isRecycled() || to.isRecycled()) {
             if (iv != null && to != null && !to.isRecycled()) iv.setImageBitmap(to);
             return;

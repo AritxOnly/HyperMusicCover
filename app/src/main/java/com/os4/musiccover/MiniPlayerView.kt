@@ -200,7 +200,7 @@ internal class MiniPlayerView(context: Context) : FrameLayout(context) {
         showNative: () -> Unit,
         openCover: () -> Unit,
     ) { android.os.Trace.beginSection("MC v.bind"); try {
-        setMarqueeEnabled(config.optBoolean(MiniPlayerConfig.MARQUEE, true))
+        setMarqueeEnabled(!MiniPlayerRuntime.aodContentPaused() && config.optBoolean(MiniPlayerConfig.MARQUEE, true))
         val appearance = "$config|$material"
         if (lastAppearance != appearance) {
             lastAppearance = appearance

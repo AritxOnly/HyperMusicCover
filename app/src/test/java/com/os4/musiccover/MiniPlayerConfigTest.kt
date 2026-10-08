@@ -6,6 +6,21 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MiniPlayerConfigTest {
+    @Test fun aodReductionIsOptInAndSurvivesSettingsRoundTrips() {
+        assertFalse(JSONObject(MiniPlayerConfig.normalizedJson(null))
+            .getBoolean(MiniPlayerConfig.REDUCE_AOD_UPDATES))
+        val saved = JSONObject(MiniPlayerConfig.defaultJson())
+            .put(MiniPlayerConfig.REDUCE_AOD_UPDATES, true)
+            .put(MiniPlayerConfig.MARQUEE, true)
+        val restored = JSONObject(MiniPlayerConfig.normalizedJson(
+            MiniPlayerConfig.normalizedJson(saved.toString())))
+        assertTrue(restored.getBoolean(MiniPlayerConfig.REDUCE_AOD_UPDATES))
+        assertTrue(restored.getBoolean(MiniPlayerConfig.MARQUEE))
+        val discarded = JSONObject().put("pauseAodUpdates", true)
+        assertFalse(JSONObject(MiniPlayerConfig.normalizedJson(discarded.toString()))
+            .getBoolean(MiniPlayerConfig.REDUCE_AOD_UPDATES))
+    }
+
     @Test fun ordinaryNotificationsStayInTheSystemListByDefaultAndAfterUpgrade() {
         assertTrue(JSONObject(MiniPlayerConfig.defaultJson())
             .getBoolean(MiniPlayerConfig.NORMALS_IN_STACK))

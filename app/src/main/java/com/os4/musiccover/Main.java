@@ -7739,6 +7739,12 @@ public class Main extends XposedModule {
      */
     private static float stepLyricArt(boolean want) {
         float to = want ? 1f : 0f;
+        if (MiniPlayerRuntime.aodContentPaused()) {
+            sLyricArtP = sLyricArtTo = to;
+            sLyricArtV = 0f;
+            sLyricArtAt = 0L;
+            return to;
+        }
         // A capture is the app asking what the settled card looks like (see shootCard), and the
         // frame it lands on is not a thing to keep. Everywhere else the motion IS the state.
         if (sCardForced) {

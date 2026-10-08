@@ -98,8 +98,25 @@ object MiniPlayerRuntime {
         refresh()
     }
 
+    @Volatile private var reduceAodUpdates = false
+    private var aodContentModeApplied = false
+
+    @JvmStatic fun aodContentPaused(): Boolean = reduceAodUpdates && MiniPlayerScene.aodActive
+
+    @JvmStatic fun onAodContentModeChanged() {
+        val paused = aodContentPaused()
+        if (paused == aodContentModeApplied) return
+        aodContentModeApplied = paused
+        LockLyrics.onAodContentModeChanged(paused)
+        Main.refreshMediaCardForMorph()
+        CoverCardLayer.refresh()
+    }
+
     private fun syncNotificationGrouping(context: Context) {
         val config = JSONObject(configJson(context))
+        reduceAodUpdates = config.optBoolean(MiniPlayerConfig.ENABLED) &&
+            config.optBoolean(MiniPlayerConfig.REDUCE_AOD_UPDATES)
+        onAodContentModeChanged()
         LockIslands.setNormalsInStack(config.optBoolean(MiniPlayerConfig.NORMALS_IN_STACK, true))
         LockIslands.setGroupByApp(config.optBoolean(MiniPlayerConfig.ENABLED) &&
             !config.optBoolean(MiniPlayerConfig.NORMALS_IN_STACK, true) &&
@@ -9393,6 +9410,17 @@ private class MiniPlayerController(
 
     private fun refreshUnsafe() { android.os.Trace.beginSection("MC refresh"); try {
         lottiesFollowDoze()
+        val paused = MiniPlayerRuntime.aodContentPaused()
+        if (timerSnapshots.paused != paused) {
+            timerSnapshots.setPaused(paused)
+            handler.removeCallbacks(timerTick)
+            if (paused) {
+                timerViews.forEach { (view, timer) ->
+                    timerSnapshots.value(timer) { view.titleView.text.toString() }
+                }
+                rollers.values.forEach { it.clear() }
+            }
+        }
         if (configStale) {
             configStale = false
             val wasStacked = stackedStyle()
@@ -10184,6 +10212,7 @@ private class MiniPlayerController(
      * the chronometer turns it, in tabular figures as HyperChronometer draws them ("tnum").
      */
     private val timerViews = java.util.WeakHashMap<MiniPlayerView, LockIslands.Timer>()
+    private val timerSnapshots = AodContentSnapshot<LockIslands.Timer, String>()
 
     private fun showTimer(view: MiniPlayerView, timer: LockIslands.Timer?) {
         if (timer == null) {
@@ -10197,7 +10226,7 @@ private class MiniPlayerController(
         val same = timerViews[view] === timer && handler.hasCallbacks(timerTick)
         timerViews[view] = timer
         if (view.titleView.fontFeatureSettings != "tnum") view.titleView.fontFeatureSettings = "tnum"
-        timerText(view, timer, timer.text())
+        timerText(view, timer, timerSnapshots.value(timer) { timer.text() })
         if (same) return
         handler.removeCallbacks(timerTick)
         timerTick.run()
@@ -10207,7 +10236,7 @@ private class MiniPlayerController(
     private val rollers = java.util.WeakHashMap<MiniPlayerView, RollingDigits>()
 
     private fun timerText(view: MiniPlayerView, timer: LockIslands.Timer, text: String) {
-        if (timer.type == -1) {
+        if (timer.type == -1 && !MiniPlayerRuntime.aodContentPaused()) {
             rollers.getOrPut(view) { RollingDigits(view.titleView) }.set(text)
         } else {
             rollers.remove(view)?.clear()
@@ -10220,6 +10249,7 @@ private class MiniPlayerController(
 
     private val timerTick = object : Runnable {
         override fun run() {
+            if (MiniPlayerRuntime.aodContentPaused()) return
             val now = System.currentTimeMillis()
             var next = Long.MAX_VALUE
             for ((view, timer) in timerViews.entries.toList()) {
