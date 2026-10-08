@@ -10530,6 +10530,7 @@ private class MiniPlayerController(
                 nativeSceneOverride = keyguardOwned && Main.coverSceneActive(),
                 transitionActive = transition,
                 controlCenterOpen = controlCenterOpen,
+                miniShowsMusic = pillShowsMusic,
             ),
         )
         // An exchange keeps the row up - out of the cover, the row went for its frames and every

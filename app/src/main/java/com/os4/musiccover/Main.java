@@ -6802,7 +6802,13 @@ public class Main extends XposedModule {
         // Taken before the entry moves anything: the lyrics grow out of the island as it is now.
         LockLyrics.notePopOrigin(MiniPlayerRuntime.musicIslandCentreOnScreen());
         if (!sAuto) {
-            CoverMorphLayer.cancel();
+            // A manual entry owns the same container transition as automatic cover mode.
+            // This also adopts an upward swipe still settling when its artwork is tapped.
+            if (MiniPlayerRuntime.prepareSceneEntry()) {
+                beginMiniMorph(true, !LockLyrics.willAttachOnEntry());
+            } else {
+                CoverMorphLayer.cancel();
+            }
             setCoverEnabled(true, true, false);
         } else {
             enterFromTap("mini player tapped");

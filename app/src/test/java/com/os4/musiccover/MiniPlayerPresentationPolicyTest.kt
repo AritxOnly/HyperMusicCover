@@ -46,6 +46,7 @@ class MiniPlayerPresentationPolicyTest {
         nativeSceneOverride: Boolean = false,
         transitionActive: Boolean = false,
         controlCenterOpen: Boolean = false,
+        miniShowsMusic: Boolean = true,
     ) = MiniPlayerPresentationPolicy.evaluate(
         MiniPlayerPresentationInput(
             enabled,
@@ -56,6 +57,7 @@ class MiniPlayerPresentationPolicyTest {
             nativeSceneOverride,
             transitionActive,
             controlCenterOpen,
+            miniShowsMusic,
         ),
     )
 
@@ -111,6 +113,33 @@ class MiniPlayerPresentationPolicyTest {
             sceneVisible = false,
             nativeSceneOverride = true,
         ))
+    }
+
+    @Test fun manuallyOpenedCoverHidesMusicEvenIfTheLockscreenStillReportsTheRowVisible() {
+        assertEquals(MiniPlayerPresentation(false, false), presentation(
+            sceneVisible = true, nativeSceneOverride = true))
+        assertEquals(MiniPlayerPresentation(false, false), presentation(
+            sceneVisible = false, controlCenterOpen = true, nativeSceneOverride = true))
+    }
+
+    @Test fun swipeThenArtworkTapShowsOnlyTheExpandedPlayerAfterTheMorphSettles() {
+        val selection = MiniPlayerSessionSelection()
+        val session = Any()
+        selection.requestNative(session)
+        assertEquals(MiniPlayerPresentation(true, false), presentation(
+            nativeRequested = true, nativeSceneOverride = true, transitionActive = true))
+        assertEquals(MiniPlayerPresentation(false, false), presentation(
+            nativeRequested = selection.nativeRequestedFor(session), nativeSceneOverride = true))
+        // A refresh during row rearrangement may temporarily mask the native choice.
+        assertEquals(MiniPlayerPresentation(false, false), presentation(
+            nativeRequested = false, nativeSceneOverride = true))
+    }
+
+    @Test fun notificationIslandsRemainVisibleBesideTheCoverPlayer() {
+        assertEquals(MiniPlayerPresentation(true, false), presentation(
+            sceneVisible = true, nativeSceneOverride = true, miniShowsMusic = false))
+        assertEquals(MiniPlayerPresentation(true, true), presentation(
+            sceneVisible = true, miniShowsMusic = false))
     }
 
     @Test fun transitionKeepsBothShellsAvailableWithoutHardSuppression() {
