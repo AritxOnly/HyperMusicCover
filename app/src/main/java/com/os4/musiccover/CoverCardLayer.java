@@ -169,7 +169,6 @@ final class CoverCardLayer extends View implements Choreographer.FrameCallback {
         geometryObserver = layer.getViewTreeObserver();
         geometryListener = new ViewTreeObserver.OnPreDrawListener() {
             @Override public boolean onPreDraw() { android.os.Trace.beginSection("MC coverGeom"); try {
-                if (MiniPlayerRuntime.aodUpdatesPaused()) return true;
                 // This parent is also drawn behind the unlocked notification shade. The card's
                 // animation stops when it settles, and ACTION_USER_PRESENT is not guaranteed to
                 // arrive before the shade uses this layer. Enforce the lock-screen condition on
@@ -347,22 +346,7 @@ final class CoverCardLayer extends View implements Choreographer.FrameCallback {
         });
     }
 
-    static void onAodPauseChanged(boolean paused) {
-        CoverCardLayer v = sView;
-        if (v == null) return;
-        if (paused) {
-            // A single entry frame shows artwork in place of the lyric page.
-            v.ticking = true;
-            v.doFrame(System.nanoTime());
-            v.stop();
-        } else {
-            v.adoptPending();
-            v.start();
-        }
-    }
-
     static void refresh() {
-        if (MiniPlayerRuntime.aodUpdatesPaused()) return;
         CoverCardLayer v = sView;
         if (v != null) {
             v.start();
@@ -540,7 +524,6 @@ final class CoverCardLayer extends View implements Choreographer.FrameCallback {
     }
 
     private void adoptPending() {
-        if (MiniPlayerRuntime.aodUpdatesPaused()) return;
         Prepared p = sPending;
         if (p == null || p == current || p.generation != sGeneration) return;
         if (previous != null) previous.recycle();
@@ -551,7 +534,6 @@ final class CoverCardLayer extends View implements Choreographer.FrameCallback {
     }
 
     private void start() {
-        if (MiniPlayerRuntime.aodUpdatesPaused()) return;
         if (Looper.myLooper() != Looper.getMainLooper()) {
             post(new Runnable() { @Override public void run() { start(); } });
             return;
@@ -833,7 +815,7 @@ final class CoverCardLayer extends View implements Choreographer.FrameCallback {
             float u = 1f - Math.min(1f, (nowNs - wakeAt) / 1e9f / WAKE_FADE_S);
             lit = wakeFrom + (1f - wakeFrom) * (1f - u * u * u);
             opacity = target * lit;
-        } else if (MiniPlayerRuntime.aodUpdatesPaused() || (inAod && lyrics) || phase == ClockCollapse.Phase.ENTER
+        } else if ((inAod && lyrics) || phase == ClockCollapse.Phase.ENTER
                 || (phase == ClockCollapse.Phase.EXIT && Main.screenOn())) {
             opacity = target;
         } else {

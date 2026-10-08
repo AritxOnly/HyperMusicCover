@@ -98,28 +98,8 @@ object MiniPlayerRuntime {
         refresh()
     }
 
-    @Volatile private var pauseAodUpdates = false
-    private var aodPauseApplied = false
-
-    @JvmStatic fun aodUpdatesPaused(): Boolean = pauseAodUpdates && MiniPlayerScene.aodActive
-
-    /** Freeze our rendering, while leaving the OEM clock and display policy in control. */
-    @JvmStatic fun onAodStateChanged() {
-        val paused = aodUpdatesPaused()
-        if (paused == aodPauseApplied) return
-        aodPauseApplied = paused
-        LockLyrics.onAodPauseChanged(paused)
-        Main.refreshMediaCardForMorph()
-        CoverCardLayer.onAodPauseChanged(paused)
-        CoverPush.onAodPauseChanged(paused)
-        live().forEach { it.setAodUpdatesPaused(paused) }
-    }
-
     private fun syncNotificationGrouping(context: Context) {
         val config = JSONObject(configJson(context))
-        pauseAodUpdates = config.optBoolean(MiniPlayerConfig.ENABLED) &&
-            config.optBoolean(MiniPlayerConfig.PAUSE_AOD_UPDATES)
-        onAodStateChanged()
         LockIslands.setNormalsInStack(config.optBoolean(MiniPlayerConfig.NORMALS_IN_STACK, true))
         LockIslands.setGroupByApp(config.optBoolean(MiniPlayerConfig.ENABLED) &&
             !config.optBoolean(MiniPlayerConfig.NORMALS_IN_STACK, true) &&
@@ -945,7 +925,6 @@ object MiniPlayerRuntime {
         val (left, right) = resolveShortcuts(shortcutController) ?: findShortcuts(root) ?: return
         if (left === right) return
         if (old != null && old.left === left && old.right === right) {
-            old.controller.setAodUpdatesPaused(aodUpdatesPaused())
             old.controller.refresh()
             return
         }
@@ -953,7 +932,6 @@ object MiniPlayerRuntime {
         val controller = MiniPlayerController(host, left, right, prefs(root.context),
             loader ?: root.context.classLoader)
         synchronized(controllers) { controllers[host] = Held(left, right, controller) }
-        controller.setAodUpdatesPaused(aodUpdatesPaused())
         host.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
             override fun onViewAttachedToWindow(v: View) = Unit
             override fun onViewDetachedFromWindow(v: View) {
@@ -2014,7 +1992,6 @@ private class MiniPlayerController(
     private var clockTopAsked = Float.NaN
 
     private val preDraw = ViewTreeObserver.OnPreDrawListener { android.os.Trace.beginSection("MC islandsPreDraw"); try {
-        if (aodPaused) return@OnPreDrawListener true
         holdKept()
         holdRows()
         Main.onBackdropHoldChanged()
@@ -2651,7 +2628,6 @@ private class MiniPlayerController(
 
     private val pulseFrame = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) { android.os.Trace.beginSection("MC pulse"); try {
-            if (aodPaused) return
             if (pulseKey == null) return
             smallPulse()
             followShortcuts()
@@ -2790,7 +2766,6 @@ private class MiniPlayerController(
 
     private val smallNudgeFrame = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) { android.os.Trace.beginSection("MC smallNudge"); try {
-            if (aodPaused) return
             if (!smallNudging) return
             val dt = if (smallNudgeLast == 0L) 1f / 120f
                 else ((frameTimeNanos - smallNudgeLast) / 1e9f).coerceIn(0f, 0.05f)
@@ -2938,7 +2913,6 @@ private class MiniPlayerController(
 
     private val swapFrame = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) { android.os.Trace.beginSection("MC swap"); try {
-            if (aodPaused) return
             val s = swap ?: return
             if (s.kind == SWAP_STACK && (destroyed || !Main.keyguardLocked() ||
                 MiniPlayerScene.aodActive || !stackedStyle() || player?.visibility != View.VISIBLE)) {
@@ -3546,7 +3520,6 @@ private class MiniPlayerController(
 
     private val rowFrame = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) { android.os.Trace.beginSection("MC row"); try {
-            if (aodPaused) return
             if (!rowAnimating) return
             val dt = if (rowLast == 0L) 1f / 120f
                 else ((frameTimeNanos - rowLast) / 1e9f).coerceIn(0f, 0.05f)
@@ -3636,7 +3609,6 @@ private class MiniPlayerController(
 
     private val appearFrame = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) { android.os.Trace.beginSection("MC appear"); try {
-            if (aodPaused) return
             if (!appearing) return
             val dt = if (appearLast == 0L) 1f / 120f
                 else ((frameTimeNanos - appearLast) / 1e9f).coerceIn(0f, 0.05f)
@@ -4729,7 +4701,6 @@ private class MiniPlayerController(
 
     private val smallGrowFrame = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) { android.os.Trace.beginSection("MC smallGrow"); try {
-            if (aodPaused) return
             if (!smallGrowing) return
             val dt = if (smallGrowLast == 0L) 1f / 120f
                 else ((frameTimeNanos - smallGrowLast) / 1e9f).coerceIn(0f, 0.05f)
@@ -5549,7 +5520,6 @@ private class MiniPlayerController(
 
     private val pinFrame = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) { android.os.Trace.beginSection("MC pinFrame"); try {
-            if (aodPaused) return
             val v = pinned?.get() ?: return
             val at = pinnedAt
             val now = android.os.SystemClock.uptimeMillis()
@@ -5892,7 +5862,6 @@ private class MiniPlayerController(
     /** Frame by frame until the card asked for is laid out: it has only just been let out. */
     private val switchWait = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) { android.os.Trace.beginSection("MC exchangeWait"); try {
-            if (aodPaused) return
             val x = exchange ?: return
             val key = x.pending ?: return
             val native = traced("MC x.findUp") { nativeFor(key) }
@@ -6728,7 +6697,6 @@ private class MiniPlayerController(
 
     private val spreadFrame = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) { android.os.Trace.beginSection("MC spread"); try {
-            if (aodPaused) return
             val s = spread ?: return
             if (destroyed || !Main.keyguardLocked() || MiniPlayerScene.keyguardGoingAway) {
                 endSpread(folded = s.progress < 0.5f, why = "lock screen gone")
@@ -7282,7 +7250,6 @@ private class MiniPlayerController(
     /** Frame by frame until the released notification's row is in the stack and laid out. */
     private val rowWait = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) { android.os.Trace.beginSection("MC rowWait"); try {
-            if (aodPaused) return
             val key = rowWaitKey ?: return
             // The stack island's other rows stay out of sight, piled, till the morph moves them.
             if (key == STACK_ISLAND || LockIslands.isAppGroup(key)) pileGroup(key, 0f, null)
@@ -9413,41 +9380,6 @@ private class MiniPlayerController(
         controller?.sessionToken?.let(MiniPlayerRuntime::selectMini)
     }
 
-    private var aodPaused = false
-
-    fun setAodUpdatesPaused(paused: Boolean) {
-        if (aodPaused == paused) return
-        if (paused) {
-            // Apply the AOD pose once, then stop all recurring work owned by this controller.
-            endSwap()
-            if (appearing) endAppear()
-            squeeze.reset()
-            refresh()
-        }
-        aodPaused = paused
-        player?.setUpdatesPaused(paused)
-        ghostPill?.setUpdatesPaused(paused)
-        flight?.setUpdatesPaused(paused)
-        spareViews.forEach { it.setUpdatesPaused(paused) }
-        if (paused) {
-            handler.removeCallbacks(timerTick)
-            rollers.values.forEach { it.clear() }
-        }
-        val choreographer = Choreographer.getInstance()
-        val callbacks = listOf(pulseFrame, smallNudgeFrame, swapFrame, rowFrame, appearFrame,
-            smallGrowFrame, pileSettle, spreadFrame, switchWait, rowWait, pinFrame)
-        callbacks.forEach(choreographer::removeFrameCallback)
-        val morphs = listOfNotNull(morph, group?.follower) +
-            (spread?.items?.mapNotNull { it.morph } ?: emptyList())
-        morphs.forEach { it.setUpdatesPaused(paused) }
-        if (!paused) {
-            refresh()
-            callbacks.forEach(choreographer::postFrameCallback)
-            timerTick.run()
-            schedulePosition()
-        }
-    }
-
     fun refresh() {
         if (Looper.myLooper() != Looper.getMainLooper()) { scheduleRefresh(); return }
         runCatching { refreshUnsafe() }.onFailure { Xp.w("MCMini: refresh failed: $it") }
@@ -9460,7 +9392,6 @@ private class MiniPlayerController(
     }
 
     private fun refreshUnsafe() { android.os.Trace.beginSection("MC refresh"); try {
-        if (aodPaused) return
         lottiesFollowDoze()
         if (configStale) {
             configStale = false
@@ -10289,7 +10220,6 @@ private class MiniPlayerController(
 
     private val timerTick = object : Runnable {
         override fun run() {
-            if (aodPaused) return
             val now = System.currentTimeMillis()
             var next = Long.MAX_VALUE
             for ((view, timer) in timerViews.entries.toList()) {
@@ -10896,7 +10826,6 @@ private class MiniPlayerController(
     }
 
     private fun position() {
-        if (aodPaused) return
         val view = player ?: return
         if (view.visibility != View.VISIBLE || spread != null) return
         val small = smallKey != null

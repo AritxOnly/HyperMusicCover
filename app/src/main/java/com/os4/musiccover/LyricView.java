@@ -455,7 +455,6 @@ final class LyricView extends View {
 
     /** Something outside changed - a line start, the song, the setting. Wakes the loop. */
     void kick() {
-        if (MiniPlayerRuntime.aodUpdatesPaused()) return;
         if (looping) return;
         looping = true;
         postOnAnimation(frame);

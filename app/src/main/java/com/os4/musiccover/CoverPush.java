@@ -71,10 +71,6 @@ final class CoverPush {
     }
 
     private static void pushArtToWallpaper(Context ctx, boolean on, Bitmap art) {
-        if (MiniPlayerRuntime.aodUpdatesPaused()) {
-            sAodDeferredArt = on;
-            return;
-        }
         long t0 = android.os.SystemClock.uptimeMillis();
         Intent out = wallpaperIntent("art");
         out.putExtra("cardmode", Main.sCoverCardStyle.mode == CoverCardStyle.CARD);
@@ -450,10 +446,6 @@ final class CoverPush {
     }
 
     private static void applyVideoCoverCrossfade(ImageView iv, Bitmap from, Bitmap to, boolean blur) {
-        if (MiniPlayerRuntime.aodUpdatesPaused()) {
-            if (iv != null && to != null && !to.isRecycled()) iv.setImageBitmap(to);
-            return;
-        }
         if (iv == null || from == null || to == null || from == to || from.isRecycled() || to.isRecycled()) {
             if (iv != null && to != null && !to.isRecycled()) iv.setImageBitmap(to);
             return;
@@ -1283,20 +1275,7 @@ final class CoverPush {
         return f.getAbsolutePath();
     }
 
-    private static volatile Boolean sAodDeferredArt;
-
-    static void onAodPauseChanged(boolean paused) {
-        if (paused) return;
-        Boolean on = sAodDeferredArt;
-        sAodDeferredArt = null;
-        if (on != null) pushArtAsync(on, true);
-    }
-
     static void pushArtAsync(final boolean on, final boolean fresh) {
-        if (MiniPlayerRuntime.aodUpdatesPaused()) {
-            sAodDeferredArt = on;
-            return;
-        }
         final Context ctx = Main.sAppCtx;
         if (ctx == null) return;
         final int gen = ++Main.sPushGen;

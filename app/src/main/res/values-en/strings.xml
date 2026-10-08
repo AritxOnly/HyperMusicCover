@@ -244,6 +244,4 @@
     <string name="demo_transit_island_title">The super island when unlocked</string>
     <string name="demo_transit_ride_title">Stop by stop</string>
     <string name="demo_transit_alert_title">Transfers and arrival</string>
-    <string name="mini_pause_aod_updates">Pause lock screen island updates in AOD</string>
-    <string name="mini_pause_aod_updates_summary">Stop island animations and content updates in AOD and replace lyrics with album artwork. Resume when the screen wakes.</string>
 </resources>

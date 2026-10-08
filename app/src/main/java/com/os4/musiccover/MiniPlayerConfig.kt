@@ -8,7 +8,7 @@ import org.json.JSONObject
 /** Portable settings for the HyperChanger lockscreen mini player. */
 object MiniPlayerConfig {
     /** Sent by SystemUI so the settings app can reject an older loaded module. */
-    const val SCHEMA_VERSION = 7
+    const val SCHEMA_VERSION = 6
     const val ENABLED = "enabled"
     const val WIDTH = "widthDp"
     const val HEIGHT_RADIUS = "heightRadiusDp"
@@ -17,7 +17,6 @@ object MiniPlayerConfig {
     /** The row takes the room a switched-off torch or camera leaves (MiniPlayerRuntime.pillRest). */
     const val ADAPTIVE_WIDTH = "adaptiveWidth"
     const val HIDE_AOD_SHORTCUTS = "hideAodShortcuts"
-    const val PAUSE_AOD_UPDATES = "pauseAodUpdates"
     const val MARQUEE = "marquee"
     const val NOTIFICATION_MATERIAL = "notificationMaterial"
     const val MEDIA_COLLAPSED_DEFAULT = "mediaCollapsedDefault"
@@ -51,7 +50,6 @@ object MiniPlayerConfig {
         ART_RADIUS to 12f,
         ADAPTIVE_WIDTH to false,
         HIDE_AOD_SHORTCUTS to false,
-        PAUSE_AOD_UPDATES to false,
         MARQUEE to true,
         NOTIFICATION_MATERIAL to false,
         MEDIA_COLLAPSED_DEFAULT to false,
@@ -88,7 +86,7 @@ object MiniPlayerConfig {
                 runCatching { input.getInt(key) }.getOrDefault(STYLE_ROW)
                     .takeIf { it == STYLE_ROW || it == STYLE_STACK } ?: STYLE_ROW
             } else if (key == ENABLED || key == ADAPTIVE_WIDTH ||
-                key == HIDE_AOD_SHORTCUTS || key == PAUSE_AOD_UPDATES || key == MARQUEE || key == NOTIFICATION_MATERIAL ||
+                key == HIDE_AOD_SHORTCUTS || key == MARQUEE || key == NOTIFICATION_MATERIAL ||
                 key == MEDIA_COLLAPSED_DEFAULT || key == SINK_WITH_EXPANDED_BACKGROUND ||
                 key == GROUP_NOTIFICATIONS_BY_APP || key in switches) {
                 runCatching { input.getBoolean(key) }.getOrDefault(fallback)
