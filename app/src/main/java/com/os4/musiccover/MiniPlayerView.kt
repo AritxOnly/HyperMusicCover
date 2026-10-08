@@ -67,6 +67,19 @@ internal class MiniPlayerView(context: Context) : FrameLayout(context) {
     private var lastMaterial: String? = null
     private var lastArtwork: Bitmap? = null
     private var marqueeEnabled = true
+    private var updatesPaused = false
+
+    fun setUpdatesPaused(paused: Boolean) {
+        updatesPaused = paused
+        if (paused) {
+            setMarqueeEnabled(false)
+            secondAnimator?.cancel()
+            animate().cancel()
+            slot.animate().cancel()
+            slot.rotation = 0f
+            Choreographer.getInstance().removeFrameCallback(springFrame)
+        }
+    }
 
     private fun setMarqueeEnabled(enabled: Boolean) {
         if (marqueeEnabled == enabled) return
@@ -200,7 +213,7 @@ internal class MiniPlayerView(context: Context) : FrameLayout(context) {
         showNative: () -> Unit,
         openCover: () -> Unit,
     ) { android.os.Trace.beginSection("MC v.bind"); try {
-        setMarqueeEnabled(config.optBoolean(MiniPlayerConfig.MARQUEE, true))
+        setMarqueeEnabled(!updatesPaused && config.optBoolean(MiniPlayerConfig.MARQUEE, true))
         val appearance = "$config|$material"
         if (lastAppearance != appearance) {
             lastAppearance = appearance
@@ -504,6 +517,7 @@ internal class MiniPlayerView(context: Context) : FrameLayout(context) {
 
     /** The artwork alone, for a scaled copy that arrives between refreshes. */
     fun showArtwork(bitmap: Bitmap?) {
+        if (updatesPaused) return;
         if (bitmap == null || lastArtwork === bitmap) return
         lastArtwork = bitmap
         if (artworkOverride == null) artwork.setImageBitmap(bitmap)
@@ -537,6 +551,7 @@ internal class MiniPlayerView(context: Context) : FrameLayout(context) {
     private var springLast = 0L
     private val springFrame = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) { android.os.Trace.beginSection("MC viewSpring"); try {
+            if (updatesPaused) return;
             val dt = if (springLast == 0L) 1f / 120f
                 else ((frameTimeNanos - springLast) / 1e9f).coerceIn(0f, 0.05f)
             springLast = frameTimeNanos

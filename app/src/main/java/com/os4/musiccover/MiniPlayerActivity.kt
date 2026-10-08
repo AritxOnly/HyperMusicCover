@@ -160,6 +160,11 @@ private fun MiniPlayerPage(blur: Boolean, refreshKey: Int, onBack: () -> Unit) {
                         checked = config.optBoolean(MiniPlayerConfig.HIDE_AOD_SHORTCUTS),
                         enabled = ready && config.optBoolean(MiniPlayerConfig.ENABLED),
                         onCheckedChange = { push(MiniPlayerConfig.HIDE_AOD_SHORTCUTS, it) })
+                    SwitchPreference(title = stringResource(R.string.mini_pause_aod_updates),
+                        summary = stringResource(R.string.mini_pause_aod_updates_summary),
+                        checked = config.optBoolean(MiniPlayerConfig.PAUSE_AOD_UPDATES),
+                        enabled = ready && config.optBoolean(MiniPlayerConfig.ENABLED),
+                        onCheckedChange = { push(MiniPlayerConfig.PAUSE_AOD_UPDATES, it) })
                     SwitchPreference(title = stringResource(R.string.mini_marquee),
                         summary = stringResource(R.string.mini_marquee_summary),
                         checked = config.optBoolean(MiniPlayerConfig.MARQUEE, true),

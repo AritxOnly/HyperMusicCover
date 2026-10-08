@@ -142,6 +142,7 @@ internal class MiniCardMorph(
     private val placedOem = Matrix()
     private var observed: View? = null
     private val preDraw = ViewTreeObserver.OnPreDrawListener { android.os.Trace.beginSection("MC cardMorphPreDraw"); try {
+        if (updatesPaused) return@OnPreDrawListener true
         val box = placedBox
         if (running && box != null && header.matrix != placedOem) placeHeader(box, placedScale)
         true
@@ -160,6 +161,14 @@ internal class MiniCardMorph(
     /** The container as this frame drew it, on screen: where a finger can take hold of it. */
     private var boxDrawn: CoverMorphMotion.Box? = null
     private var lastFrame = 0L
+    private var updatesPaused = false
+
+    fun setUpdatesPaused(paused: Boolean) {
+        updatesPaused = paused
+        Choreographer.getInstance().removeFrameCallback(this)
+        if (!paused) Choreographer.getInstance().postFrameCallback(this)
+    }
+
     private var startedAt = 0L
 
     /** Why it was last cut short, for `op mini`: the lock screen's guard, or no geometry. */
@@ -361,6 +370,7 @@ internal class MiniCardMorph(
     }
 
     override fun doFrame(frameTimeNanos: Long) { android.os.Trace.beginSection("MC cardMorph"); try {
+        if (updatesPaused) return
         if (!running) return
         // Asleep, the lock screen gone: every frame. Its own lock screen's, not the clock
         // container's the cover morph asks after (Main.islandMorphStillEligible).
