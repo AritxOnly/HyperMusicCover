@@ -1728,15 +1728,15 @@ object MiniPlayerRuntime {
     } finally { android.os.Trace.endSection() } }
 
     /**
-     * The top of what the lock screen's stack really lays out, on screen, or NaN with nothing
-     * there (or the row of islands not in use). The clock is given this rather than the stack's
+     * The top of visible stack content, MAX_VALUE with no visible rows, or NaN when unavailable.
+     * The clock is given this rather than the stack's
      * own figure: the OEM's (NotificationStackingInteractor.calculateKeyguardNotifTop) reserves
      * room for one big notification (miuiBigNotificationHeight) above the stack's bottom however
      * short the rows are, so one row by the pill shrank the clock it came nowhere near
      * (filmed 2026-09-25).
      */
     @JvmStatic fun stackContentTop(): Float =
-        live().firstNotNullOfOrNull { it.stackContentTop().takeUnless(Float::isNaN) } ?: Float.NaN
+        live().map { it.stackContentTop() }.filterNot(Float::isNaN).minOrNull() ?: Float.NaN
 
     /** Which row the last stackContentTop came from, and how many hidden rows it passed over, for `op mini`. */
     @JvmStatic fun stackContentSource(): String = live().firstOrNull()?.contentTopFrom ?: "-"
@@ -5204,7 +5204,7 @@ private class MiniPlayerController(
      * let out under it, the hidden QQ row stood 258px above the stopwatch's card and the clock
      * shrank for a row nobody could see (filmed 2026-09-26). settleDy skips them the same way.
      * Nor any child not drawn at all - the media card behind the pill is the other one.
-     * With every row hidden, the content starts at the stack's bottom: nothing there to give way to.
+     * With every row hidden, there is no notification constraint on the clock's edited position.
      */
     fun stackContentTop(): Float {
         if (!config.getBoolean(MiniPlayerConfig.ENABLED)) return Float.NaN
@@ -5287,11 +5287,7 @@ private class MiniPlayerController(
                 contentTopFrom = (from?.let(::shortName) ?: "-") + " skip=$skipped" +
                 (if (exchange != null) " X" else "") + (if (morph != null) " M" else "") + " [" + seen.toString().trim() + "]"
             }
-            when {
-                from != null -> stackY + top
-                skipped > 0 -> (stackY + stack.height).toFloat()
-                else -> Float.NaN
-            }
+            ClockRoomPolicy.contentTop(stackY.toFloat(), top)
         }
         return contentTop
     }

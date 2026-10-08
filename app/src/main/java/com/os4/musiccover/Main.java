@@ -170,6 +170,8 @@ public class Main extends XposedModule {
     static volatile float sLastSystemY = Float.NaN;
     /** Set while our own frame is inside setNotifY, so we don't read it back as the system's. */
     private static volatile boolean sSelfDriving;
+    /** Room re-evaluation uses the OEM's animation channel without replacing its source Y. */
+    private static boolean sRoomReasserting;
     /** Per-frame setNotifY logging floods logcat at 8ms intervals; off unless asked for. */
     private static volatile boolean sVerbose;
     /**
@@ -1778,7 +1780,7 @@ public class Main extends XposedModule {
                 // Not our own writes, which are not what the system asked for. The system's
                 // re-assertions while we hold ARE: they carry where the notifications start, and
                 // the small clock gives way to them off this number.
-                if (!sSelfDriving) sLastSystemY = requested;
+                if (!sSelfDriving && !sRoomReasserting) sLastSystemY = requested;
                 Float hold = sHoldY;
                 if (hold != null && requested != hold) args[0] = hold;
                 else if (hold == null) args[0] = roomForRows(requested);
@@ -1908,7 +1910,7 @@ public class Main extends XposedModule {
                 float requested = (Float) args[0];
                 // Only the system's own emissions tell us where the clock really
                 // belongs; our own frames must not be mistaken for that.
-                if (!sSelfDriving) sLastSystemY = requested;
+                if (!sSelfDriving && !sRoomReasserting) sLastSystemY = requested;
                 Float hold = sHoldY;
                 if (hold != null && requested != hold) args[0] = hold;
                 else if (hold == null && !sSelfDriving) args[0] = roomForRows(requested);
@@ -5410,11 +5412,16 @@ public class Main extends XposedModule {
      * reach up still push it as they always did.
      */
     static float roomForRows(float requested) {
-        return easeRoom(roomForRowsNow(requested));
+        float room = roomForRowsNow(requested);
+        // An empty stack must immediately give back the edited clock position. Easing from
+        // an old notification constraint across a doze can otherwise retain a squeezed pose.
+        if (sRoomUnobstructed) return resetClockRoom(room);
+        return easeRoom(room);
     }
 
     /** roomForRows at once, for a caller that eases its own way there (ClockCollapse.exitY). */
     static float roomForRowsNow(float requested) {
+        sRoomUnobstructed = requested >= Float.MAX_VALUE / 2f;
         if (Float.isNaN(requested) || requested >= Float.MAX_VALUE / 2f) return requested;
         float top;
         try {
@@ -5422,9 +5429,44 @@ public class Main extends XposedModule {
         } catch (Throwable t) {
             return requested;
         }
-        float out = Float.isNaN(top) || top <= requested ? requested : top;
+        boolean nativeEmpty = systemClockUnobstructed();
+        sRoomUnobstructed = nativeEmpty || top == Float.MAX_VALUE;
+        float out = nativeEmpty ? requested : ClockRoomPolicy.resolve(
+                requested, top, top == Float.MAX_VALUE ? unobstructedClockY() : Float.NaN);
         ClockMove.noteRoom(requested, top, out);
         return out;
+    }
+
+    private static boolean systemClockUnobstructed() {
+        try {
+            Object it = sContainer == null ? null : Xp.getObjectField(sContainer, "keyguardClockNotifInteractor");
+            return it != null && ((Number) Xp.getObjectField(it, "rawNotifY")).floatValue() == Float.MAX_VALUE;
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    /** Same empty-notification boundary as the OEM's correctYValue, including edited clocks. */
+    private static float unobstructedClockY() {
+        try {
+            View v = sContainer;
+            if (v == null) return Float.NaN;
+            Object it = Xp.getObjectField(v, "keyguardClockNotifInteractor");
+            Rect rect = (Rect) Xp.getObjectField(it, "maxEditRect");
+            if (rect != null && rect.bottom > 0)
+                return (float) rect.bottom + ((Number) Xp.getObjectField(it, "clockNotificationMargin")).floatValue();
+            return v.getResources().getDisplayMetrics().heightPixels;
+        } catch (Throwable ignored) {
+            return Float.NaN;
+        }
+    }
+
+    private static float resetClockRoom(float y) {
+        if (sRoomEasing) android.view.Choreographer.getInstance().removeFrameCallback(ROOM_FRAME);
+        sRoomShown = sRoomRaw = y;
+        sRoomEasing = false;
+        sRoomSoft = 0f;
+        return y;
     }
 
     /**
@@ -5523,6 +5565,7 @@ public class Main extends XposedModule {
     }
 
     private static float sRoomShown = Float.NaN, sRoomRaw = Float.NaN;
+    private static boolean sRoomUnobstructed;
     private static long sRoomAt;
     private static boolean sRoomEasing;
     /** A change of room bigger than this in one go is a jump, eased (easeRoom). */
@@ -5541,20 +5584,22 @@ public class Main extends XposedModule {
                 return;
             }
             reassertClockRoom();
-            android.view.Choreographer.getInstance().postFrameCallback(this);
+            if (sRoomEasing) android.view.Choreographer.getInstance().postFrameCallback(this);
         }
     };
 
     /**
-     * The stack's rows have moved since the clock was last told: the OEM's own notification-Y
-     * flow is sent its value again, nudged a hair so it is a change, and the clock animates to
-     * it the way it does to any other (KeyguardClockNotifInteractor._notificationYState ->
-     * notifStateChange -> setNotifY, where roomForRows has its say).
+     * Re-evaluate room through the clock's animation channel, with the source Y left intact.
+     * A small nudge passes its equal-value early-out; roomForRows supplies the current boundary.
      */
     static void reassertClockRoom() {
         if (sHoldY != null) return;
+        if (systemClockUnobstructed()) {
+            resetClockRoom(sLastSystemY);
+            return;
+        }
         final View v = sContainer;
-        if (v == null) return;
+        if (v == null || sNotifStateChange == null) return;
         try {
             Object interactor = Xp.getObjectField(v, "keyguardClockNotifInteractor");
             Object flow = interactor == null ? null : Xp.getObjectField(interactor, "_notificationYState");
@@ -5569,9 +5614,15 @@ public class Main extends XposedModule {
             // last, which follows the stack's list scroll frame by frame and so says jump, the
             // clock cut from one size to the other on every switch between the stack island's
             // list and a card (2026-09-26). Ours is always a change of rows: animated.
-            Object next = triple.getClass().getConstructor(Object.class, Object.class, Object.class)
-                    .newInstance(y + sRoomNudge, Boolean.FALSE, Xp.callMethod(triple, "getThird"));
-            Xp.callMethod(flow, "setValue", next);
+            // Do not publish a fabricated notification position to the shared StateFlow.
+            // Its other consumers and the next sleep/wake must retain the system's own Y.
+            boolean wasReasserting = sRoomReasserting;
+            sRoomReasserting = true;
+            try {
+                sNotifStateChange.invoke(v, y + sRoomNudge, false, Xp.callMethod(triple, "getThird"));
+            } finally {
+                sRoomReasserting = wasReasserting;
+            }
             ClockMove.noteReassert(y, true);
         } catch (Throwable t) {
             ClockMove.noteReassert(Float.NaN, false);
